@@ -113,6 +113,18 @@ NSIS 安装包通常位于 `src-tauri/target/release/bundle/nsis/`（Cargo targe
 
 打包源码：[bundle.mjs](../agent/scripts/bundle.mjs)、[build-sea.mjs](../agent/scripts/build-sea.mjs)、[prepare-tauri-agent.mjs](../scripts/prepare-tauri-agent.mjs)。
 
+### 更换应用图标
+
+图标原图保存在 [src-tauri/app-icon.png](../src-tauri/app-icon.png)，当前为透明背景的黑色 A/L 标识。后续替换这张正方形 PNG，然后在仓库根目录运行：
+
+```powershell
+pnpm tauri icon src-tauri/app-icon.png --output src-tauri/icons
+```
+
+Tauri CLI 生成多尺寸 PNG、Windows icon.ico 等资源，配置中的 bundle.icon 指向这些文件。Windows exe 和安装包使用 icon.ico，窗口图标由 Tauri 构建时嵌入。
+
+重新启动 `pnpm tauri:dev` 可查看开发程序图标；发布版需重新打包并安装。前端热更新不会替换已运行 exe 的图标。Windows 任务栏固定项若仍显示旧图标，可取消固定后从新程序重新固定。
+
 ## 7. 独立 Agent 发布包
 
 ```powershell
