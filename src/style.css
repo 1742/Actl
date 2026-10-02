@@ -1,0 +1,148 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+:root {
+  color-scheme: light;
+  --color-workspace: #f1f2f3;
+  --color-shell-border: #e3e5e7;
+  --color-sidebar-bg: #fcfcfd;
+  --color-sidebar-fg: #30343a;
+  --color-sidebar-muted: #8c9097;
+  --color-sidebar-hover: #eff0f2;
+  --color-sidebar-selected: #e9eaec;
+  --color-sidebar-divider: #e3e5e7;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --color-white: #1d1f24;
+  --color-gray-50: #191b20;
+  --color-gray-100: #252830;
+  --color-gray-200: #353943;
+  --color-gray-300: #4b515e;
+  --color-gray-400: #828b9a;
+  --color-gray-500: #a0a8b5;
+  --color-gray-600: #b8c0cc;
+  --color-gray-700: #ced4de;
+  --color-gray-800: #e2e6ed;
+  --color-gray-900: #f0f2f6;
+  --color-gray-950: #fafbfc;
+  --color-slate-900: #f0f2f6;
+  --color-red-50: #351e25;
+  --color-red-100: #4c2730;
+  --color-red-200: #713643;
+  --color-amber-50: #332818;
+  --color-amber-100: #4c381b;
+  --color-amber-200: #705326;
+  --color-emerald-50: #17382d;
+  --color-primary: #e2e6ed;
+  --color-primary-fg: #17191e;
+  --color-sidebar-bg: #1b1d22;
+  --color-sidebar-fg: #e2e6ed;
+  --color-sidebar-muted: #a0a8b5;
+  --color-sidebar-hover: #2a2e36;
+  --color-sidebar-selected: #343943;
+  --color-sidebar-divider: #353943;
+  --color-workspace: #121419;
+  --color-shell-border: #343943;
+}
+
+:root[data-theme="dark"] .text-white {
+  color: #fff;
+}
+
+:root[data-theme="dark"] .bg-gray-900.text-white,
+:root[data-theme="dark"] .primary-button,
+:root[data-theme="dark"] .selected-model .model-check {
+  color: var(--color-primary-fg);
+}
+
+:root[data-theme="dark"] .text-red-700 { color: #fda4af; }
+:root[data-theme="dark"] .text-amber-700,
+:root[data-theme="dark"] .text-amber-800 { color: #f6cf83; }
+:root[data-theme="dark"] .text-emerald-700 { color: #86efac; }
+
+:root[data-theme="dark"] input,
+:root[data-theme="dark"] textarea,
+:root[data-theme="dark"] select {
+  color: var(--color-gray-900);
+}
+
+:root[data-theme="dark"] input::placeholder,
+:root[data-theme="dark"] textarea::placeholder {
+  color: var(--color-gray-500);
+}
+
+
+/* 主题色 */
+@theme {
+	--color-primary: #2a2a2a;
+	--color-primary-fg: #ffffff;
+	--color-primary-hover: color-mix(in srgb, var(--color-primary), black 10%);
+
+	@keyframes shimmer {
+		from { background-position: 200% 0; }
+		to { background-position: -200% 0; }
+	}
+	/* 将 keyframes 关联到动画变量 */
+	/* v4 建议使用 --animate-xxx 的命名规范 */
+	--animate-shimmer: shimmer 2s infinite linear;
+}
+
+.glass-morphism {
+  background: rgba(255, 255, 255, 0.6);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+@layer utilities {
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none; /* IE and Edge */
+    scrollbar-width: none; /* Firefox */
+  }
+
+  /* Custom scrollbar */
+	::-webkit-scrollbar {
+		width: 6px;
+	}
+	::-webkit-scrollbar-track {
+		background: transparent;
+	}
+	::-webkit-scrollbar-thumb {
+		@apply bg-slate-400/20 rounded-full hover:bg-slate-400/40;
+	}
+
+}
+
+/* Tooltips are mounted on <body>, outside component scopes, so full-text
+   description tooltips are styled here: readable width, comfortable rhythm. */
+.v-popper--theme-tooltip .v-popper__inner {
+  max-width: min(420px, calc(100vw - 32px));
+  font-size: 12px;
+  line-height: 1.7;
+  padding: 10px 14px;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.status-shimmer {
+  color: transparent;
+  background-image: linear-gradient(90deg, #9ca3af 0%, #9ca3af 42%, #e5e7eb 50%, #9ca3af 58%, #9ca3af 100%);
+  background-size: 300% 100%;
+  background-repeat: no-repeat;
+  background-clip: text;
+  -webkit-background-clip: text;
+  animation: status-shimmer 1.6s linear infinite;
+}
+
+@keyframes status-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: 0% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .status-shimmer { color: #9ca3af; background: none; animation: none; }
+}

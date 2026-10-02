@@ -1,0 +1,6 @@
+packages:
+  - "agent"
+
+allowBuilds:
+  esbuild: true
+  vue-demi: true

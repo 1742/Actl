@@ -1,0 +1,58 @@
+{
+  "name": "ActlAgent",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=26.4.0"
+  },
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "build": "tsc",
+    "start": "node dist/main.js",
+    "test": "tsx --test test/**/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "bundle": "node scripts/bundle.mjs",
+    "bundle:exe": "pnpm bundle",
+    "build:exe": "pnpm package:win",
+    "package:tauri": "pnpm bundle && node scripts/build-sea.mjs",
+    "package:win": "pnpm bundle && node scripts/build-sea.mjs && node scripts/package-agent-release.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@12.3.4",
+  "dependencies": {
+    "@modelcontextprotocol/client": "^2.0.0",
+    "@modelcontextprotocol/server": "^2.0.0",
+    "busboy": "^1.6.0",
+    "chalk": "^5.6.2",
+    "commander": "^15.0.0",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "iconv-lite": "^0.7.2",
+    "inquirer": "^14.0.2",
+    "openai": "^6.45.0",
+    "pino": "^10.3.1",
+    "pino-roll": "^4.0.0",
+    "playwright-core": "^1.63.0",
+    "pptxgenjs": "^4.0.1",
+    "yaml": "^2.9.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/server-filesystem": "2026.7.10",
+    "@types/commander": "^2.12.5",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/inquirer": "^9.0.10",
+    "@types/node": "^26.0.1",
+    "esbuild": "^0.25.0",
+    "tar-stream": "^3.2.1",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3"
+  }
+}
