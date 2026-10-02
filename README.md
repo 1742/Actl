@@ -1,6 +1,6 @@
 # Actl
 
-Actl 是我个人学习开发的 Agent 桌面软件（喜欢造轮子这块），仅支持 Windows. Vue 前端，Tauri 管理窗口和本地 Agent 进程，`agent/` 中的 Node.js 程序负责模型调用、工具执行、权限审批和数据持久化，模型服务由用户配置供应商账号和 API Key。
+Actl 是我个人学习开发的 Harness 桌面软件（喜欢造轮子这块），仅支持 Windows. Vue 前端，Tauri 管理窗口和本地 Agent 进程，`agent/` 中的 Node.js 程序负责模型调用、工具执行、权限审批和数据持久化，模型服务由用户配置供应商账号和 API Key。
 
 注意：该软件不配备沙箱或工作树隔离，请谨慎处理 ai 指令。
 
