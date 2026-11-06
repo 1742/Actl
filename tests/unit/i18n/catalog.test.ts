@@ -3,8 +3,8 @@ import { describe, it } from 'node:test';
 import { createI18n } from 'vue-i18n';
 import { readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import zhCN from './locales/zh-CN';
-import enUS from './locales/en-US';
+import zhCN from '../../../src/renderer/src/i18n/locales/zh-CN';
+import enUS from '../../../src/renderer/src/i18n/locales/en-US';
 
 function flatten(source: Record<string, unknown>, prefix = ''): Record<string, string> {
   const entries: Record<string, string> = {};
@@ -57,7 +57,7 @@ describe('language catalog', () => {
         } else if (/\.(ts|vue)$/.test(entry.name)) files.push(file);
       }
     };
-    collect(resolve(import.meta.dirname, '..'));
+    collect(resolve(import.meta.dirname, '../../../src/renderer/src'));
     for (const file of files) {
       const source = readFileSync(file, 'utf8');
       for (const match of source.matchAll(/(?:\$t|\btr)\(\s*['"]([\w.]+)['"]/g)) {

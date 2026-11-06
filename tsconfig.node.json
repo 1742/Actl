@@ -1,7 +1,10 @@
 {
   "compilerOptions": {
     "target": "ES2023",
-    "lib": ["ES2023", "DOM"],
+    "lib": [
+      "ES2023",
+      "DOM"
+    ],
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "strict": true,
@@ -10,7 +13,19 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "types": ["node", "electron", "electron-vite/node"]
+    "types": [
+      "node",
+      "electron",
+      "electron-vite/node"
+    ]
   },
-  "include": ["electron.vite.config.ts", "src/main/**/*.ts", "src/preload/**/*.ts", "src/runtime/**/*.ts", "src/shared/**/*.ts", "src/agent-core/**/*.ts", "src/verification/**/*.ts"]
+  "include": [
+    "electron.vite.config.ts",
+    "src/main/**/*.ts",
+    "src/preload/**/*.ts",
+    "src/runtime/**/*.ts",
+    "src/shared/**/*.ts",
+    "src/agent-core/**/*.ts",
+    "tests/electron/**/*.ts"
+  ]
 }

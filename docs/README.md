@@ -10,6 +10,7 @@
 | [业务说明](business.md) | 用户操作对应的业务对象、状态和规则 |
 | [IPC API 与事件协议](api.md) | 业务命令、请求字段、错误、事件订阅和桌面接口 |
 | [开发与打包](development.md) | 环境、配置、验证、Windows 安装包及故障排查 |
+| [测试目录](../tests/README.md) | 单元测试、Electron 集成验证与 fixture 的组织方式 |
 
 ## 模块详解
 

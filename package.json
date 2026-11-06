@@ -14,7 +14,7 @@
     "postinstall": "install-electron",
     "dev": "pnpm build:fixtures && electron-vite dev",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && vue-tsc --noEmit -p tsconfig.web.json",
-    "build:fixtures": "esbuild src/verification/fixtures/mcp-server.ts --bundle --platform=node --target=node24 --format=cjs --outfile=out/fixtures/mcp-server.cjs",
+    "build:fixtures": "esbuild tests/electron/fixtures/mcp-server.ts --bundle --platform=node --target=node24 --format=cjs --outfile=out/fixtures/mcp-server.cjs",
     "build": "pnpm typecheck && pnpm build:fixtures && electron-vite build",
     "start": "electron-vite preview",
     "start:packaged": "node scripts/start-packaged.mjs",
@@ -23,7 +23,7 @@
     "pack:win": "pnpm build && electron-builder --win nsis --x64",
     "verify:agent": "pnpm build && node scripts/verify-agent.mjs",
     "verify:agent:packaged": "node scripts/verify-agent.mjs --packaged",
-    "test:agent-ui": "node --import tsx --test src/renderer/src/agent/composables/useAgent.test.ts src/renderer/src/agent/services/desktopTransport.test.ts src/renderer/src/i18n/catalog.test.ts"
+    "test:agent-ui": "node --import tsx --test tests/unit/agent/useAgent.test.ts tests/unit/agent/desktopTransport.test.ts tests/unit/i18n/catalog.test.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "2.0.0",

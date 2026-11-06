@@ -71,7 +71,7 @@ app.whenReady().then(async () => {
   app.setAppUserModelId('local.dev.actl.electron');
   if (verifyAgentMode) {
     try {
-      const { verifyAgent } = await import('../verification/agent-checks');
+      const { verifyAgent } = await import('../../tests/electron/agent-checks');
       const report = await verifyAgent(verificationRoot!, app.isPackaged, forcedExitProbe);
       app.exit(report.passed ? 0 : 1);
     } catch (error) {

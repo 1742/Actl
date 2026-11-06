@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createPinia, setActivePinia } from 'pinia';
-import { resolveAgentPermissionBatch, selectAgentSession } from './useAgent';
-import { useAgentStore } from '../stores/agent';
-import { localClient } from '../services/localClient';
-import { normalizeResponseContext } from '../utils/aiResponse';
-import type { AgentResponse, PendingPermissionBatch, RuntimeStreamEvent, SessionContext } from '../types';
+import { resolveAgentPermissionBatch, selectAgentSession } from '../../../src/renderer/src/agent/composables/useAgent';
+import { useAgentStore } from '../../../src/renderer/src/agent/stores/agent';
+import { localClient } from '../../../src/renderer/src/agent/services/localClient';
+import { normalizeResponseContext } from '../../../src/renderer/src/agent/utils/aiResponse';
+import type { AgentResponse, PendingPermissionBatch, RuntimeStreamEvent, SessionContext } from '../../../src/renderer/src/agent/types';
 
 const pending = (id: string): PendingPermissionBatch => ({
   id, response_id: 'response', created_at: '2026-11-06T00:00:00Z', permissions: [{

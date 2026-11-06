@@ -32,7 +32,6 @@ src/preload/                渲染进程受限桥接
 src/renderer/src/           Vue 界面、Pinia、路由、业务客户端
 src/shared/                 进程间消息契约与业务操作白名单
 src/runtime/                utility process 入口与 AgentApplication
-src/verification/           统一验证用例、报告类型与 MCP/命令 fixture
 src/agent-core/app/         核心配置与依赖装配
 src/agent-core/contracts/   schema、DTO、领域事件投影与错误映射
 src/agent-core/runtime/     执行状态、循环、上下文、命令进程
@@ -47,6 +46,8 @@ src/agent-core/mcp/         MCP 连接、配置、发现与调用
 src/agent-core/web-search/  搜索配置、策略与供应商
 scripts/                    启动、构建辅助和验证入口
 docs/                       项目文档
+tests/unit/                 Node 单元测试与前端状态测试
+tests/electron/             Electron 集成验证、报告类型与 MCP/命令 fixture
 ```
 
 验证直接使用 src/agent-core/ 中的产品实现，经单一 Agent 验证入口运行；不维护第二份业务实现或验证专用 utility process。

@@ -67,7 +67,7 @@ pnpm start
 
 统一验证入口使用当前产品源码：先在 Electron 运行时检查 SQLite schema/WAL/事务、凭据篡改检测、日志脱敏和 Shell 轮询/停止，再通过真实 Agent 验证项目/会话、附件、流事件、审批、MCP 配置/调用/移除、待审批重启、并发取消、异常恢复及正常/强制退出后的进程回收。模型服务只监听本机，使用合成凭据，不需要真实模型 Key。
 
-验证代码集中在 src/verification/，通过 --verify-agent 启用，不维护冻结核心副本或第二套验证 Worker。MCP fixture 不等于任意第三方 Server 的完整测试。前端测试使用 Node test runner，覆盖真实 Pinia 用例、IPC 时间顺序及语言目录，不等同于完整图形交互验收。
+验证代码集中在 tests/electron/，通过 --verify-agent 启用，不维护冻结核心副本或第二套验证 Worker。MCP fixture 不等于任意第三方 Server 的完整测试。前端测试使用 Node test runner，覆盖真实 Pinia 用例、IPC 时间顺序及语言目录，不等同于完整图形交互验收。
 
 每次命令行集成检查创建隔离目录，写入报告并以退出码表示结果：
 

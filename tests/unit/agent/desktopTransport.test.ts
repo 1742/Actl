@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { AgentCommand, AgentEventBatch, AgentResult } from '../../../../shared/agent-ipc';
-import { desktopStream, RuntimeRequestError } from './desktopTransport';
-import { LocalRuntimeClient } from './localClient';
+import type { AgentCommand, AgentEventBatch, AgentResult } from '../../../src/shared/agent-ipc';
+import { desktopStream, RuntimeRequestError } from '../../../src/renderer/src/agent/services/desktopTransport';
+import { LocalRuntimeClient } from '../../../src/renderer/src/agent/services/localClient';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;

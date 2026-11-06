@@ -4,11 +4,11 @@ import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { AgentProcessHost } from '../main/agent-process-host';
-import type { AgentCommand, AgentResult } from '../shared/agent-ipc';
+import { AgentProcessHost } from '../../src/main/agent-process-host';
+import type { AgentCommand, AgentResult } from '../../src/shared/agent-ipc';
 import { runCoreChecks } from './core-checks';
 import type { VerificationCheck } from './types';
-import type { AgentResponseDto } from '../agent-core/contracts/agent-responses/types';
+import type { AgentResponseDto } from '../../src/agent-core/contracts/agent-responses/types';
 
 // This loopback provider exists only behind --verify-agent. It never forwards requests.
 async function startFixture(processCommands: Map<string, string>) {
