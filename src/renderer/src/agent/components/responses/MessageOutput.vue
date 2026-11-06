@@ -9,6 +9,7 @@ const props = withDefaults(
   defineProps<{
     item: AIMessageItem;
     showTools?: boolean;
+    timestamp?: string;
   }>(),
   {
     showTools: true,
@@ -18,12 +19,12 @@ const text = computed(() => readContentText(props.item.content, 'output_text'));
 </script>
 
 <template>
-  <div v-if="text" class="flex flex-col items-start text-gray-900 group">
+  <div v-if="text" class="group/message flex flex-col items-start text-gray-900">
     <div class="w-full text-[15px] leading-7 text-gray-950">
       <MessageHtml :html-string="text" :is-invert="false" />
     </div>
     <slot name="footer" :content="text">
-      <MessageTools v-if="showTools" :content="text" />
+      <MessageTools v-if="showTools" :content="text" :timestamp="timestamp" />
     </slot>
   </div>
 </template>

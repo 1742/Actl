@@ -126,7 +126,7 @@ watch(
               :key="item.id || `${context.response.id}:input:${index}`"
               class="flex justify-end"
             >
-              <div class="flex max-w-[82%] flex-col items-end sm:max-w-[72%]">
+              <div class="group/message flex max-w-[82%] flex-col items-end sm:max-w-[72%]">
                 <div v-if="item.content.length" class="max-w-full">
                   <InputMessageContent
                     :parts="item.content"
@@ -139,6 +139,7 @@ watch(
                 <MessageTools
                   v-if="messageText(context, item)"
                   :content="messageText(context, item)"
+                  :timestamp="context.createdAt"
                 />
               </div>
             </div>

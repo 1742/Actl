@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { Copy, CopyCheck, RefreshCw } from '@lucide/vue';
 
 import { copyToClipboard } from '../../../utils/clipboard';
@@ -8,6 +8,7 @@ const props = withDefaults(
   defineProps<{
     content?: string;
     showRegenerate?: boolean;
+    timestamp?: string;
   }>(),
   {
     content: '',
@@ -20,6 +21,16 @@ const emit = defineEmits<{
 }>();
 
 const isCopied = ref(false);
+const messageTime = computed(() => {
+  if (!props.timestamp) return undefined;
+  const date = new Date(props.timestamp);
+  if (Number.isNaN(date.getTime())) return undefined;
+  return {
+    datetime: date.toISOString(),
+    label: date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false }),
+    title: date.toLocaleString(),
+  };
+});
 
 const handleCopy = async () => {
   if (!props.content) return;
@@ -32,7 +43,7 @@ const handleCopy = async () => {
 </script>
 
 <template>
-  <div class="mt-3 flex items-center gap-2 text-gray-500">
+  <div class="mt-1 flex items-center gap-2 text-gray-500 opacity-0 pointer-events-none transition-opacity group-hover/message:opacity-100 group-hover/message:pointer-events-auto group-focus-within/message:opacity-100 group-focus-within/message:pointer-events-auto">
     <button
       class="tool-btn"
       type="button"
@@ -58,6 +69,12 @@ const handleCopy = async () => {
     </button>
 
     <slot />
+    <time
+      v-if="messageTime"
+      :datetime="messageTime.datetime"
+      :title="messageTime.title"
+      class="whitespace-nowrap text-xs tabular-nums text-gray-400"
+    >{{ messageTime.label }}</time>
   </div>
 </template>
 

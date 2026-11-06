@@ -99,7 +99,11 @@ watch(isActive, (active, wasActive) => {
             :sources="finalWebSearch.sources"
             :queries="finalWebSearch.queries"
           />
-          <MessageTools v-if="!isActive" :content="content" />
+          <MessageTools
+            v-if="!isActive"
+            :content="content"
+            :timestamp="context.completedAt || context.updatedAt || context.createdAt"
+          />
         </template>
       </MessageOutput>
       <AgentActivityGroup v-else :blocks="group.blocks" :response-active="isActive" />
