@@ -3,6 +3,7 @@ allowBuilds:
   esbuild: true
   electron-winstaller: false
   vue-demi: true
+  koffi: true
 minimumReleaseAgeExclude:
   - '@vue/compiler-core@3.5.45'
   - '@vue/compiler-dom@3.5.45'
@@ -15,6 +16,27 @@ minimumReleaseAgeExclude:
   - '@vue/shared@3.5.45'
   - vite@8.3.6
   - vue@3.5.45
+  - '@koromix/koffi-android-arm64@3.3.7'
+  - '@koromix/koffi-android-x64@3.3.7'
+  - '@koromix/koffi-darwin-arm64@3.3.7'
+  - '@koromix/koffi-darwin-x64@3.3.7'
+  - '@koromix/koffi-freebsd-arm64@3.3.7'
+  - '@koromix/koffi-freebsd-ia32@3.3.7'
+  - '@koromix/koffi-freebsd-x64@3.3.7'
+  - '@koromix/koffi-linux-arm64@3.3.7'
+  - '@koromix/koffi-linux-arm@3.3.7'
+  - '@koromix/koffi-linux-ia32@3.3.7'
+  - '@koromix/koffi-linux-loong64@3.3.7'
+  - '@koromix/koffi-linux-ppc64@3.3.7'
+  - '@koromix/koffi-linux-riscv64@3.3.7'
+  - '@koromix/koffi-linux-x64@3.3.7'
+  - '@koromix/koffi-openbsd-arm64@3.3.7'
+  - '@koromix/koffi-openbsd-ia32@3.3.7'
+  - '@koromix/koffi-openbsd-x64@3.3.7'
+  - '@koromix/koffi-win32-arm64@3.3.7'
+  - '@koromix/koffi-win32-ia32@3.3.7'
+  - '@koromix/koffi-win32-x64@3.3.7'
+  - koffi@3.3.7
 overrides:
   '@tiptap/core': '3.22.4'
   '@tiptap/extension-blockquote': '3.22.4'

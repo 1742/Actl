@@ -31,6 +31,11 @@ import { agentResponsesToContexts, titleFromInput } from '../utils';
 
 const activeStreamControllers = new Map<string, AbortController>();
 const historyRequestVersions = new Map<string, number>();
+// A history read must not roll back events or a newer execution received while it was pending.
+const sessionStateRevisions = new Map<string, number>();
+function advanceSessionState(sessionId: string) {
+  sessionStateRevisions.set(sessionId, (sessionStateRevisions.get(sessionId) || 0) + 1);
+}
 let skillsRequestVersion = 0;
 let modelsRequestVersion = 0;
 
@@ -43,7 +48,7 @@ function notifyAgentEvent(
   const session = useAgentStore().sessions.find((item) => item.id === sessionId);
   void bridge
     .notifyAgentEvent(kind, session?.title || tr('ui.currentConversation'), detail)
-    .catch((error) => console.warn('Unable to show Agent notification:', error));
+    .catch((error: any) => console.warn('Unable to show Agent notification:', error));
 }
 
 type PersistedAgentView =
@@ -508,13 +513,14 @@ export async function selectAgentSession(sessionId: string): Promise<ActionResul
   if (runtime.hydrated || store.sessionIsActive(sessionId)) return { status: 'success' };
 
   const requestVersion = (historyRequestVersions.get(sessionId) || 0) + 1;
+  const stateRevision = sessionStateRevisions.get(sessionId);
   historyRequestVersions.set(sessionId, requestVersion);
   store.setLoadingHistory(sessionId, true);
   store.setError(sessionId);
   try {
     const { client } = getAgentRuntimeContext(target.runtimeKind);
     const history = await client.getContext(target.runtimeId);
-    if (historyRequestVersions.get(sessionId) !== requestVersion) return { status: 'success' };
+    if (historyRequestVersions.get(sessionId) !== requestVersion || sessionStateRevisions.get(sessionId) !== stateRevision) return { status: 'success' };
     const contexts = agentResponsesToContexts(history.responses);
     const latest = history.responses.at(-1);
     store.setResponses(sessionId, contexts);
@@ -524,7 +530,7 @@ export async function selectAgentSession(sessionId: string): Promise<ActionResul
     syncStateFromResponse(sessionId, latest);
     return { status: 'success' };
   } catch (error) {
-    if (historyRequestVersions.get(sessionId) !== requestVersion) return { status: 'success' };
+    if (historyRequestVersions.get(sessionId) !== requestVersion || sessionStateRevisions.get(sessionId) !== stateRevision) return { status: 'success' };
     const result = errorResult(error);
     store.setError(sessionId, result.message);
     store.setStatus(sessionId, 'idle');
@@ -759,6 +765,7 @@ export async function sendAgentMessage(
     }
   }
 
+  advanceSessionState(sessionId);
   store.setStatus(sessionId, 'running');
   store.setError(sessionId);
   store.setConflict(sessionId);
@@ -844,7 +851,7 @@ export async function sendAgentMessage(
   const controller = new AbortController();
   activeStreamControllers.set(sessionId, controller);
   try {
-    await client.streamResponse(
+    const response = await client.streamResponse(
       session.runtimeId,
       selectedModel,
       responseContent,
@@ -853,7 +860,10 @@ export async function sendAgentMessage(
       (event) => applyRuntimeEvent(sessionId, event),
       controller.signal,
     );
-    await reconcileSessionContext(sessionId);
+    if (activeStreamControllers.get(sessionId) === controller) {
+      applyStreamResponseSnapshot(sessionId, response);
+      await reconcileSessionContext(sessionId);
+    }
     if (shouldSetTitle) await setInitialSessionTitle(sessionId, responseContent, referencedSkills);
     return { status: 'success', data: { sessionId } };
   } catch (error) {
@@ -905,6 +915,7 @@ export async function stopAgentResponse(sessionId?: string): Promise<ActionResul
     return { status: 'error', message: tr('ui.noResponseIsCurrentlyGenerating') };
   }
 
+  advanceSessionState(targetSessionId);
   store.setStatus(targetSessionId, 'stopping');
   store.setError(targetSessionId);
   try {
@@ -962,13 +973,14 @@ export async function resolveAgentPermissionBatch(
   if (decisions.length !== batch.permissions.length) {
     return { status: 'error', message: tr('ui.resolveAllPermissionRequestsInThis') };
   }
+  advanceSessionState(targetSessionId);
   store.setStatus(targetSessionId, 'running');
   store.setError(targetSessionId);
   const controller = new AbortController();
   activeStreamControllers.set(targetSessionId, controller);
   try {
     const { session, client } = sessionContext(targetSessionId);
-    await client.streamPermission(
+    const response = await client.streamPermission(
       session.runtimeId,
       responseId,
       batch.id,
@@ -976,6 +988,9 @@ export async function resolveAgentPermissionBatch(
       (event) => applyRuntimeEvent(targetSessionId, event),
       controller.signal,
     );
+    if (activeStreamControllers.get(targetSessionId) === controller) {
+      applyStreamResponseSnapshot(targetSessionId, response);
+    }
     return { status: 'success' };
   } catch (error) {
     if (controller.signal.aborted) return { status: 'cancelled' };
@@ -992,9 +1007,11 @@ export async function resolveAgentPermissionBatch(
 
 async function reconcileSessionContext(sessionId: string) {
   const store = useAgentStore();
+  const stateRevision = sessionStateRevisions.get(sessionId);
   try {
     const { session, client } = sessionContext(sessionId);
     const history = await client.getContext(session.runtimeId);
+    if (sessionStateRevisions.get(sessionId) !== stateRevision) return;
     const latest = history.responses.at(-1);
     store.setResponses(sessionId, agentResponsesToContexts(history.responses));
     store.setContextSummary(sessionId, history.context);
@@ -1002,7 +1019,30 @@ async function reconcileSessionContext(sessionId: string) {
     store.setHydrated(sessionId, true);
     syncStateFromResponse(sessionId, latest);
   } catch {
-    store.setStatus(sessionId, 'idle');
+    if (sessionStateRevisions.get(sessionId) === stateRevision) store.setStatus(sessionId, 'idle');
+  }
+}
+
+function applyStreamResponseSnapshot(sessionId: string, response: AgentResponse) {
+  const store = useAgentStore();
+  const previous = store.findResponse(sessionId, response.id);
+  const context = normalizeResponseContext({
+    session_id: response.session_id || sessionId,
+    input: response.input || previous?.input,
+    response,
+    created_at: response.created_at || previous?.createdAt,
+    updated_at: response.updated_at,
+  });
+  if (previous?.lastSequenceNumber !== undefined) context.lastSequenceNumber = previous.lastSequenceNumber;
+  advanceSessionState(sessionId);
+  store.upsertResponse(sessionId, context);
+  if (response.status === 'waiting_permission' && response.pending_permission_batch) {
+    // IPC's invoke reply and pushed event batches are separate deliveries. The
+    // final snapshot also supplies approvals when the last batch was not observed.
+    applyRuntimeEvent(sessionId, { type: 'agent.permissions.requested', response_id: response.id, batch: response.pending_permission_batch });
+  } else {
+    store.setPendingPermissionBatch(sessionId);
+    syncStateFromResponse(sessionId, response);
   }
 }
 
@@ -1054,6 +1094,7 @@ async function handleRuntimeRequestError(
 
 function applyRuntimeEvent(sessionId: string, event: RuntimeStreamEvent) {
   const store = useAgentStore();
+  advanceSessionState(sessionId);
   const runtime = store.ensureRuntime(sessionId);
   if (event.type === 'response.created') {
     const response = event.response as AgentResponse;

@@ -113,7 +113,7 @@ export interface AgentRuntimeClient {
     permissionMode: AgentPermissionMode, 
     onEvent: (event: RuntimeStreamEvent) => void, 
     signal?: AbortSignal
-  ): Promise<unknown>;
+  ): Promise<AgentResponse>;
   cancelResponse(sessionId: string, responseId: string): Promise<AgentResponse>;
   streamPermission(
     sessionId: string, 
@@ -122,7 +122,7 @@ export interface AgentRuntimeClient {
     decisions: PermissionDecision[], 
     onEvent: (event: RuntimeStreamEvent) => void, 
     signal?: AbortSignal
-  ): Promise<unknown>;
+  ): Promise<AgentResponse>;
 
   //#endregion
 }

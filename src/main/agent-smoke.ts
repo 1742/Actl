@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { app } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -8,7 +9,7 @@ import type { AgentCommand, AgentResult } from '../shared/agent-ipc';
 import type { AgentResponseDto } from '../agent-core/contracts/agent-responses/types';
 
 // This loopback provider exists only behind --verify-agent. It never forwards requests.
-async function startFixture() {
+async function startFixture(processCommands: Map<string, string>) {
   const server = createServer(async (request, response) => {
     try {
       assert.equal(request.url, '/v1/chat/completions');
@@ -29,6 +30,13 @@ async function startFixture() {
         emit({ content: 'Waiting' });
         const timer = setTimeout(() => { emit({ content: ' complete' }, 'stop'); done(); }, 8_000);
         response.once('close', () => clearTimeout(timer));
+      } else if (text.includes('process-fixture:') && payload.messages.at(-1)?.role !== 'tool') {
+        const label = /process-fixture:([a-z-]+)/.exec(text)?.[1];
+        const command = label && processCommands.get(label); assert.ok(command);
+        emit({ tool_calls: [{ index: 0, id: `call-${randomUUID()}`, type: 'function', function: {
+          name: 'shell', arguments: JSON.stringify({ command, yieldTimeMs: 1_000 }),
+        } }] }, 'tool_calls');
+        done();
       } else if (text.includes('write-fixture:') && payload.messages.at(-1)?.role !== 'tool') {
         const file = /write-fixture:([a-z-]+\.txt)/.exec(text)?.[1];
         assert.ok(file);
@@ -49,11 +57,22 @@ async function startFixture() {
   } };
 }
 
-export async function verifyAgent(root: string, packaged: boolean) {
+export async function verifyAgent(root: string, packaged: boolean, forcedExitProbe = false) {
   const homeDirectory = path.join(root, 'agent-home');
   const workspace = path.join(root, '中文 workspace');
   await mkdir(workspace, { recursive: true });
-  const fixture = await startFixture();
+  const processCommands = new Map<string, string>();
+  const fixture = await startFixture(processCommands);
+  const fixturePids = new Set<number>();
+  const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const waitFor = async (condition: () => Promise<boolean> | boolean, message: string) => {
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline) {
+      if (await condition()) return;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.fail(message);
+  };
   const options = { homeDirectory, mode: packaged ? 'release' as const : 'development' as const };
   let host = new AgentProcessHost(options);
   const checks: Array<{ name: string; passed: boolean; durationMs: number; error?: string }> = [];
@@ -80,6 +99,24 @@ export async function verifyAgent(root: string, packaged: boolean) {
       batchId: batch.id, decisions: batch.permissions.map((permission) => ({ permission_id: permission.id, decision })),
     } });
   };
+  const launchOrphan = async (label: string) => {
+    const marker = path.join(root, `${label}.json`);
+    const script = packaged ? path.join(process.resourcesPath, 'compatibility-fixtures/mcp-server.cjs')
+      : path.join(app.getAppPath(), 'out/fixtures/mcp-server.cjs');
+    processCommands.set(label, `set "ELECTRON_RUN_AS_NODE=1" && "${process.execPath}" "${script}" --orphan-probe "${marker}"`);
+    const pending = success(await run(`process-fixture:${label}`));
+    assert.equal(pending.status, 'waiting_permission');
+    assert.equal((await resume(pending, 'approve')).status, 'completed');
+    let info: { pid: number; parentPid: number } | undefined;
+    await waitFor(async () => {
+      info = await readFile(marker, 'utf8').then((text) => JSON.parse(text), () => undefined);
+      return !!info;
+    }, 'Shell did not launch the detached fixture.');
+    fixturePids.add(info!.pid);
+    await waitFor(() => !alive(info!.parentPid), 'Fixture launcher did not exit.');
+    assert.ok(alive(info!.pid), 'Detached descendant must be alive before cleanup.');
+    return info!.pid;
+  };
   let passed = false;
   try {
     await step('Agent startup, project/session creation and local credentials', async () => {
@@ -95,6 +132,12 @@ export async function verifyAgent(root: string, packaged: boolean) {
       const listed = await request<Array<{ id: string }>>({ operation: 'sessions.list' });
       assert.ok(listed.some((session) => session.id === sessionId));
     });
+    if (forcedExitProbe) {
+      const pid = await launchOrphan('main-exit-orphan');
+      await writeFile(path.join(root, 'forced-exit-ready.json'), JSON.stringify({ pid }));
+      // The outer verifier terminates only this main process, without taskkill /T.
+      await new Promise<never>(() => {});
+    }
     await step('IPC validation, attachment round trip and session ownership', async () => {
       const invalid = await host.request({ operation: 'projects.create', body: { cwd: '' } });
       assert.equal(invalid.ok, false); if (!invalid.ok) assert.equal(invalid.error.code, 'invalid_request');
@@ -157,14 +200,23 @@ export async function verifyAgent(root: string, packaged: boolean) {
       assert.equal(cancelled.status, 'cancelled'); assert.equal(success(await slow.running).status, 'cancelled');
     });
     await step('Unexpected runtime exit fails in-flight calls and recovers history', async () => {
+      const orphanPid = await launchOrphan('crash-orphan');
       const slow = await startSlow(); const pid = host.pid; assert.ok(pid);
       process.kill(pid, 'SIGKILL');
       const interrupted = await slow.running; assert.equal(interrupted.ok, false);
       if (!interrupted.ok) assert.equal(interrupted.error.code, 'runtime_interrupted');
+      await waitFor(() => !alive(orphanPid), 'Detached descendant survived Agent crash.');
       host = new AgentProcessHost(options); await host.ready();
       const context = await request<{ responses: AgentResponseDto[] }>({ operation: 'sessions.context', params: { sessionId } });
       const recovered = context.responses.find((response) => response.id === slow.id); assert.ok(recovered);
       assert.equal(recovered.status, 'failed'); assert.equal(recovered.error?.code, 'runtime_interrupted');
+    });
+    await step('Restart removes descendants whose launcher already exited', async () => {
+      const orphanPid = await launchOrphan('restart-orphan');
+      await host.close();
+      await waitFor(() => !alive(orphanPid), 'Detached descendant survived Agent shutdown.');
+      host = new AgentProcessHost(options); await host.ready();
+      assert.equal(success(await run('text-fixture-after-process-cleanup')).status, 'completed');
     });
     await step('Graceful shutdown', () => host.close());
     passed = true;
@@ -172,6 +224,7 @@ export async function verifyAgent(root: string, packaged: boolean) {
   finally {
     await host.close().catch(() => undefined);
     await fixture.close();
+    for (const pid of fixturePids) { try { process.kill(pid, 'SIGKILL'); } catch { /* Already stopped. */ } }
   }
   const report = { passed, packaged, versions: { electron: process.versions.electron, node: process.versions.node }, checks };
   await writeFile(path.join(root, 'agent-report.json'), `${JSON.stringify(report, null, 2)}\n`, 'utf8');

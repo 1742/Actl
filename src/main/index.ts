@@ -7,7 +7,8 @@ import { registerRendererProtocol, rendererPageUrl } from './renderer-protocol';
 import { DesktopAgent } from './desktop-agent';
 
 const headless = process.argv.includes('--verify-runtime');
-const verifyAgentMode = process.argv.includes('--verify-agent');
+const forcedExitProbe = process.argv.includes('--verify-agent-exit-probe');
+const verifyAgentMode = process.argv.includes('--verify-agent') || forcedExitProbe;
 const argument = (name: string): string | undefined => process.argv.find((arg) => arg.startsWith(`${name}=`))?.slice(name.length + 1);
 const verificationRoot = argument('--verification-root');
 if ((headless || verifyAgentMode) && !verificationRoot) throw new Error('Verification requires --verification-root.');
@@ -91,7 +92,7 @@ app.whenReady().then(async () => {
   if (verifyAgentMode) {
     try {
       const { verifyAgent } = await import('./agent-smoke');
-      const report = await verifyAgent(verificationRoot!, app.isPackaged);
+      const report = await verifyAgent(verificationRoot!, app.isPackaged, forcedExitProbe);
       app.exit(report.passed ? 0 : 1);
     } catch (error) {
       await writeFile(path.join(verificationRoot!, 'error.txt'), error instanceof Error ? error.stack ?? error.message : String(error), 'utf8');

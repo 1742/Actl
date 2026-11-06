@@ -1,6 +1,6 @@
 # Electron 迁移第二阶段
 
-日期：2026-11-06。版本：0.2.0。运行基线保持 Electron 43.8.7 / Node 24.22.1。
+日期：2026-11-06。版本：0.2.2。运行基线保持 Electron 43.8.7 / Node 24.22.1。
 旧 `Actl-tauri` 仓库未修改；新工程的安装、开发、构建和分发均独立完成。
 
 ## 已迁移范围
@@ -75,5 +75,49 @@ flowchart LR
 
 旧用户数据的备份/导入流程尚未实现，不会自动打开或迁移旧目录。真实外部供应商、搜索服务和所有第三方 MCP 组合仍需专项验收。
 Skills/MCP 等管理页面已接线并通过编译，尚未逐项做完整人工交互验收。
-安装包尚未签名，使用默认图标；自动更新、安装/卸载流程及主应用被强制结束后的全部后代清理仍待验证。
+真实模型对话、工具调用、历史及待审批任务重启恢复已由用户验证；安装及其他功能的人工测试按用户反馈通过。
+安装包尚未签名，使用默认图标；自动更新尚未实现。
 Electron 45 的问题按用户要求暂缓，不在本阶段继续排查。
+
+## 0.2.1 后台进程回收修复
+
+复现：通过真实 Shell 工具启动一个 detached 后台进程，让启动器先退出，再结束 Agent。
+旧实现按父 PID 调用 `taskkill /T`，父进程已消失时无法找到其后代；后台进程仍然存活。
+修复前的失败记录：`artifacts/agent/source/2026-11-06T02-44-12-421Z/agent-report.json`。
+
+主进程通过 Koffi 3.3.7 调用 Windows Job Object API，每个 Agent 独立创建匿名 Job，设置
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`，句柄仅由主进程持有且不可继承。
+Agent 必须在加入 Job 后才能初始化业务，Shell/MCP 后代默认继承 Job；分配失败则中止启动。
+正常关闭保留现有 Run、审批和数据库收尾，再终止剩余后代并查询活动进程数，确认归零后完成关闭。
+Agent 异常退出触发相同清理；主应用被强制结束时，Windows 关闭 Job 句柄并回收其中进程。
+参见 [Windows Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)。
+
+集成回归新增启动器退出后的后台进程清理，并覆盖 Agent 异常退出和主进程强制终止。
+主进程强制退出测试只终止主 PID，不使用 `taskkill /T`，以验证操作系统的实际回收能力。
+测试使用隔离目录和本机模拟模型，不读取用户凭据或调用外部模型。
+测试范围为普通 Shell/MCP 子进程链，不涵盖通过系统服务或 WMI 在 Job 外创建的进程。
+
+源码与最终打包环境的 10 项 Agent 检查全部通过，打包环境的 6 项基础兼容性及退出确认也通过。
+Koffi 的 Windows x64 原生模块已由打包器放入 `app.asar.unpacked`，实际加载及进程清理均已验证。
+
+- 源码：`artifacts/agent/source/2026-11-06T02-46-48-896Z/agent-report.json`
+- 打包：`artifacts/agent/packaged/2026-11-06T02-48-50-024Z/agent-report.json`
+- 基础兼容：`artifacts/compatibility/packaged/2026-11-06T02-48-49-540Z/latest.json`
+- 安装包：`dist/Actl-0.2.1-windows-x64-setup.exe`
+
+## 0.2.2 实时审批界面状态修复
+
+用户确认重启时后台进程均已自动关闭，但出现系统审批通知已弹出、应用内仍显示工具运行中，重启后才能看到审批的情况。
+前端回归复现了：审批实时事件已写入状态并触发通知，随后迟到的历史查询结果清除了这条新审批。
+另外，原审批续跑只处理推送事件，忽略了 IPC 请求最终返回的完整 Response；尾部事件未观察到时缺少状态校准。
+
+- 为会话维护状态版本。历史回读期间收到实时事件、发起新执行或取消后，丢弃该旧查询的结果和错误状态。
+- 对话和审批续跑结束后应用完整 Response 快照，恢复下一批审批或正确完成状态；审批快照补齐时沿用通知去重。
+- 只有仍持有当前执行权的请求能应用完成快照，避免前一轮迟到回复覆盖下一轮审批。
+- `pnpm test:agent-ui` 覆盖上述四个状态场景；修复前有三项失败，修复后四项通过。测试使用真实前端 Pinia 状态与公开用例，模拟 IPC 的时间顺序，不调用真实模型。
+
+这不改变 Shell 的 `yieldTimeMs` 语义；等待审批时命令尚未执行，Shell 等待计时也尚未开始。
+前端状态回归记录：`artifacts/permission-ui-regression.log`。
+类型检查和 Windows 正式构建通过；0.2.2 打包应用的 10 项 Agent 检查全部通过，包含待审批跨重启恢复及后台进程回收。
+打包回归记录：`artifacts/agent/packaged/2026-11-06T03-10-26-682Z/agent-report.json`。
+安装包：`dist/Actl-0.2.2-windows-x64-setup.exe`。

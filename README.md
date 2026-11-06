@@ -3,7 +3,7 @@
 Windows Electron 桌面 harness。此目录独立安装依赖、开发和打包；旧 Tauri 实现在相邻的
 `Actl-tauri` 仓库，不参与本项目构建。
 
-当前为迁移版 **0.2.0**：旧 Vue 聊天界面和 Agent 核心已迁入 Electron。
+当前为迁移版 **0.2.2**：旧 Vue 聊天界面和 Agent 核心已迁入 Electron。
 项目、会话、模型配置、流式输出、工具审批、取消、附件、Skills/MCP 和设置通过内部 IPC 调用，
 业务运行在长期存活的 utility process 中。新工程不再依赖 Tauri、Rust、Express 或独立 Agent exe。
 
@@ -29,6 +29,7 @@ pnpm dev
 
 ```powershell
 pnpm typecheck
+pnpm test:agent-ui
 pnpm verify:agent
 pnpm verify:runtime
 pnpm pack:win
@@ -38,6 +39,7 @@ pnpm diagnose:renderer
 ```
 
 - `verify:agent`：构建后使用真实 utility process 和本机模拟模型服务验证对话闭环，不需要 API Key。
+- `test:agent-ui`：验证审批续跑快照、实时审批与历史回读竞争、完成状态恢复及连续审批请求的归属。
 - `verify:agent:packaged`：用已打包应用重跑完整 Agent 集成检查。
 - `verify:runtime`：保留第一阶段 SQLite、日志、Shell、MCP 等基础检查，不创建窗口。
 - `pack:dir`：仅生成 `dist/win-unpacked/Actl.exe` 及其资源。
@@ -81,6 +83,8 @@ scripts/           从源码或打包应用运行验证
 
 主进程管理桌面能力和进程；SQLite、模型调用、工具、权限、日志、文件及 MCP 都在独立 utility process 内执行。
 不启动业务 HTTP 服务。开发时 electron-vite 的页面/HMR 服务不随安装包运行。
+Agent 初始化前加入主进程持有的 Windows Job Object，Shell/MCP 子进程随之纳入管理。
+重启或退出时先等待业务收尾，再清理剩余后代；主进程被强制结束时由 Windows 自动回收。
 
 渲染进程开启 `contextIsolation` 和 `sandbox`，关闭 `nodeIntegration`。
 IPC 限定主窗口主 frame 和页面 URL，业务操作使用白名单及运行时 schema 校验。
@@ -100,9 +104,11 @@ MCP Server 和后台命令测试复用应用自身 Electron 可执行文件，�
 
 Agent 集成检查覆盖项目/会话创建、附件传输与归属校验、真实模型循环和流事件顺序、
 工具批准/拒绝、过期审批拒绝、待审批跨重启续跑、项目并发冲突、显式取消、
-运行时被终止后的请求失败及持久化恢复，以及正常退出。模型响应来自仅本机可达的模拟服务。
+运行时被终止后的请求失败及持久化恢复，以及正常退出。
+额外覆盖启动器已退出的后台进程在 Agent 重启、Agent 异常退出、主进程被强制结束时的实际回收。
+模型响应来自仅本机可达的模拟服务；真实模型对话、工具使用和历史待审批恢复另已由用户验证。
 
 旧用户数据导入、完整历史迁移链、真实外部模型/搜索供应商联网、所有第三方 MCP Server、
-日志滚动、主应用强制崩溃后的全部后代清理，以及 NSIS 安装/卸载流程尚未全部验收。
+日志滚动仍需专项验收。安装及其他功能的人工测试按用户反馈通过。
 
 记录：[第一阶段验证](docs/electron-migration-stage-1.md)、[第二阶段迁移](docs/electron-migration-stage-2.md)。
