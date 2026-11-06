@@ -1,11 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
-import type { CompatibilityApi } from '../shared/compatibility';
 import type { DesktopApi } from '../shared/agent-ipc';
 
-const api: CompatibilityApi = {
-  runChecks: () => ipcRenderer.invoke('compatibility:run'),
-};
-contextBridge.exposeInMainWorld('actl', Object.freeze(api));
 const desktop: DesktopApi = {
   ready: () => ipcRenderer.invoke('agent:ready'),
   request: (command) => ipcRenderer.invoke('agent:request', command),

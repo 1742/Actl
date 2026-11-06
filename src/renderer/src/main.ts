@@ -5,7 +5,6 @@ import { createPinia } from 'pinia';
 import App from './App.vue';
 import './style.css';
 import { router } from './router';
-import { useRuntimeStore } from './stores/runtime.ts';
 import { initializeTheme } from './composables/theme';
 import { i18n, initializeLanguage } from './i18n';
 
@@ -17,10 +16,6 @@ async function startApp(): Promise<void> {
 
   app.use(pinia);
   app.use(i18n);
-
-  const runtimeStore = useRuntimeStore();
-
-  runtimeStore.markReady();
 
   app.use(router);
   app.use(FloatingVue);

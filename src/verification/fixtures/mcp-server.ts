@@ -22,9 +22,9 @@ if (process.argv.includes('--orphan-child')) {
   setInterval(() => process.stdout.write('probe-alive\n'), 250);
 } else {
   void serveStdio(() => {
-    const server = new McpServer({ name: 'actl-compatibility-math', version: '0.1.0' });
+    const server = new McpServer({ name: 'actl-verification-math', version: '0.1.0' });
     server.registerTool('add', {
-      description: 'Add two numbers for the local compatibility check.',
+      description: 'Add two numbers for the local verification check.',
       inputSchema: z.object({ a: z.number(), b: z.number() }),
     }, ({ a, b }) => ({
       content: [{ type: 'text', text: JSON.stringify({ sum: a + b, pid: process.pid, node: process.versions.node }) }],

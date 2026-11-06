@@ -88,7 +88,7 @@ deleteServer 删除落库配置并移除 provider，旧连接同样退休；clos
 
 MCP 运行于 Agent 之下，普通子进程链归属同一个 Windows Job。正常关闭先请求连接收尾，Agent 退出后统一回收残留进程；主进程强制退出也会触发 Job 清理。细节见[桌面模块](modules/desktop.md)。
 
-pnpm verify:runtime 和 pnpm verify:packaged 使用随包分发的本地 stdio fixture 验证初始化、工具发现、调用与退出确认；fixture 复用 Electron 可执行文件和 ELECTRON_RUN_AS_NODE，不依赖系统 Node。这是验证程序的启动策略，不是第三方 MCP 自动获得内置 Node 的通用入口，也不等于所有第三方 Server 已验证。
+pnpm verify:agent 和 pnpm verify:agent:packaged 使用随包分发的本地 stdio fixture，通过当前 Agent 验证临时测试、保存、目录查询、审批调用、配置移除与退出确认；fixture 复用 Electron 可执行文件和 ELECTRON_RUN_AS_NODE，不依赖系统 Node。这是验证程序的启动策略，不是第三方 MCP 自动获得内置 Node 的通用入口，也不等于所有第三方 Server 已验证。
 
 手动排查顺序：验证 command/cwd/依赖能独立运行 → UI 测试握手/工具发现 → 保存并查看 connected/error → 对话中发现/调用 → 检查审批及结果。MCP stdout 用于协议，Server 普通日志应写 stderr。
 

@@ -8,14 +8,13 @@ import type {
   RuntimeMcpServer, RuntimeMcpServerConfig, RuntimeMcpCatalogServer,
   SessionContext,
 } from "../types";
-import { localClient } from "./local/service";
+import { localClient } from "./localClient";
 
-export { RuntimeRequestError } from "./local/service";
+export { RuntimeRequestError } from "./desktopTransport";
 
 export interface AgentRuntimeClient {
   readonly kind: AgentRuntimeKind;
   readonly capabilities: AgentRuntimeCapabilities;
-  getBaseUrl(): string;
 
   //#region project
 
@@ -65,6 +64,7 @@ export interface AgentRuntimeClient {
   setModelPreference(modelTargetId: string | null, reasoningEffort?: RuntimeReasoningEffort): Promise<void>;
 
   //#endregion
+
 
   //#region web search
 
@@ -126,7 +126,6 @@ export interface AgentRuntimeClient {
 
   //#endregion
 }
-
 
 export function getAgentRuntimeClient(kind: AgentRuntimeKind): AgentRuntimeClient {
   void kind;

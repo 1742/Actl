@@ -59,35 +59,30 @@ pnpm start
 | 命令 | 范围 |
 | --- | --- |
 | `pnpm typecheck` | main、preload、runtime、核心及 Vue 类型检查 |
-| `pnpm test:agent-ui` | 审批状态、历史快照竞争、完成快照及连续审批归属 |
+| `pnpm test:agent-ui` | 审批状态、IPC 订阅隔离/取消、直接命令及语言目录 |
 | `pnpm build` | 类型检查、fixture 和三端生产构建 |
-| `pnpm verify:agent` | 构建后在真实 utility process 中验证业务闭环 |
+| `pnpm verify:agent` | 构建后验证当前核心及真实 Agent 业务闭环 |
 | `pnpm verify:agent:packaged` | 使用已有打包应用重跑 Agent 集成检查 |
-| `pnpm verify:runtime` | 构建后验证冻结基线的 SQLite、凭据、日志、Shell、MCP |
-| `pnpm verify:packaged` | 在已有打包应用中运行基础兼容性检查 |
 | `pnpm diagnose:renderer` | 不加载 Vue/preload/业务数据的最小窗口诊断 |
 
-Agent 集成检查使用只监听本机的模拟模型服务与合成凭据，覆盖项目/会话、附件、流事件、审批、待审批重启、并发取消、异常恢复及正常/强制退出后的后台进程回收，不需要真实模型 Key。
+统一验证入口使用当前产品源码：先在 Electron 运行时检查 SQLite schema/WAL/事务、凭据篡改检测、日志脱敏和 Shell 轮询/停止，再通过真实 Agent 验证项目/会话、附件、流事件、审批、MCP 配置/调用/移除、待审批重启、并发取消、异常恢复及正常/强制退出后的进程回收。模型服务只监听本机，使用合成凭据，不需要真实模型 Key。
 
-基础兼容性检查针对 `src/runtime/legacy/`；它不能代替当前业务核心或任意第三方 MCP 的完整测试。前端审批测试使用真实 Pinia 状态和用例，模拟 IPC 时间顺序，不等同于完整图形交互验收。
+验证代码集中在 src/verification/，通过 --verify-agent 启用，不维护冻结核心副本或第二套验证 Worker。MCP fixture 不等于任意第三方 Server 的完整测试。前端测试使用 Node test runner，覆盖真实 Pinia 用例、IPC 时间顺序及语言目录，不等同于完整图形交互验收。
 
 每次命令行集成检查创建隔离目录，写入报告并以退出码表示结果：
 
 ```text
 artifacts/agent/source/<时间>/agent-report.json
 artifacts/agent/packaged/<时间>/agent-report.json
-artifacts/compatibility/source/<时间>/latest.json
-artifacts/compatibility/packaged/<时间>/latest.json
 ```
 
-测试 home 与正常用户数据分开，包含中文/空格路径。图形界面 `#/compatibility` 的诊断结果位于用户配置目录中的 `compatibility`。测试目录可在检查进程退出后清理。
+测试 home 与正常用户数据分开，包含中文/空格路径；基础检查与业务检查合并在同一个 agent-report.json。产品界面和 preload 不暴露验证入口。测试目录可在检查进程退出后清理。
 
 ## 5. Windows 打包
 
 ```powershell
 pnpm pack:win
 pnpm verify:agent:packaged
-pnpm verify:packaged
 ```
 
 [electron-builder.yml](../electron-builder.yml) 定义 NSIS x64 安装包，版本统一取根 package.json。链路为类型检查 → esbuild fixture → electron-vite → electron-builder。产物：
@@ -101,7 +96,7 @@ dist/win-unpacked/Actl.exe                  可直接运行的应用
 dist/Actl-<版本>-windows-x64-setup.exe       NSIS 安装包
 ```
 
-主程序代码和依赖使用 ASAR，原生模块由打包器放入 `app.asar.unpacked`；fixture 作为 `compatibility-fixtures` 额外资源分发。`npmRebuild=false`，当前使用 Koffi 的预编译模块。更新原生依赖后必须在真实打包环境验证加载。
+主程序代码和依赖使用 ASAR，原生模块由打包器放入 `app.asar.unpacked`；fixture 作为 `verification-fixtures` 额外资源分发。`npmRebuild=false`，当前使用 Koffi 的预编译模块。更新原生依赖后必须在真实打包环境验证加载。
 
 `pnpm pack:dir` 只生成解包应用。构建与打包共用 `out` 和 `dist/win-unpacked`，不要并行重建这些目录和运行其验证。
 

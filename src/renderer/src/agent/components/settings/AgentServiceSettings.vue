@@ -4,9 +4,7 @@ import { computed, onMounted, ref } from 'vue';
 import { ExternalLink } from '@lucide/vue';
 import { bridge, type AgentSettings } from '../../../services/bridge';
 import { useNotifyStore } from '../../../composables/notify';
-import { useRuntimeStore } from '../../../stores/runtime';
 import { useAgentStore } from '../../stores/agent';
-import { ensureAgentRuntimeReady } from '../../services/runtimeUsecase';
 import {
   initAgentSession,
   loadAgentModels,
@@ -15,7 +13,6 @@ import {
 
 const store = useAgentStore();
 const notify = useNotifyStore();
-const runtime = useRuntimeStore();
 const settings = ref<AgentSettings>({ storageDirectory: '' });
 const loaded = ref(false);
 const busy = ref(false);
@@ -85,8 +82,8 @@ async function save(restart: boolean) {
       restarting = true;
       store.$reset();
       store.setRuntimeAvailability('local', 'checking');
-      runtime.apply(await bridge.restartAgent());
-      await ensureAgentRuntimeReady();
+      await bridge.restartAgent();
+      await bridge.ensureAgentStarted();
       const result = await initAgentSession('local');
       if (result.status === 'error') throw new Error(result.message);
       const restored = await restoreInitialAgentView();

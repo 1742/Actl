@@ -8,8 +8,6 @@ import ActivityBar from './ActivityBar.vue';
 import SecondarySidebar from './SecondarySidebar.vue';
 import AgentRecovery from '../conversation/AgentRecovery.vue';
 import { bridge } from '../../../services/bridge';
-import { useRuntimeStore } from '../../../stores/runtime';
-import { ensureAgentRuntimeReady } from '../../services/runtimeUsecase';
 import { getAgentRuntimeClient } from '../../services/runtimeClient';
 import { useAgentStore } from '../../stores/agent.js';
 import {
@@ -101,7 +99,7 @@ const runtimeError = computed(() => store.runtimeErrors.local);
 async function initializeRuntime(kind: 'local') {
   store.setRuntimeAvailability(kind, 'checking');
   try {
-    if (kind === 'local') await ensureAgentRuntimeReady();
+    if (kind === 'local') await bridge.ensureAgentStarted();
   } catch (error) {
     store.setRuntimeAvailability(
       kind,
@@ -121,7 +119,7 @@ async function initializeAgent(restart = false) {
     store.$reset();
     store.setRuntimeAvailability('local', 'checking');
     try {
-      useRuntimeStore().apply(await bridge.restartAgent());
+      await bridge.restartAgent();
     } catch (error) {
       store.setRuntimeAvailability('local', 'unavailable', String(error));
       return;

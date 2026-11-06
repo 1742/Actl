@@ -167,7 +167,7 @@ export interface AIResponseContext {
   createdAt: string;
   updatedAt: string;
   completedAt?: string;
-  /** Latest applied SSE sequence; used only to make stream replay idempotent. */
+  /** Latest applied IPC sequence; used only to make stream replay idempotent. */
   lastSequenceNumber?: number;
 }
 

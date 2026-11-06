@@ -54,7 +54,6 @@ const inputMessageSchema = z.object({
 
 export const createResponseBodySchema = z.object({
   input: z.array(inputMessageSchema).min(1),
-  stream: z.boolean().optional(),
   model: nonEmptyString,
   reasoningEffort: reasoningEffortSchema.optional(),
   permissionMode: permissionModeSchema.optional().default("ask"),

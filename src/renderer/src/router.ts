@@ -6,7 +6,6 @@ const routes: RouteRecordRaw[] = [
   { path: '/', redirect: '/ai' },
   { path: '/index.html', redirect: '/ai' },
   aiRoutes,
-  { path: '/compatibility', component: () => import('./CompatibilityView.vue') },
 ];
 
 export const router = createRouter({

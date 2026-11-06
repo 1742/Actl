@@ -1,4 +1,4 @@
-import { commandForRoute, type AgentResult } from '../../../../shared/agent-ipc';
+import type { AgentCommand, AgentResult } from '../../../../shared/agent-ipc';
 import type { RuntimeControlError } from '../types';
 
 export class RuntimeRequestError extends Error {
@@ -11,14 +11,17 @@ export class RuntimeRequestError extends Error {
     this.details = error.details && typeof error.details === 'object' ? error.details as NonNullable<RuntimeControlError['error']['details']> : undefined;
   }
 }
+
 export function unwrap<T>(result: AgentResult<T>): T {
   if (!result.ok) throw new RuntimeRequestError(result.error);
   return result.value;
 }
-export async function desktopRequest<T>(route: string, method = 'GET', body?: unknown): Promise<T> {
-  return unwrap(await window.actlAgent.request(commandForRoute(method, route, body))) as T;
+
+export async function desktopRequest<T>(command: AgentCommand): Promise<T> {
+  return unwrap(await window.actlAgent.request(command)) as T;
 }
-export function desktopStream<T>(route: string, body: object, onEvent: (event: unknown) => void, signal?: AbortSignal): Promise<T> {
+
+export function desktopStream<T>(command: AgentCommand, onEvent: (event: unknown) => void, signal?: AbortSignal): Promise<T> {
   signal?.throwIfAborted();
   const id = crypto.randomUUID();
   return new Promise((resolve, reject) => {
@@ -36,7 +39,7 @@ export function desktopStream<T>(route: string, body: object, onEvent: (event: u
     });
     signal?.addEventListener('abort', abort, { once: true });
     if (signal?.aborted) { abort(); return; }
-    window.actlAgent.stream(id, commandForRoute('POST', route, body)).then((result) => {
+    window.actlAgent.stream(id, command).then((result) => {
       if (settled) return;
       settled = true; cleanup();
       try { resolve(unwrap(result) as T); } catch (error) { reject(error); }

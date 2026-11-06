@@ -9,7 +9,6 @@ export default defineConfig({
       rollupOptions: {
         input: {
           index: resolve('src/main/index.ts'),
-          'runtime-worker': resolve('src/runtime/worker.ts'),
           'agent-worker': resolve('src/runtime/agent-worker.ts'),
         },
         output: {

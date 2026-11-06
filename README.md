@@ -23,7 +23,6 @@ pnpm test:agent-ui
 pnpm verify:agent
 pnpm pack:win
 pnpm verify:agent:packaged
-pnpm verify:packaged
 ```
 
 Windows 安装包输出到 `dist/Actl-<版本>-windows-x64-setup.exe`。可直接运行的应用位于 `dist/win-unpacked/Actl.exe`。

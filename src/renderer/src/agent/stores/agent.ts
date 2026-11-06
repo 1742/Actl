@@ -20,7 +20,6 @@ import type {
   RuntimeSession,
   RuntimeSkill,
 } from "../types";
-import { useRuntimeStore } from "../../stores/runtime";
 
 const byUpdated = (a: RuntimeSession, b: RuntimeSession) => b.updated_at.localeCompare(a.updated_at);
 function projectActivityAt(project: RuntimeProject, sessions: RuntimeSession[]) {
@@ -86,10 +85,6 @@ export const useAgentStore = defineStore("agent", {
   }),
 
   getters: {
-    baseUrl: () => {
-      const runtime = useRuntimeStore();
-      return runtime.agentUrl;
-    },
     session: (state) => state.sessions.find((item) => item.id === state.selectedSessionId),
     draftProject: (state) => state.projects.find((item) => item.id === state.draftProjectId),
     currentRuntime: (state) => (

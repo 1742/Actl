@@ -1,17 +1,15 @@
-import { app, BrowserWindow, ipcMain, type IpcMainInvokeEvent } from 'electron';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { app, BrowserWindow, type IpcMainInvokeEvent } from 'electron';
+import { writeFile } from 'node:fs/promises';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
-import { RuntimeHost } from './runtime-host';
 import { registerRendererProtocol, rendererPageUrl } from './renderer-protocol';
 import { DesktopAgent } from './desktop-agent';
 
-const headless = process.argv.includes('--verify-runtime');
 const forcedExitProbe = process.argv.includes('--verify-agent-exit-probe');
 const verifyAgentMode = process.argv.includes('--verify-agent') || forcedExitProbe;
 const argument = (name: string): string | undefined => process.argv.find((arg) => arg.startsWith(`${name}=`))?.slice(name.length + 1);
 const verificationRoot = argument('--verification-root');
-if ((headless || verifyAgentMode) && !verificationRoot) throw new Error('Verification requires --verification-root.');
+if (verifyAgentMode && !verificationRoot) throw new Error('Verification requires --verification-root.');
 app.setName('Actl');
 if (verificationRoot) {
   if (!path.isAbsolute(verificationRoot)) throw new Error('Verification root must be absolute.');
@@ -21,31 +19,13 @@ if (verificationRoot) {
 } else {
   app.setPath('userData', path.join(app.getPath('appData'), 'Actl-Electron'));
 }
-const ownsInstance = headless || verifyAgentMode || app.requestSingleInstanceLock();
+const ownsInstance = verifyAgentMode || app.requestSingleInstanceLock();
 if (!ownsInstance) app.quit();
 
-const runtime = new RuntimeHost();
 const desktop = new DesktopAgent(() => window, validateSender);
 let window: BrowserWindow | undefined;
 let exiting = false;
 const rendererUrl = !app.isPackaged ? process.env.ELECTRON_RENDERER_URL : undefined;
-
-async function verify() {
-  const root = verificationRoot ?? path.join(app.getPath('userData'), 'compatibility');
-  const dataDirectory = path.join(root, `run-${new Date().toISOString().replace(/[:.]/g, '-')}-中文 空格`);
-  await mkdir(dataDirectory, { recursive: true });
-  const report = await runtime.run({
-    dataDirectory,
-    fixturePath: app.isPackaged
-      ? path.join(process.resourcesPath, 'compatibility-fixtures/mcp-server.cjs')
-      : path.resolve(__dirname, '../fixtures/mcp-server.cjs'),
-    packaged: app.isPackaged,
-    mainPid: process.pid,
-  });
-  await mkdir(root, { recursive: true });
-  await writeFile(path.join(root, 'latest.json'), `${JSON.stringify(report, null, 2)}\n`, 'utf8');
-  return report;
-}
 
 function validateSender(event: IpcMainInvokeEvent): void {
   if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame) {
@@ -91,7 +71,7 @@ app.whenReady().then(async () => {
   app.setAppUserModelId('local.dev.actl.electron');
   if (verifyAgentMode) {
     try {
-      const { verifyAgent } = await import('./agent-smoke');
+      const { verifyAgent } = await import('../verification/agent-checks');
       const report = await verifyAgent(verificationRoot!, app.isPackaged, forcedExitProbe);
       app.exit(report.passed ? 0 : 1);
     } catch (error) {
@@ -100,24 +80,8 @@ app.whenReady().then(async () => {
     }
     return;
   }
-  if (headless) {
-    try {
-      const report = await verify();
-      app.exit(report.passed ? 0 : 1);
-    } catch (error) {
-      const message = error instanceof Error ? error.stack ?? error.message : String(error);
-      await writeFile(path.join(verificationRoot!, 'error.txt'), message, 'utf8');
-      app.exit(1);
-    }
-    return;
-  }
   registerRendererProtocol(path.join(__dirname, '../renderer'));
   desktop.register();
-  ipcMain.handle('compatibility:run', (event, ...args: unknown[]) => {
-    validateSender(event);
-    if (args.length > 0) throw new Error('This operation accepts no arguments.');
-    return verify();
-  });
   await createWindow();
 }).catch((error: unknown) => {
   console.error(error);
@@ -127,8 +91,8 @@ app.whenReady().then(async () => {
 app.on('window-all-closed', () => app.quit());
 app.on('second-instance', () => { window?.restore(); window?.show(); window?.focus(); });
 app.on('before-quit', (event) => {
-  if (exiting || headless || verifyAgentMode) return;
+  if (exiting || verifyAgentMode) return;
   event.preventDefault();
   exiting = true;
-  void Promise.allSettled([desktop.close(), runtime.pending]).finally(() => app.quit());
+  void desktop.close().catch((error) => console.error('Agent shutdown failed:', error)).finally(() => app.quit());
 });

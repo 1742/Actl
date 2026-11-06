@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
 import { createI18n } from 'vue-i18n';
 import { readdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -21,11 +22,11 @@ describe('language catalog', () => {
   const english = flatten(enUS);
 
   it('keeps keys and named parameters aligned', () => {
-    expect(Object.keys(english).sort()).toEqual(Object.keys(chinese).sort());
+    assert.deepEqual(Object.keys(english).sort(), Object.keys(chinese).sort());
     for (const key of Object.keys(chinese)) {
       const parameters = (message: string) =>
         [...message.matchAll(/\{([a-zA-Z]\w*)\}/g)].map((match) => match[1]).sort();
-      expect(parameters(english[key]), key).toEqual(parameters(chinese[key]));
+      assert.deepEqual(parameters(english[key]!), parameters(chinese[key]!), key);
     }
   });
 
@@ -41,7 +42,7 @@ describe('language catalog', () => {
         const named = Object.fromEntries(
           [...message.matchAll(/\{([a-zA-Z]\w*)\}/g)].map((match) => [match[1], 'example']),
         );
-        expect(() => i18n.global.t(key, named), key).not.toThrow();
+        assert.doesNotThrow(() => i18n.global.t(key, named), key);
       }
     }
   });
@@ -56,11 +57,11 @@ describe('language catalog', () => {
         } else if (/\.(ts|vue)$/.test(entry.name)) files.push(file);
       }
     };
-    collect(resolve(__dirname, '..'));
+    collect(resolve(import.meta.dirname, '..'));
     for (const file of files) {
       const source = readFileSync(file, 'utf8');
       for (const match of source.matchAll(/(?:\$t|\btr)\(\s*['"]([\w.]+)['"]/g)) {
-        expect(Object.hasOwn(chinese, match[1]), `${file}: ${match[1]}`).toBe(true);
+        assert.ok(Object.hasOwn(chinese, match[1]!), `${file}: ${match[1]}`);
       }
     }
   });

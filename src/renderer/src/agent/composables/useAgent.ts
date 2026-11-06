@@ -68,9 +68,7 @@ function readPersistedAgentView(): PersistedAgentView | undefined {
       if (view.type === 'standalone') return view;
     }
 
-    // Migrate the session-only preference saved by the previous implementation.
-    const legacySessionId = localStorage.getItem('ai-agent:last-selected-session:anonymous');
-    return legacySessionId ? { type: 'session', id: legacySessionId } : undefined;
+    return undefined;
   } catch {
     return undefined;
   }
@@ -1149,7 +1147,7 @@ function applyRuntimeEvent(sessionId: string, event: RuntimeStreamEvent) {
     applyPermissionResolutions(context, (event as AgentPermissionEvent).decisions);
     store.upsertResponse(sessionId, context);
     store.setPendingPermissionBatch(sessionId);
-    // The permission endpoint starts a new SSE request.  Its first event is the
+    // The permission endpoint starts a new IPC request.  Its first event is the
     // resolution, so waiting for a later output item would leave the UI stuck on
     // the old pending permission state while the tool is already executing.
     syncStateFromResponse(sessionId, {
@@ -1196,7 +1194,7 @@ function applyPermissionResolutions(
   }
 
   // These fields describe the live response, rather than the final persisted
-  // item snapshot.  The following tool/result and terminal SSE events remain
+  // item snapshot.  The following tool/result and terminal IPC events remain
   // authoritative and will replace this state when they arrive.
   context.response.status = 'in_progress';
   context.updatedAt = new Date().toISOString();

@@ -10,7 +10,7 @@
 | [router.ts](../../src/renderer/src/router.ts) | hash 路由，`/` 与 `/index.html` 重定向到 `/ai` |
 | [agent/router.ts](../../src/renderer/src/agent/router.ts)                    | Agent 功能路由，组件懒加载               |
 | [AIView.vue](../../src/renderer/src/agent/components/layout/AIView.vue)      | 服务初始化、导航布局、重启恢复和侧栏宽度 |
-| [runtimeUsecase.ts](../../src/renderer/src/agent/services/runtimeUsecase.ts) | 等待 Agent 初始化并更新前端就绪配置     |
+| [bridge.ts](../../src/renderer/src/services/bridge.ts) | 通过 ready 确认 Agent 初始化 |
 
 路由如下：
 
@@ -28,7 +28,7 @@
 
 ## 2. 状态层
 
-[runtime.ts](../../src/renderer/src/stores/runtime.ts) 保存前端 ready 和配色等状态。agentUrl=electron:ipc、agentToken 为空字符串，保留字段用于客户端适配，不是实际网络地址或认证凭据。
+Agent 就绪通过 preload.ready() 确认；业务状态位于 Agent store。前端不保存业务 URL 或连接 token，也不设置虚拟网络配置。
 
 [agent.ts](../../src/renderer/src/agent/stores/agent.ts) 保存业务视图状态：
 
@@ -48,7 +48,7 @@
 | ------------------------------------------------------------- | ------------------------------------------------------------------------- |
 | [services/bridge.ts](../../src/renderer/src/services/bridge.ts)            | 类型化桌面能力调用                                       |
 | [runtimeClient.ts](../../src/renderer/src/agent/services/runtimeClient.ts) | `AgentRuntimeClient` 接口、能力声明、客户端选择；当前始终返回 localClient |
-| [local/service.ts](../../src/renderer/src/agent/services/local/service.ts) | 业务参数与 DTO 适配、文件字节上传和 Blob 构造    |
+| [localClient.ts](../../src/renderer/src/agent/services/localClient.ts) | 业务参数与 DTO 适配、文件字节上传和 Blob 构造    |
 | [useAgent.ts](../../src/renderer/src/agent/composables/useAgent.ts)        | 项目/会话用例、加载版本管理、乐观响应、上传、取消、审批、冲突恢复和通知   |
 
 普通错误转换为 `RuntimeRequestError`，包含 code/message/details。发送内容中的附件元数据用于本地展示，服务层真正提交时只保留 `type/input_file + file_id`，以符合后端 strict schema。
@@ -71,7 +71,7 @@
 
 ## 5. IPC 事件与响应归并
 
-1. [desktopTransport.ts](../../src/renderer/src/agent/services/desktopTransport.ts) 将兼容路径映射为具名业务操作，先注册事件监听，再发起 stream 请求。
+1. [desktopTransport.ts](../../src/renderer/src/agent/services/desktopTransport.ts) 直接传递具名 AgentCommand，先注册事件监听，再发起 stream 请求。
 2. 每次 stream 使用独立 UUID，onEvents 只消费匹配 subscriptionId 的批次；解除监听或 AbortSignal 只 detach，不代替显式取消。
 3. [useAgent.ts](../../src/renderer/src/agent/composables/useAgent.ts) 负责响应创建、权限请求/解决、通知和会话视图状态。
 4. [reduceResponseEvent](../../src/renderer/src/agent/composables/useResponseReducer.ts) 按 output/content index 更新文本、推理和 function arguments，以 sequence_number 去重。
@@ -79,7 +79,7 @@
 
 历史查询开始时记录会话状态版本；实时事件、新执行或取消会推进版本，迟到的旧查询结果和错误不得再覆盖界面。仅仍持有当前会话执行权的请求可应用其最终快照，避免前一轮回复覆盖后一轮审批。通知与面板来自同一 pending batch 状态。
 
-首次发送完成或失败后可重读上下文。当前没有事件断点重放或持续重连轮询；重新读取 context 恢复快照，不恢复丢失的流。ResponseStreamParser 保留为旧帧格式解析代码，不处于当前桌面 IPC 正常传输链路。
+首次发送完成或失败后可重读上下文。当前没有事件断点重放或持续重连轮询；重新读取 context 恢复快照，不恢复丢失的流。桌面链路不解析 SSE 文本帧。
 
 ## 6. 展示组件职责
 

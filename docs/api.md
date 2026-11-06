@@ -23,7 +23,7 @@ type AgentResult<T> =
 
 前端 [desktopTransport.ts](../src/renderer/src/agent/services/desktopTransport.ts) 解包 AgentResult，将失败转换为 RuntimeRequestError。主进程来源、白名单或订阅校验失败也可能直接拒绝 IPC Promise，调用者必须处理 Promise 异常。
 
-`commandForRoute()` 保留方法/路径到操作名的适配，供现有客户端使用；这些路径不会发出 HTTP 请求。新增调用以操作白名单及实际用例为准，不能根据旧路径推断当前支持范围。
+前端客户端直接构造 AgentCommand，不经过 URL、HTTP 方法或路径映射。共享的 agentOperations 是主进程允许的操作列表，新增调用需同时接入该列表和 AgentApplication 用例。
 
 ## 2. 就绪与桌面 API
 
@@ -112,7 +112,7 @@ model 是本地目标 ID，不是 providerModel。reasoningEffort 只能在目�
 
 Response 字段见 [types.ts](../src/agent-core/contracts/agent-responses/types.ts)：id/object/session_id/status/model/reasoning_effort?/permission_mode/input/output/pending_permission_batch?/error?/created_at/updated_at/completed_at?。output 包含 message、reasoning、function_call、function_call_output、web_search_call 和 permission_request。工具结果 output 为序列化 JSON 字符串，可另带媒体 content。
 
-创建与审批操作可走 request 或 stream。订阅由 stream 调用决定，body 中保留的 stream 字段不决定 IPC 是否推送事件。到达终态或 waiting_permission 都会完成当前请求，不会保持一个请求一直等待用户决策。
+创建与审批操作可走 request 或 stream。订阅由 stream 调用决定，body 不接受 stream 标志。到达终态或 waiting_permission 都会完成当前请求，不会保持一个请求一直等待用户决策。
 
 审批 body：
 

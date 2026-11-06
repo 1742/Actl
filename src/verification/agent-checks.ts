@@ -4,8 +4,10 @@ import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { AgentProcessHost } from './agent-process-host';
+import { AgentProcessHost } from '../main/agent-process-host';
 import type { AgentCommand, AgentResult } from '../shared/agent-ipc';
+import { runCoreChecks } from './core-checks';
+import type { VerificationCheck } from './types';
 import type { AgentResponseDto } from '../agent-core/contracts/agent-responses/types';
 
 // This loopback provider exists only behind --verify-agent. It never forwards requests.
@@ -30,6 +32,11 @@ async function startFixture(processCommands: Map<string, string>) {
         emit({ content: 'Waiting' });
         const timer = setTimeout(() => { emit({ content: ' complete' }, 'stop'); done(); }, 8_000);
         response.once('close', () => clearTimeout(timer));
+      } else if (text.includes('mcp-fixture') && payload.messages.at(-1)?.role !== 'tool') {
+        emit({ tool_calls: [{ index: 0, id: `call-${randomUUID()}`, type: 'function', function: {
+          name: 'call_mcp_tool', arguments: JSON.stringify({ toolName: 'mcp__fixture__add', arguments: { a: 19, b: 23 } }),
+        } }] }, 'tool_calls');
+        done();
       } else if (text.includes('process-fixture:') && payload.messages.at(-1)?.role !== 'tool') {
         const label = /process-fixture:([a-z-]+)/.exec(text)?.[1];
         const command = label && processCommands.get(label); assert.ok(command);
@@ -75,7 +82,9 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
   };
   const options = { homeDirectory, mode: packaged ? 'release' as const : 'development' as const };
   let host = new AgentProcessHost(options);
-  const checks: Array<{ name: string; passed: boolean; durationMs: number; error?: string }> = [];
+  const checks: VerificationCheck[] = [];
+  const fixturePath = packaged ? path.join(process.resourcesPath, 'verification-fixtures/mcp-server.cjs')
+    : path.join(app.getAppPath(), 'out/fixtures/mcp-server.cjs');
   const step = async (name: string, operation: () => Promise<void>) => {
     const start = performance.now();
     try { await operation(); checks.push({ name, passed: true, durationMs: Math.round(performance.now() - start) }); }
@@ -101,8 +110,7 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
   };
   const launchOrphan = async (label: string) => {
     const marker = path.join(root, `${label}.json`);
-    const script = packaged ? path.join(process.resourcesPath, 'compatibility-fixtures/mcp-server.cjs')
-      : path.join(app.getAppPath(), 'out/fixtures/mcp-server.cjs');
+    const script = fixturePath;
     processCommands.set(label, `set "ELECTRON_RUN_AS_NODE=1" && "${process.execPath}" "${script}" --orphan-probe "${marker}"`);
     const pending = success(await run(`process-fixture:${label}`));
     assert.equal(pending.status, 'waiting_permission');
@@ -119,8 +127,13 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
   };
   let passed = false;
   try {
+    if (!forcedExitProbe) {
+      checks.push(...await runCoreChecks(path.join(root, 'core-中文 空格'), fixturePath));
+      assert.ok(checks.every((check) => check.passed), 'Core checks failed.');
+    }
     await step('Agent startup, project/session creation and local credentials', async () => {
       const info = await host.ready(); assert.equal(info.ownerId, 'developer:local');
+      assert.ok(host.pid && host.pid !== process.pid, 'Agent must run in a separate utility process.');
       projectId = (await request<{ id: string }>({ operation: 'projects.create', body: { cwd: workspace } })).id;
       sessionId = (await request<{ id: string }>({ operation: 'sessions.create', body: { projectId } })).id;
       const account = await request<{ id: string; hasCredential: boolean }>({ operation: 'accounts.create', body: {
@@ -172,6 +185,26 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
       assert.equal((await resume(denied, 'deny')).status, 'completed');
       assert.equal(await access(path.join(workspace, 'denied.txt')).then(() => true, () => false), false);
     });
+    await step('MCP configuration, tool approval, invocation and process cleanup', async () => {
+      const config = { command: process.execPath, args: [fixturePath], env: { ELECTRON_RUN_AS_NODE: '1' }, enabled: true };
+      const tested = await request<{ tools: Array<{ name: string }> }>({ operation: 'mcp.test', body: { name: 'fixture', config } });
+      assert.ok(tested.tools.some((tool) => tool.name.endsWith('__add')));
+      await request({ operation: 'mcp.save', params: { name: 'fixture' }, body: config });
+      const catalog = await request<{ servers: Array<{ name: string; connected: boolean }> }>({ operation: 'mcp.catalog' });
+      assert.ok(catalog.servers.some((server) => server.name === 'fixture' && server.connected));
+      const pending = success(await run('mcp-fixture')); assert.equal(pending.status, 'waiting_permission');
+      const completed = await resume(pending, 'approve'); assert.equal(completed.status, 'completed');
+      const result = completed.output.find((item) => item.type === 'function_call_output');
+      assert.ok(result && result.type === 'function_call_output');
+      const envelope = JSON.parse(result.output) as { ok: boolean; output: { content: Array<{ type: string; text: string }> } };
+      assert.equal(envelope.ok, true);
+      const value = JSON.parse(envelope.output.content.find((part) => part.type === 'text')!.text) as { sum: number; pid: number; node: string };
+      fixturePids.add(value.pid);
+      assert.equal(value.sum, 42); assert.equal(value.node, process.versions.node); assert.ok(alive(value.pid));
+      await request({ operation: 'mcp.delete', params: { name: 'fixture' } });
+      await waitFor(() => !alive(value.pid), 'MCP server survived removal.');
+      fixturePids.delete(value.pid);
+    });
     await step('Pending approvals and encrypted model configuration survive restart', async () => {
       const pending = success(await run('write-fixture:restart.txt')); assert.equal(pending.status, 'waiting_permission');
       await host.close(); host = new AgentProcessHost(options); await host.ready();
@@ -206,6 +239,7 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
       const interrupted = await slow.running; assert.equal(interrupted.ok, false);
       if (!interrupted.ok) assert.equal(interrupted.error.code, 'runtime_interrupted');
       await waitFor(() => !alive(orphanPid), 'Detached descendant survived Agent crash.');
+      fixturePids.delete(orphanPid);
       host = new AgentProcessHost(options); await host.ready();
       const context = await request<{ responses: AgentResponseDto[] }>({ operation: 'sessions.context', params: { sessionId } });
       const recovered = context.responses.find((response) => response.id === slow.id); assert.ok(recovered);
@@ -215,6 +249,7 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
       const orphanPid = await launchOrphan('restart-orphan');
       await host.close();
       await waitFor(() => !alive(orphanPid), 'Detached descendant survived Agent shutdown.');
+      fixturePids.delete(orphanPid);
       host = new AgentProcessHost(options); await host.ready();
       assert.equal(success(await run('text-fixture-after-process-cleanup')).status, 'completed');
     });

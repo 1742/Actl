@@ -9,7 +9,7 @@ files:
   - package.json
 extraResources:
   - from: out/fixtures
-    to: compatibility-fixtures
+    to: verification-fixtures
 asar: true
 npmRebuild: false
 win:

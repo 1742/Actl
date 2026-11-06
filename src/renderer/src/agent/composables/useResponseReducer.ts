@@ -1,4 +1,3 @@
-import type { SSEFrame } from "./useResponseStream";
 import type {
   AIFunctionCallItem,
   AIMessageItem,
@@ -26,15 +25,6 @@ const numberAt = (event: AIResponseStreamEvent, key: string) => {
   const value = event[key];
   return typeof value === "number" ? value : Number(value);
 };
-
-export function parseResponseStreamEvent(frame: SSEFrame): AIResponseStreamEvent | null {
-  if (frame.done || frame.data === "[DONE]") return null;
-  try {
-    return JSON.parse(frame.data) as AIResponseStreamEvent;
-  } catch {
-    return null;
-  }
-}
 
 export function reduceResponseEvent(
   current: AIResponseContext | undefined,

@@ -62,4 +62,4 @@ Agent 意外退出使在途请求失败，错误码为 `runtime_interrupted`，�
 
 [electron.vite.config.ts](../../electron.vite.config.ts) 构建 main、runtime-worker、agent-worker、preload 和 renderer；[electron-builder.yml](../../electron-builder.yml) 配置 ASAR、额外 fixture、NSIS 和数据保留行为。开发和发布都使用同一工程，命令见[开发文档](../development.md)。
 
-`window.actl.runChecks()` 是基础兼容性检查接口，不是任意业务调用入口。命令行验证使用独立 profile，绕过正常应用的单实例竞争并隔离数据；正常用户启动仍使用单实例约束。
+验证仅由命令行 --verify-agent 启用，preload 只暴露 window.actlAgent。命令行验证使用独立 profile，绕过正常应用的单实例竞争并隔离数据；正常用户启动仍使用单实例约束。

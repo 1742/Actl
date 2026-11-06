@@ -3,13 +3,11 @@ import { tr } from '../../../i18n';
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { ArrowLeft, FileCode2, FolderOpen, LoaderCircle } from '@lucide/vue';
-import { useRuntimeStore } from '../../../stores/runtime';
 import { fetchSkillDetail, type SkillDetail } from '../../services/skills/service';
 import { skillsRefreshVersion } from '../layout/libraryNavigation';
 
 const props = defineProps<{ skillId: string }>();
 const router = useRouter();
-const runtime = useRuntimeStore();
 const skill = ref<SkillDetail>();
 const loading = ref(false);
 const error = ref('');
@@ -28,7 +26,7 @@ async function load() {
   loading.value = true;
   error.value = '';
   try {
-    skill.value = await fetchSkillDetail(runtime.agentUrl, props.skillId);
+    skill.value = await fetchSkillDetail(props.skillId);
   } catch (err) {
     error.value = err instanceof Error ? err.message : tr('ui.couldNotLoadSkillDetails');
   } finally {

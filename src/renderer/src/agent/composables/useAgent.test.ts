@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { createPinia, setActivePinia } from 'pinia';
 import { resolveAgentPermissionBatch, selectAgentSession } from './useAgent';
 import { useAgentStore } from '../stores/agent';
-import { localClient } from '../services/local/service';
+import { localClient } from '../services/localClient';
 import { normalizeResponseContext } from '../utils/aiResponse';
 import type { AgentResponse, PendingPermissionBatch, RuntimeStreamEvent, SessionContext } from '../types';
 

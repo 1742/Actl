@@ -3,12 +3,11 @@ import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { AgentProcessHost } from './agent-process-host';
-import { agentRoutes, type AgentCommand, type DesktopSettings } from '../shared/agent-ipc';
+import { agentOperations, type AgentCommand, type DesktopSettings } from '../shared/agent-ipc';
 import { writeJson } from '../agent-core/utils';
 
-const operations = [...new Set(agentRoutes.map((route) => route[2]))] as [string, ...string[]];
 const commandSchema = z.object({
-  operation: z.enum(operations), params: z.record(z.string(), z.string().max(4_096)).optional(),
+  operation: z.enum(agentOperations), params: z.record(z.string(), z.string().max(4_096)).optional(),
   query: z.record(z.string(), z.string().max(4_096)).optional(), body: z.unknown().optional(),
 }).strict();
 const subscriptionSchema = z.string().uuid();

@@ -32,8 +32,7 @@ src/preload/                渲染进程受限桥接
 src/renderer/src/           Vue 界面、Pinia、路由、业务客户端
 src/shared/                 进程间消息契约与业务操作白名单
 src/runtime/                utility process 入口与 AgentApplication
-src/runtime/fixtures/       随包验证的 MCP/命令进程 fixture
-src/runtime/legacy/         基础兼容性检查使用的冻结源码基线
+src/verification/           统一验证用例、报告类型与 MCP/命令 fixture
 src/agent-core/app/         核心配置与依赖装配
 src/agent-core/contracts/   schema、DTO、领域事件投影与错误映射
 src/agent-core/runtime/     执行状态、循环、上下文、命令进程
@@ -50,7 +49,7 @@ scripts/                    启动、构建辅助和验证入口
 docs/                       项目文档
 ```
 
-`legacy` 仅供兼容性验证，产品业务使用 `src/agent-core/`，不应在两个目录重复实现业务变更。
+验证直接使用 src/agent-core/ 中的产品实现，经单一 Agent 验证入口运行；不维护第二份业务实现或验证专用 utility process。
 
 ## 3. 启动与就绪
 
