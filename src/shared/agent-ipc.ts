@@ -64,6 +64,7 @@ export interface DesktopApi {
   onEvents(listener: (batch: AgentEventBatch) => void): () => void;
   detach(subscriptionId: string): void;
   restart(): Promise<void>;
+  writeClipboardText(text: string): Promise<void>;
   getSettings(): Promise<DesktopSettings>;
   saveSettings(settings: DesktopSettings): Promise<void>;
   pickDirectory(): Promise<string | null>;

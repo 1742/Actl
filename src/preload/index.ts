@@ -12,6 +12,7 @@ const desktop: DesktopApi = {
   },
   detach: (id) => ipcRenderer.send('agent:detach', id),
   restart: () => ipcRenderer.invoke('desktop:restart'),
+  writeClipboardText: (text) => ipcRenderer.invoke('desktop:clipboard:write-text', text),
   getSettings: () => ipcRenderer.invoke('desktop:settings:get'),
   saveSettings: (settings) => ipcRenderer.invoke('desktop:settings:save', settings),
   pickDirectory: () => ipcRenderer.invoke('desktop:pick-directory'),

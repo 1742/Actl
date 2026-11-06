@@ -1,4 +1,9 @@
 export async function copyToClipboard(text: string): Promise<void> {
+  // Electron 通过主进程写入剪贴板，不依赖浏览器剪贴板权限。
+  if (window.actlAgent?.writeClipboardText) {
+    return window.actlAgent.writeClipboardText(text);
+  }
+
   // 如果环境支持 navigator.clipboard 且是安全上下文 (https 或 localhost)
   if (navigator.clipboard && window.isSecureContext) {
     return navigator.clipboard.writeText(text);

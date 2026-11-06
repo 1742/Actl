@@ -1,4 +1,4 @@
-import { app, dialog, ipcMain, Notification, shell, type BrowserWindow, type IpcMainInvokeEvent } from 'electron';
+import { app, clipboard, dialog, ipcMain, Notification, shell, type BrowserWindow, type IpcMainInvokeEvent } from 'electron';
 import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
@@ -62,6 +62,7 @@ export class DesktopAgent {
     handle('desktop:settings:get', () => this.getSettings());
     handle('desktop:settings:save', async (value) => { await writeJson(this.settingsFile, settingsSchema.parse(value)); });
     handle('desktop:restart', () => this.restart());
+    handle('desktop:clipboard:write-text', (value) => { clipboard.writeText(z.string().parse(value)); });
     handle('desktop:pick-directory', async () => {
       const window = this.getWindow();
       if (!window) return null;

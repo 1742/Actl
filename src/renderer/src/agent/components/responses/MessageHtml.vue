@@ -2,6 +2,7 @@
 import { computed } from 'vue';
 
 import { md } from '../../../utils/markdown';
+import { copyToClipboard } from '../../../utils/clipboard';
 import { theme } from '../../../composables/theme';
 
 const props = defineProps<{
@@ -21,7 +22,7 @@ const handleContentClick = (event: MouseEvent) => {
   const code = button.getAttribute('data-clipboard-text');
   if (!code) return;
 
-  navigator.clipboard.writeText(code).then(() => {
+  copyToClipboard(code).then(() => {
     const originalHtml = button.innerHTML;
     button.innerHTML = `<svg class="w-3.5 h-3.5 text-primary" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6 9 17l-5-5"/></svg> <span class="text-primary">Copied!</span>`;
     button.classList.add('copied');
