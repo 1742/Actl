@@ -184,8 +184,6 @@ export interface RuntimeSkill {
   description: string;
   description_zh?: string;
   category?: string;
-  l1_category?: string;
-  l2_category?: string;
   tags: string[];
   version?: string;
   icon?: string;
