@@ -332,18 +332,17 @@ onUnmounted(() => {
           ></textarea>
         </slot>
 
-        <div class="flex min-h-10 shrink-0 items-center justify-between gap-3">
-          <div class="flex items-center gap-1">
+        <div class="flex min-h-10 min-w-0 shrink-0 items-center gap-2">
+          <div class="mr-auto flex shrink-0 items-center gap-1">
             <slot name="left-tools" />
           </div>
 
-          <div class="min-w-0 flex-1" />
-
-          <div v-if="hasModelOptions" class="hidden sm:block">
+          <div v-if="hasModelOptions" class="hidden min-w-0 max-w-50 flex-1 sm:block">
             <FloatingMenu
               v-if="showReasoningControl"
               ref="configurationMenuRef"
               placement="top-end"
+              trigger-class="min-w-0 max-w-full"
               :close-on-menu-click="false"
               @update:open="configurationMenuOpen = $event"
             >
@@ -456,7 +455,7 @@ onUnmounted(() => {
               </template>
             </FloatingMenu>
 
-            <FloatingMenu v-else placement="top-end" @update:open="modelMenuOpen = $event">
+            <FloatingMenu v-else placement="top-end" trigger-class="min-w-0 max-w-full" @update:open="modelMenuOpen = $event">
               <template #trigger>
                 <button
                   class="model-trigger"
@@ -517,7 +516,7 @@ onUnmounted(() => {
 }
 
 .model-trigger {
-  @apply flex h-9 max-w-50 items-center gap-1.5 rounded-full border-0 py-0 pl-4 pr-3 text-sm text-gray-500 outline-none transition-colors hover:bg-gray-100 hover:text-gray-600 disabled:cursor-not-allowed disabled:opacity-60;
+  @apply flex h-9 min-w-0 max-w-full items-center gap-1.5 rounded-full border-0 py-0 pl-4 pr-3 text-sm text-gray-500 outline-none transition-colors hover:bg-gray-100 hover:text-gray-600 disabled:cursor-not-allowed disabled:opacity-60;
 }
 
 .model-menu {
