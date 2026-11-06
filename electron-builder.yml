@@ -1,0 +1,26 @@
+appId: local.dev.actl.electron
+productName: Actl
+directories:
+  output: dist
+files:
+  - out/main/**
+  - out/preload/**
+  - out/renderer/**
+  - package.json
+extraResources:
+  - from: out/fixtures
+    to: compatibility-fixtures
+asar: true
+npmRebuild: false
+win:
+  executableName: Actl
+  target:
+    - target: nsis
+      arch: [x64]
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false
+artifactName: '${productName}-${version}-windows-${arch}-setup.${ext}'
+publish: null

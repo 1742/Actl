@@ -1,0 +1,46 @@
+[
+  {
+    "path": "utils.ts",
+    "sha256": "b7728ca3161f391cac2d9a401c735ae57a79683a2c04fcf319cfc1b13800f2a5"
+  },
+  {
+    "path": "observability/logger.ts",
+    "sha256": "a41bac8273dfd890fcbf97014755a5bdfbb8dc477b4f1a8004e4eb64c58ee1e0"
+  },
+  {
+    "path": "observability/request-context.ts",
+    "sha256": "9ad95ff659f645188e473809ee6cb0e4246280c86de53b71dfd2518c7c4bd15e"
+  },
+  {
+    "path": "runtime/process/process-supervisor.ts",
+    "sha256": "4a899a60914e23e2d3d77276dcc1cc4971fa3446b46e6171dd7e6372efac58d1"
+  },
+  {
+    "path": "runtime/process/process-output-buffer.ts",
+    "sha256": "e1a77cc231907c1401eaaaf06a1418ecae6986c7307ac12475f326a31287f7d0"
+  },
+  {
+    "path": "runtime/process/process-types.ts",
+    "sha256": "5dc3d69f38cb1f8cb66c6bf08f60847d2fbb0cb23097868f322fa6555f401f5e"
+  },
+  {
+    "path": "repositories/sqlite/schema.ts",
+    "sha256": "a57f7c09f4e7569c7c9fbd7315d8703dec554fbd4b68510439eea38ccc3f77bd"
+  },
+  {
+    "path": "repositories/sqlite/migrations/index.ts",
+    "sha256": "7ab0b8041ca9687732838ead1eb36620ae297442927eec05329b4e451a1c81b3"
+  },
+  {
+    "path": "security/secret-protector.ts",
+    "sha256": "272ffba0adf4bac6195d40768b07b2c3201ad0f72653bb2d9b2885a6a3614ed6"
+  },
+  {
+    "path": "security/encrypted-secret.ts",
+    "sha256": "91d57b4313a441e6aea6d738e4e8080df0f7160d170d8398cb8c572277088a93"
+  },
+  {
+    "path": "types/pino-roll.d.ts",
+    "sha256": "9d6d0b4e3b6080c093954ffe34f4d13b1c7590c397faeffe8a532eca3928d4e3"
+  }
+]

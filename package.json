@@ -1,0 +1,45 @@
+{
+  "name": "actl",
+  "version": "0.1.0",
+  "description": "Actl Windows desktop harness",
+  "author": "Actl",
+  "private": true,
+  "type": "module",
+  "main": "./out/main/index.cjs",
+  "packageManager": "pnpm@12.16.1",
+  "engines": { "node": ">=24.19.0" },
+  "scripts": {
+    "postinstall": "install-electron",
+    "dev": "pnpm build:fixtures && electron-vite dev",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && vue-tsc --noEmit -p tsconfig.web.json",
+    "build:fixtures": "esbuild src/runtime/fixtures/mcp-server.ts --bundle --platform=node --target=node24 --format=cjs --outfile=out/fixtures/mcp-server.cjs",
+    "build": "pnpm typecheck && pnpm build:fixtures && electron-vite build",
+    "start": "electron-vite preview",
+    "start:packaged": "node scripts/start-packaged.mjs",
+    "verify:runtime": "pnpm build && node scripts/verify-runtime.mjs",
+    "verify:packaged": "node scripts/verify-runtime.mjs --packaged",
+    "diagnose:renderer": "electron scripts/diagnose-renderer.cjs",
+    "pack:dir": "pnpm build && electron-builder --win --x64 --dir",
+    "pack:win": "pnpm build && electron-builder --win nsis --x64"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/client": "2.0.0",
+    "@modelcontextprotocol/server": "2.0.0",
+    "iconv-lite": "0.7.3",
+    "pino": "10.3.1",
+    "pino-roll": "4.0.0",
+    "vue": "3.5.45",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "@vitejs/plugin-vue": "6.0.10",
+    "electron": "43.8.7",
+    "electron-builder": "26.18.0",
+    "electron-vite": "6.0.0",
+    "esbuild": "0.28.2",
+    "typescript": "5.9.3",
+    "vite": "8.3.6",
+    "vue-tsc": "3.3.14"
+  }
+}
