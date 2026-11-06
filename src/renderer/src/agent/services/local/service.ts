@@ -39,7 +39,6 @@ import type { AgentRuntimeClient } from '../runtimeClient';
 async function requestRuntime<T>(_baseUrl: string, route: string, method: string, body?: object): Promise<T> {
   return desktopRequest<T>(route, method, body);
 }
-//#endregion
 
 //#region project
 
