@@ -1,12 +1,11 @@
 import { desktopRequest as request, desktopStream } from './desktopTransport';
-import { fetchLocalSkills } from './skills/service';
 import type { AgentRuntimeClient } from './runtimeClient';
 import type {
   AgentInputContent, AgentPermissionMode, AgentProject, AgentResponse, AgentSession,
   CreateRuntimeProviderAccount, PermissionDecision, RuntimeMcpCatalogServer,
   RuntimeMcpServer, RuntimeMcpServerConfig, RuntimeModel, RuntimeModelCatalog,
   RuntimeModelConfig, RuntimePromptSettings, RuntimeProviderAccount, RuntimeReasoningEffort,
-  RuntimeSkillContext, RuntimeStoredFile, RuntimeStreamEvent, RuntimeWebSearchResult,
+  RuntimeSkillCatalog, RuntimeSkillContext, SkillDetail, RuntimeStoredFile, RuntimeStreamEvent, RuntimeWebSearchResult,
   RuntimeWebSearchSettings, RuntimeWorkspaceFileSearchResult, RuntimeWorkspaceTree, SessionContext,
 } from '../types';
 import type { AgentCommand } from '../../../../shared/agent-ipc';
@@ -64,7 +63,12 @@ export class LocalRuntimeClient implements AgentRuntimeClient {
   saveMcpServer(name: string, config: RuntimeMcpServerConfig) { return request<RuntimeMcpServer>({ operation: 'mcp.save', params: { name }, body: config }); }
   deleteMcpServer(name: string) { return request<void>({ operation: 'mcp.delete', params: { name } }); }
   testMcpServer(name: string, config: RuntimeMcpServerConfig) { return request<{ tools: RuntimeMcpServer['tools'] }>({ operation: 'mcp.test', body: { name, config } }); }
-  async listSkills(context: RuntimeSkillContext = {}) { return (await fetchLocalSkills(context)).data; }
+  async listSkills(context: RuntimeSkillContext = {}) { 
+    const values: Record<string, string> = {};
+    for (const [key, value] of Object.entries(context)) if (value !== undefined) values[key] = String(value);
+    return (await request<RuntimeSkillCatalog>({ operation: 'skills.list', query: values })).data;
+ }
+ async getSkillDetail(skillId: string): Promise<SkillDetail> { return await request({ operation: 'skills.detail', params: { skillId } }); }
 
   searchWorkspaceFiles(projectId: string, q = '', limit = 20) { return request<RuntimeWorkspaceFileSearchResult>({ operation: 'workspace.search', params: { projectId }, query: { q, limit: String(limit) } }); }
   listWorkspaceDirectory(projectId: string, path = '.', maxEntries = 200) { return request<RuntimeWorkspaceTree>({ operation: 'workspace.tree', params: { projectId }, query: { path, maxEntries: String(maxEntries) } }); }

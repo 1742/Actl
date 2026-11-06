@@ -2,7 +2,7 @@ import type {
   AgentInputContent, AgentPermissionMode, AgentResponse, AgentRuntimeCapabilities, AgentRuntimeKind,
   CreateRuntimeProviderAccount, PermissionDecision, RuntimeModel, RuntimeModelCatalog, RuntimeModelConfig,
   RuntimeProviderAccount, RuntimeReasoningEffort, AgentProject, AgentSession,
-  RuntimeSkill, RuntimeSkillContext, RuntimeStoredFile, RuntimeStreamEvent, RuntimeWorkspaceFileSearchResult,
+  RuntimeSkill, RuntimeSkillContext, SkillDetail, RuntimeStoredFile, RuntimeStreamEvent, RuntimeWorkspaceFileSearchResult,
   RuntimeWorkspaceTree,
   RuntimeWebSearchResult, RuntimeWebSearchSettings, RuntimePromptSettings,
   RuntimeMcpServer, RuntimeMcpServerConfig, RuntimeMcpCatalogServer,
@@ -83,6 +83,7 @@ export interface AgentRuntimeClient {
   //#region skills
 
   listSkills(context?: RuntimeSkillContext): Promise<RuntimeSkill[]>;
+  getSkillDetail(skillId: string): Promise<SkillDetail>;
 
   //#endregion
 

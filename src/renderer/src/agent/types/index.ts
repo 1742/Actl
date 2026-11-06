@@ -207,6 +207,13 @@ export interface RuntimeSkillContext {
   sessionId?: string;
 }
 
+export interface LocalSkillsQuery { q?: string; category?: string; page?: number; limit?: number; sessionId?: string; projectId?: string }
+
+export interface SkillDetail extends RuntimeSkill {
+  files?: { root: string; skill: string; entries: Array<{ path: string; type: 'file' | 'directory' }> };
+  languages?: string[];
+}
+
 export interface AgentProject {
   id: string;
   cwd: string;

@@ -6,7 +6,6 @@ import { useRoute, useRouter } from 'vue-router';
 
 import { useNotifyStore } from '../../../composables/notify';
 import { bridge } from '../../../services/bridge';
-import { fetchLocalSkills } from '../../services/skills/service';
 import { getAgentRuntimeClient } from '../../services/runtimeClient';
 import { useAgentStore } from '../../stores/agent';
 import type { RuntimeMcpServer, RuntimeSkill } from '../../types';
@@ -18,6 +17,7 @@ const route = useRoute();
 const router = useRouter();
 const notify = useNotifyStore();
 const agent = useAgentStore();
+const agentClient = getAgentRuntimeClient('local');
 
 const section = computed(() => {
   if (route.name === 'aiSkills' || route.name === 'aiSkillDetail') return 'skills';
@@ -54,8 +54,8 @@ async function load() {
   loading.value = true;
   error.value = '';
   try {
-    if (section.value === 'skills') skills.value = (await fetchLocalSkills()).data;
-    else servers.value = await getAgentRuntimeClient('local').listMcpServers();
+    if (section.value === 'skills') skills.value = await agentClient.listSkills();
+    else servers.value = await agentClient.listMcpServers();
   } catch (cause) {
     error.value = cause instanceof Error ? cause.message : tr('ui.failedToLoadList');
   } finally {
