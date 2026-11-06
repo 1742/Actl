@@ -4,11 +4,13 @@ import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { RuntimeHost } from './runtime-host';
 import { registerRendererProtocol, rendererPageUrl } from './renderer-protocol';
+import { DesktopAgent } from './desktop-agent';
 
 const headless = process.argv.includes('--verify-runtime');
+const verifyAgentMode = process.argv.includes('--verify-agent');
 const argument = (name: string): string | undefined => process.argv.find((arg) => arg.startsWith(`${name}=`))?.slice(name.length + 1);
 const verificationRoot = argument('--verification-root');
-if (headless && !verificationRoot) throw new Error('--verify-runtime requires --verification-root.');
+if ((headless || verifyAgentMode) && !verificationRoot) throw new Error('Verification requires --verification-root.');
 app.setName('Actl');
 if (verificationRoot) {
   if (!path.isAbsolute(verificationRoot)) throw new Error('Verification root must be absolute.');
@@ -18,8 +20,11 @@ if (verificationRoot) {
 } else {
   app.setPath('userData', path.join(app.getPath('appData'), 'Actl-Electron'));
 }
+const ownsInstance = headless || verifyAgentMode || app.requestSingleInstanceLock();
+if (!ownsInstance) app.quit();
 
 const runtime = new RuntimeHost();
+const desktop = new DesktopAgent(() => window, validateSender);
 let window: BrowserWindow | undefined;
 let exiting = false;
 const rendererUrl = !app.isPackaged ? process.env.ELECTRON_RENDERER_URL : undefined;
@@ -46,13 +51,14 @@ function validateSender(event: IpcMainInvokeEvent): void {
     throw new Error('Untrusted IPC sender.');
   }
   const expected = rendererUrl ?? rendererPageUrl;
-  if (new URL(event.senderFrame.url).href !== new URL(expected).href) throw new Error('Untrusted renderer URL.');
+  const actualUrl = new URL(event.senderFrame.url); actualUrl.hash = '';
+  if (actualUrl.href !== new URL(expected).href) throw new Error('Untrusted renderer URL.');
 }
 
 async function createWindow(): Promise<void> {
   window = new BrowserWindow({
-    title: 'Actl · Electron 兼容性验证',
-    width: 1120, height: 820, minWidth: 860, minHeight: 650,
+    title: 'Actl',
+    width: 1280, height: 800, minWidth: 860, minHeight: 650,
     show: false, backgroundColor: '#111316', autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.cjs'),
@@ -68,17 +74,31 @@ async function createWindow(): Promise<void> {
   });
   window.webContents.on('will-navigate', (event, url) => {
     const expected = rendererUrl ?? rendererPageUrl;
-    if (new URL(url).href !== new URL(expected).href) event.preventDefault();
+    const target = new URL(url); target.hash = '';
+    if (target.href !== new URL(expected).href) event.preventDefault();
   });
   window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
   window.once('ready-to-show', () => window?.show());
-  window.on('closed', () => { window = undefined; });
+  window.webContents.on('did-start-navigation', (_event, _url, inPlace, isMainFrame) => { if (isMainFrame && !inPlace) desktop.detachAll(); });
+  window.on('closed', () => { desktop.detachAll(); window = undefined; });
   if (rendererUrl) await window.loadURL(rendererUrl);
   else await window.loadURL(rendererPageUrl);
 }
 
 app.whenReady().then(async () => {
+  if (!ownsInstance) return;
   app.setAppUserModelId('local.dev.actl.electron');
+  if (verifyAgentMode) {
+    try {
+      const { verifyAgent } = await import('./agent-smoke');
+      const report = await verifyAgent(verificationRoot!, app.isPackaged);
+      app.exit(report.passed ? 0 : 1);
+    } catch (error) {
+      await writeFile(path.join(verificationRoot!, 'error.txt'), error instanceof Error ? error.stack ?? error.message : String(error), 'utf8');
+      app.exit(1);
+    }
+    return;
+  }
   if (headless) {
     try {
       const report = await verify();
@@ -91,6 +111,7 @@ app.whenReady().then(async () => {
     return;
   }
   registerRendererProtocol(path.join(__dirname, '../renderer'));
+  desktop.register();
   ipcMain.handle('compatibility:run', (event, ...args: unknown[]) => {
     validateSender(event);
     if (args.length > 0) throw new Error('This operation accepts no arguments.');
@@ -103,9 +124,10 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => app.quit());
+app.on('second-instance', () => { window?.restore(); window?.show(); window?.focus(); });
 app.on('before-quit', (event) => {
-  if (exiting || !runtime.pending) return;
+  if (exiting || headless || verifyAgentMode) return;
   event.preventDefault();
   exiting = true;
-  void runtime.pending.finally(() => app.quit()).catch(() => undefined);
+  void Promise.allSettled([desktop.close(), runtime.pending]).finally(() => app.quit());
 });

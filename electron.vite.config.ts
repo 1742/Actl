@@ -1,6 +1,7 @@
 import { resolve } from 'node:path';
 import { defineConfig } from 'electron-vite';
 import vue from '@vitejs/plugin-vue';
+import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
   main: {
@@ -9,6 +10,7 @@ export default defineConfig({
         input: {
           index: resolve('src/main/index.ts'),
           'runtime-worker': resolve('src/runtime/worker.ts'),
+          'agent-worker': resolve('src/runtime/agent-worker.ts'),
         },
         output: {
           format: 'cjs',
@@ -23,5 +25,5 @@ export default defineConfig({
       rollupOptions: { output: { format: 'cjs', entryFileNames: '[name].cjs' } },
     },
   },
-  renderer: { plugins: [vue()] },
+  renderer: { plugins: [vue(), tailwindcss()] },
 });

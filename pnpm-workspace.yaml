@@ -2,6 +2,7 @@ allowBuilds:
   electron: true
   esbuild: true
   electron-winstaller: false
+  vue-demi: true
 minimumReleaseAgeExclude:
   - '@vue/compiler-core@3.5.45'
   - '@vue/compiler-dom@3.5.45'
@@ -14,3 +15,35 @@ minimumReleaseAgeExclude:
   - '@vue/shared@3.5.45'
   - vite@8.3.6
   - vue@3.5.45
+overrides:
+  '@tiptap/core': '3.22.4'
+  '@tiptap/extension-blockquote': '3.22.4'
+  '@tiptap/extension-bold': '3.22.4'
+  '@tiptap/extension-bubble-menu': '3.22.4'
+  '@tiptap/extension-bullet-list': '3.22.4'
+  '@tiptap/extension-code': '3.22.4'
+  '@tiptap/extension-code-block': '3.22.4'
+  '@tiptap/extension-document': '3.22.4'
+  '@tiptap/extension-dropcursor': '3.22.4'
+  '@tiptap/extension-floating-menu': '3.22.4'
+  '@tiptap/extension-gapcursor': '3.22.4'
+  '@tiptap/extension-hard-break': '3.22.4'
+  '@tiptap/extension-heading': '3.22.4'
+  '@tiptap/extension-horizontal-rule': '3.22.4'
+  '@tiptap/extension-image': '3.22.4'
+  '@tiptap/extension-italic': '3.22.4'
+  '@tiptap/extension-link': '3.22.4'
+  '@tiptap/extension-list': '3.22.4'
+  '@tiptap/extension-list-item': '3.22.4'
+  '@tiptap/extension-list-keymap': '3.22.4'
+  '@tiptap/extension-ordered-list': '3.22.4'
+  '@tiptap/extension-paragraph': '3.22.4'
+  '@tiptap/extension-placeholder': '3.22.4'
+  '@tiptap/extension-strike': '3.22.4'
+  '@tiptap/extension-text': '3.22.4'
+  '@tiptap/extension-underline': '3.22.4'
+  '@tiptap/extension-youtube': '3.22.4'
+  '@tiptap/extensions': '3.22.4'
+  '@tiptap/pm': '3.22.4'
+  '@tiptap/starter-kit': '3.22.4'
+  '@tiptap/vue-3': '3.22.4'
