@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { app } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
-import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { DatabaseSync } from 'node:sqlite';
 import path from 'node:path';
 import { AgentProcessHost } from '../../src/main/agent-process-host';
 import type { AgentCommand, AgentResult } from '../../src/shared/agent-ipc';
@@ -109,15 +110,15 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
     return result.value as T;
   };
   let projectId = ''; let sessionId = ''; let model = '';
-  const run = (text: string, onEvents?: (events: AgentStreamEvent[]) => void) => host.request({
-    operation: 'responses.create', params: { sessionId }, body: {
+  const run = (text: string, onEvents?: (events: AgentStreamEvent[]) => void, targetId = sessionId) => host.request({
+    operation: 'responses.create', params: { sessionId: targetId }, body: {
       model, permissionMode: 'ask', input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text }] }],
     },
   }, onEvents);
   const success = (result: AgentResult): AgentResponseDto => { assert.ok(result.ok, result.ok ? '' : JSON.stringify(result.error)); return result.value as AgentResponseDto; };
-  const resume = async (run: AgentResponseDto, decision: 'approve' | 'deny') => {
+  const resume = async (run: AgentResponseDto, decision: 'approve' | 'deny', targetId = sessionId) => {
     const batch = run.pending_permission_batch; assert.ok(batch);
-    return request<AgentResponseDto>({ operation: 'responses.permissions', params: { sessionId, responseId: run.id }, body: {
+    return request<AgentResponseDto>({ operation: 'responses.permissions', params: { sessionId: targetId, responseId: run.id }, body: {
       batchId: batch.id, decisions: batch.permissions.map((permission) => ({ permission_id: permission.id, decision })),
     } });
   };
@@ -164,6 +165,74 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
       // The outer verifier terminates only this main process, without taskkill /T.
       await new Promise<never>(() => {});
     }
+    await step('Standalone workspaces isolate files and persist across restarts and deletion', async () => {
+      const workspaceRoot = path.join(homeDirectory, 'workspaces', options.mode);
+      const create = () => request<{ id: string; projectId: null }>({ operation: 'sessions.create' });
+      const first = await create();
+      const second = await create();
+      assert.equal(first.projectId, null);
+      assert.equal(second.projectId, null);
+      assert.notEqual(first.id, second.id);
+      const firstCwd = path.join(workspaceRoot, first.id);
+      const secondCwd = path.join(workspaceRoot, second.id);
+      await Promise.all([access(firstCwd), access(secondCwd)]);
+
+      const pendingWrite = success(await run('write-fixture:standalone.txt', undefined, first.id));
+      assert.equal((await resume(pendingWrite, 'approve', first.id)).status, 'completed');
+      assert.equal(await readFile(path.join(firstCwd, 'standalone.txt'), 'utf8'), 'approved by IPC');
+      await assert.rejects(access(path.join(secondCwd, 'standalone.txt')), { code: 'ENOENT' });
+      processCommands.set('standalone-cwd', 'echo standalone>shell-cwd.txt');
+      const pendingShell = success(await run('process-fixture:standalone-cwd', undefined, second.id));
+      assert.equal((await resume(pendingShell, 'approve', second.id)).status, 'completed');
+      assert.equal((await readFile(path.join(secondCwd, 'shell-cwd.txt'), 'utf8')).trim(), 'standalone');
+      await assert.rejects(access(path.join(firstCwd, 'shell-cwd.txt')), { code: 'ENOENT' });
+
+      const oldBind = await host.request({
+        operation: 'sessions.bind' as AgentCommand['operation'], params: { sessionId: first.id }, body: { projectId },
+      });
+      assert.equal(oldBind.ok, false);
+
+      const list = () => request<Array<{ id: string }>>({ operation: 'sessions.list' });
+      const before = await list();
+      const parkedRoot = workspaceRoot + '-parked';
+      await rename(workspaceRoot, parkedRoot);
+      try {
+        await writeFile(workspaceRoot, '', { flag: 'wx' });
+        try {
+          assert.equal((await host.request({ operation: 'sessions.create' })).ok, false);
+          assert.deepEqual(await list(), before);
+        } finally {
+          await unlink(workspaceRoot);
+        }
+      } finally {
+        await rename(parkedRoot, workspaceRoot);
+      }
+
+      await host.close();
+      // A session row created before the workspace feature has no directory on disk.
+      const legacyId = `session_${randomUUID()}`;
+      const database = new DatabaseSync(path.join(homeDirectory, 'database', options.mode, 'workspace.db'));
+      try {
+        const now = new Date().toISOString();
+        const ownerId = (database.prepare('SELECT owner_id FROM sessions WHERE id = ?').get(first.id))?.owner_id;
+        assert.ok(typeof ownerId === 'string');
+        database.prepare('INSERT INTO sessions(id, owner_id, created_at, updated_at) VALUES (?, ?, ?, ?)')
+          .run(legacyId, ownerId, now, now);
+      } finally {
+        database.close();
+      }
+      host = new AgentProcessHost(options);
+      await host.ready();
+      const legacyCwd = path.join(workspaceRoot, legacyId);
+      await assert.rejects(access(legacyCwd), { code: 'ENOENT' });
+      await request({ operation: 'sessions.context', params: { sessionId: legacyId } });
+      await access(legacyCwd);
+      await request({ operation: 'sessions.context', params: { sessionId: first.id } });
+      assert.equal(await readFile(path.join(firstCwd, 'standalone.txt'), 'utf8'), 'approved by IPC');
+      await request({ operation: 'sessions.delete', params: { sessionId: first.id } });
+      assert.ok(!(await list()).some((session) => session.id === first.id));
+      assert.equal(await readFile(path.join(firstCwd, 'standalone.txt'), 'utf8'), 'approved by IPC');
+    });
     await step('IPC validation, attachment round trip and session ownership', async () => {
       const invalid = await host.request({ operation: 'projects.create', body: { cwd: '' } });
       assert.equal(invalid.ok, false); if (!invalid.ok) assert.equal(invalid.error.code, 'invalid_request');

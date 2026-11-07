@@ -48,7 +48,10 @@ export async function createAppDependencies(
   const workspaceRepository = new SqliteWorkspaceRepository(
     path.join(config.dataDirectory, "workspace.db"),
   );
-  const workspaceStore = new WorkspaceStore(workspaceRepository);
+  const workspaceStore = new WorkspaceStore(
+    workspaceRepository,
+    path.join(config.homeDirectory, "workspaces", config.runtimeMode),
+  );
   await workspaceStore.initialize();
 
   const storedFiles = new StoredFileService(config.dataDirectory, workspaceRepository);

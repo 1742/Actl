@@ -116,8 +116,8 @@ export class SqliteWorkspaceRepository implements WorkspaceRepository, StoredFil
   }
 
   async updateSession(session: SessionMetadataRecord): Promise<void> {
-    assertChanged(this.db.prepare("UPDATE sessions SET owner_id = ?, project_id = ?, title = ?, updated_at = ? WHERE id = ?")
-      .run(session.ownerId, session.projectId, session.title ?? null, session.updated_at, session.id), "Session", session.id);
+    assertChanged(this.db.prepare("UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?")
+      .run(session.title ?? null, session.updated_at, session.id), "Session", session.id);
   }
 
   async deleteSession(sessionId: string): Promise<void> {

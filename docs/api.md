@@ -55,12 +55,11 @@ type AgentResult<T> =
 | sessions.list | query.scope=standalone 或 projectId，互斥；缺省全部 | Session[] |
 | sessions.create | body=`{projectId?,title?}`，可省略 | Session |
 | sessions.rename | params.sessionId；body=`{title:string或null}` | Session |
-| sessions.bind | params.sessionId；body=`{projectId}` | 首次绑定后的 Session |
 | sessions.delete | params.sessionId | undefined |
 | sessions.context | params.sessionId | `{session_id,responses,context}` |
 | sessions.compact | params.sessionId；body=`{model,reasoningEffort?}` | `{compressed,summarized_run_count}` |
 
-Project 包含 id/cwd/name?/created_at/updated_at；Session 列表不内嵌完整 Run 历史。context 包含 last_input_tokens（可缺省）、summarized_run_count 和 compressions。绑定和压缩要求相应执行范围空闲，项目/会话删除执行取消与清理。
+Project 包含 id/cwd/name?/created_at/updated_at；Session 列表不内嵌完整 Run 历史。context 包含 last_input_tokens（可缺省）、summarized_run_count 和 compressions。压缩要求相应执行范围空闲，项目/会话删除执行取消与清理。
 
 workspace.search 的 limit 为 1–100，默认 20；workspace.tree 的 path 默认 `.`，maxEntries 为 1–500，默认 200。当前没有独立项目重命名、单项目详情、单会话详情操作，完整会话数据从列表与 context 获取。
 

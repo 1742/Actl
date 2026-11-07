@@ -19,6 +19,7 @@
     development-master-key.bin
     release-master-key.bin
   logs/                    桌面运行时日志目录
+  workspaces/<mode>/<sessionId>/  独立会话的工作区，删除会话后保留
   skills/<name>/SKILL.md    手动安装的用户技能
   .cache/skills-catalog.json
 ```

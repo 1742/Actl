@@ -66,7 +66,6 @@ export const useAgentStore = defineStore("agent", {
       skills: true,
       workspace: true,
       permissions: true,
-      sessionProjectBinding: true,
       localProjectPaths: true,
     } as AgentRuntimeCapabilities,
     models: [] as RuntimeModel[],

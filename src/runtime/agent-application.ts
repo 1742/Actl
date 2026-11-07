@@ -106,10 +106,6 @@ export class AgentApplication {
         const input = sessions.updateSessionBodySchema.parse(body);
         return toSessionJson(await d.workspaceStore.updateSession(ownerId, sessionId(), input.title ?? undefined));
       }
-      case 'sessions.bind': {
-        const id = sessionId(); await this.session(id); const input = sessions.bindSessionBodySchema.parse(body);
-        return toSessionJson(await d.agentLoop.withIdleSessionScopeMaintenance(id, () => d.workspaceStore.bindSession(ownerId, id, input.projectId)));
-      }
       case 'sessions.delete': {
         const id = sessionId(); await this.session(id);
         await d.agentLoop.withSessionScopeMaintenance(id, async () => {
@@ -346,7 +342,7 @@ export class AgentApplication {
     const normalized = structuredClone(input);
     for (const message of normalized) for (const part of message.content) {
       if (part.type !== 'input_workspace_file') continue;
-      if (!session.cwd) throw new ApiError(400, 'workspace_file_requires_project', 'Workspace file references require a Project-bound Session.');
+      if (!session.projectId || !session.cwd) throw new ApiError(400, 'workspace_file_requires_project', 'Workspace file references require a Project-bound Session.');
       try { part.path = await this.dependencies.workspaceFiles.validateReference(session.cwd, part.path); }
       catch { throw new ApiError(400, 'invalid_workspace_file', 'Workspace file reference is invalid.'); }
     }

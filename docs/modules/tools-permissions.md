@@ -40,7 +40,7 @@ toolCalling=false 不暴露工具；requiresImageInput 工具只暴露给有图�
 
 ## 3. 文件路径语义
 
-普通工具的相对路径基于 session.cwd；独立会话基于 process.cwd。绝对路径允许访问宿主进程可访问的位置。**项目目录不是读写沙箱**。
+普通工具的相对路径基于 session.cwd。独立会话使用专属目录，项目会话使用项目目录。工作区提供相对路径的起点，实际访问范围由宿主进程权限和工具权限规则决定。
 
 [path-security.ts](../../src/agent-core/tools/path-security.ts) 使用 realpath 规范化已有路径；不存在路径从最近已有父目录拼回缺失段。write/read/patch 在执行时重解析并对照授权，防止授权资源与执行资源不一致。
 

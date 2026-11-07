@@ -161,10 +161,6 @@ const dialogTargetName = computed(() =>
     ? projectName(dialog.value.project.cwd, dialog.value.project.name)
     : conversationName(dialog.value.session?.title),
 );
-
-function projectsForSession(session: RuntimeSession) {
-  return store.projects.filter((project) => project.runtimeKind === session.runtimeKind);
-}
 </script>
 
 <template>
@@ -301,7 +297,6 @@ function projectsForSession(session: RuntimeSession) {
             />
             <div class="sidebar-row-overlay row-actions">
               <AgentSessionMenu
-                :projects="projectsForSession(session)"
                 @rename="showDialog('rename-session', session)"
                 @delete="showDialog('delete-session', session)"
               />
@@ -347,7 +342,6 @@ function projectsForSession(session: RuntimeSession) {
           />
           <div class="sidebar-row-overlay row-actions">
             <AgentSessionMenu
-              :projects="projectsForSession(session)"
               @rename="showDialog('rename-session', session)"
               @delete="showDialog('delete-session', session)"
             />

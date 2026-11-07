@@ -23,7 +23,6 @@ export interface AgentRuntimeCapabilities {
   workspace: boolean;
   uploadFile: boolean;
   permissions: boolean;
-  sessionProjectBinding: boolean;
   localProjectPaths: boolean;
 }
 
@@ -58,7 +57,6 @@ export interface AgentRuntimeClient {
   listSessions(): Promise<AgentSession[]>;
   createSession(projectId?: string): Promise<AgentSession>;
   renameSession(sessionId: string, title: string | null): Promise<AgentSession>;
-  bindSessionToProject(sessionId: string, projectId: string): Promise<AgentSession>;
   deleteSession(sessionId: string): Promise<void>;
   getContext(sessionId: string): Promise<SessionContext>;
   getSessionReview(sessionId: string, options?: { fileId?: string; runId?: string }): Promise<SessionReview>;

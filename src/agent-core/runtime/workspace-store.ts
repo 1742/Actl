@@ -1,4 +1,4 @@
-import { stat } from "node:fs/promises";
+import { mkdir, rmdir, stat } from "node:fs/promises";
 import path from "node:path";
 import type {
   ProjectRecord,
@@ -32,7 +32,6 @@ export type WorkspaceStoreErrorCode =
   | "project_already_exists"
   | "project_cwd_invalid"
   | "project_not_found"
-  | "session_already_bound"
   | "session_not_found";
 
 export class WorkspaceStoreError extends Error {
@@ -50,7 +49,10 @@ export class WorkspaceStore {
   private readonly persistedTimelinePayloads = new Map<string, string[]>();
   private mutationQueue: Promise<void> = Promise.resolve();
 
-  constructor(private readonly repository: WorkspaceRepository) {}
+  constructor(
+    private readonly repository: WorkspaceRepository,
+    private readonly standaloneWorkspaceRoot: string,
+  ) {}
 
   //初始化
   async initialize(): Promise<void> {
@@ -145,6 +147,10 @@ export class WorkspaceStore {
   async getSession(id: string, ownerId?: string): Promise<Session | undefined> {
     const session = this.sessions.get(id);
     if (!session || (ownerId !== undefined && session.ownerId !== ownerId)) return undefined;
+    if (session.projectId === null) {
+      await mkdir(this.standaloneWorkspacePath(id), { recursive: true });
+      if (this.sessions.get(id) !== session) return undefined;
+    }
     if (this.loadedSessionIds.has(id)) return session;
 
     const content = await this.loadSessionContent(id);
@@ -199,7 +205,17 @@ export class WorkspaceStore {
         updated_at: now,
       };
       created = this.toSession(metadata);
-      await this.repository.createSession(metadata);
+      const workspace = metadata.projectId === null ? this.standaloneWorkspacePath(metadata.id) : undefined;
+      if (workspace) {
+        await mkdir(this.standaloneWorkspaceRoot, { recursive: true });
+        await mkdir(workspace);
+      }
+      try {
+        await this.repository.createSession(metadata);
+      } catch (error) {
+        if (workspace) await rmdir(workspace).catch(() => undefined);
+        throw error;
+      }
       this.sessionMetadata.push(metadata);
       this.sessions.set(created.id, created);
       this.loadedSessionIds.add(created.id);
@@ -225,24 +241,6 @@ export class WorkspaceStore {
       updated = this.applyMetadata(replacement);
     });
     return updated;
-  }
-
-  async bindSession(ownerId: string, id: string, projectId: string): Promise<Session> {
-    let bound!: Session;
-    await this.enqueue(async () => {
-      const metadata = this.requireOwnedSessionMetadata(id, ownerId);
-      if (metadata.projectId !== null) {
-        throw new WorkspaceStoreError("session_already_bound", "Session is already bound to a project.");
-      }
-      if (!this.projects.some((item) => item.id === projectId && item.ownerId === ownerId)) {
-        throw new WorkspaceStoreError("project_not_found", "Project not found.");
-      }
-      const replacement: SessionMetadata = { ...metadata, projectId, updated_at: nowIso() };
-      await this.repository.updateSession(replacement);
-      this.sessionMetadata[this.sessionMetadata.indexOf(metadata)] = replacement;
-      bound = this.applyMetadata(replacement);
-    });
-    return bound;
   }
 
   async deleteSession(ownerId: string, id: string): Promise<void> {
@@ -502,17 +500,20 @@ export class WorkspaceStore {
   private applyMetadata(metadata: SessionMetadata): Session {
     const session = this.sessions.get(metadata.id);
     if (!session) throw new WorkspaceStoreError("session_not_found", "Session not found.");
-    Object.assign(session, metadata, { cwd: this.resolveCwd(metadata.projectId) });
+    Object.assign(session, metadata);
     if (metadata.title === undefined) delete session.title;
     return session;
   }
 
   private toSession(metadata: SessionMetadata): Session {
-    return { ...metadata, cwd: this.resolveCwd(metadata.projectId), runs: [], fileChanges: [], compressionRecords: [] };
+    const cwd = metadata.projectId === null
+      ? this.standaloneWorkspacePath(metadata.id)
+      : this.projects.find((project) => project.id === metadata.projectId)?.cwd ?? null;
+    return { ...metadata, cwd, runs: [], fileChanges: [], compressionRecords: [] };
   }
 
-  private resolveCwd(projectId: string | null): string | null {
-    return projectId === null ? null : this.projects.find((item) => item.id === projectId)?.cwd ?? null;
+  private standaloneWorkspacePath(sessionId: string): string {
+    return path.join(this.standaloneWorkspaceRoot, sessionId);
   }
 
   private evictSession(id: string): void {

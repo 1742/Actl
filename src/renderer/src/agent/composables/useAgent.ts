@@ -622,31 +622,6 @@ export async function renameAgentSession(sessionId: string, title: string): Prom
   }
 }
 
-export async function moveAgentSessionToProject(
-  sessionId: string,
-  projectId: string,
-): Promise<ActionResult> {
-  const store = useAgentStore();
-  const blocked =
-    sessionActivityBlocked(sessionId, tr('ui.moveConversation')) ||
-    projectActivityBlocked(projectId, tr('ui.moveConversationIntoProject'));
-  if (blocked) return blocked;
-  try {
-    const { session: current, client } = sessionContext(sessionId);
-    const { project } = projectContext(projectId);
-    if (current.runtimeKind !== project.runtimeKind)
-      return { status: 'error', message: tr('ui.conversationsCannotBeMovedBetweenDifferent') };
-    const session = decorateSession(
-      current.runtimeKind,
-      await client.bindSessionToProject(current.runtimeId, project.runtimeId),
-    );
-    store.setSessions(store.sessions.map((item) => (item.id === sessionId ? session : item)));
-    return { status: 'success', message: tr('ui.conversationMovedToProject') };
-  } catch (error) {
-    return errorResult(error);
-  }
-}
-
 export async function deleteAgentSession(sessionId: string): Promise<ActionResult> {
   const store = useAgentStore();
   const blocked = sessionActivityBlocked(sessionId, tr('ui.deleteConversation'));

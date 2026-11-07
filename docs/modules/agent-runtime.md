@@ -43,7 +43,7 @@ list 方法通常提供拷贝，getSession 提供运行时对象；AgentLoop 会
 
 项目会话使用 project 范围，独立会话使用 session 范围。创建前先预留，失败释放；waiting_permission 保持占用；终态释放。恢复占用时检查持久化历史，防止重启后待审批 Run 被绕过。
 
-maintenance 用于删除/绑定/压缩等操作，阻止与新 Run 创建交错。idle maintenance 额外检查当前范围无活动 Run，删除用例 则在 maintenance 内取消、停止进程、删除数据。
+maintenance 用于删除和压缩等操作，阻止与新 Run 创建交错。idle maintenance 额外检查当前范围无活动 Run，删除操作在 maintenance 内取消执行、停止进程并删除会话数据。
 
 ## 5. 创建与执行循环
 

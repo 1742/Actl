@@ -29,7 +29,7 @@ export class LocalRuntimeClient implements AgentRuntimeClient {
   readonly kind = 'local' as const;
   readonly capabilities = {
     modelConfiguration: true, skills: true, workspace: true, uploadFile: true,
-    permissions: true, sessionProjectBinding: true, localProjectPaths: true,
+    permissions: true, localProjectPaths: true,
   } as const;
 
   listProjects() { return request<AgentProject[]>({ operation: 'projects.list' }); }
@@ -39,7 +39,6 @@ export class LocalRuntimeClient implements AgentRuntimeClient {
   listSessions() { return request<AgentSession[]>({ operation: 'sessions.list' }); }
   createSession(projectId?: string) { return request<AgentSession>({ operation: 'sessions.create', body: projectId ? { projectId } : {} }); }
   renameSession(sessionId: string, title: string | null) { return request<AgentSession>({ operation: 'sessions.rename', params: { sessionId }, body: { title } }); }
-  bindSessionToProject(sessionId: string, projectId: string) { return request<AgentSession>({ operation: 'sessions.bind', params: { sessionId }, body: { projectId } }); }
   deleteSession(sessionId: string) { return request<void>({ operation: 'sessions.delete', params: { sessionId } }); }
   getContext(sessionId: string) { return request<SessionContext>({ operation: 'sessions.context', params: { sessionId } }); }
   getSessionReview(sessionId: string, options?: { fileId?: string; runId?: string }) {

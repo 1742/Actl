@@ -11,7 +11,6 @@ export const createSessionBodySchema = z.preprocess(
 );
 
 export const updateSessionBodySchema = z.object({ title: nonEmptyString.nullable() }).strict();
-export const bindSessionBodySchema = z.object({ projectId: nonEmptyString }).strict();
 const permissionDecisionSchema = z.discriminatedUnion("decision", [
   z.object({ permission_id: nonEmptyString, decision: z.literal("approve") }).strict(),
   z.object({ permission_id: nonEmptyString, decision: z.literal("deny"), reason: nonEmptyString.optional() }).strict(),
@@ -78,7 +77,6 @@ export const listSessionsQuerySchema = z.object({
 
 export type CreateSessionBody = z.infer<typeof createSessionBodySchema>;
 export type UpdateSessionBody = z.infer<typeof updateSessionBodySchema>;
-export type BindSessionBody = z.infer<typeof bindSessionBodySchema>;
 export type CreateResponseBody = z.infer<typeof createResponseBodySchema>;
 export type CompactSessionBody = z.infer<typeof compactSessionBodySchema>;
 export type ResolvePermissionsBody = z.infer<typeof resolvePermissionsBodySchema>;
