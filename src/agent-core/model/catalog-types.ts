@@ -1,7 +1,8 @@
 import { z } from "zod";
+import { modelProtocols, reasoningEfforts, type ReasoningEffort, type RuntimeModelCapabilities } from "../../shared/agent/models.js";
 
-export const modelProtocolSchema = z.enum(["responses", "chat_completions", "anthropic_messages"]);
-export const reasoningEffortSchema = z.enum(["none", "minimal", "low", "medium", "high", "xhigh", "max"]);
+export const modelProtocolSchema = z.enum(modelProtocols);
+export const reasoningEffortSchema = z.enum(reasoningEfforts);
 
 export const modelCapabilitiesSchema = z.object({
   input: z.preprocess((value) => {
@@ -20,11 +21,11 @@ export const modelCapabilitiesSchema = z.object({
   defaultReasoningEffort: reasoningEffortSchema.optional(),
   contextWindow: z.number().int().positive().optional(),
   maxOutputTokens: z.number().int().positive().optional(),
-}).strict();
+}).strict() satisfies z.ZodType<RuntimeModelCapabilities>;
 
 export type ModelProtocolConfig = z.infer<typeof modelProtocolSchema>;
-export type ModelCapabilities = z.infer<typeof modelCapabilitiesSchema>;
-export type ReasoningEffort = z.infer<typeof reasoningEffortSchema>;
+export type ModelCapabilities = RuntimeModelCapabilities;
+export type { ReasoningEffort };
 
 export const TEXT_TOOL_CAPABILITIES: ModelCapabilities = {
   input: { text: true, imageMimeTypes: [], audioMimeTypes: [] },
@@ -33,32 +34,6 @@ export const TEXT_TOOL_CAPABILITIES: ModelCapabilities = {
   nativeWebSearch: false,
   reasoningEfforts: [],
 };
-
-export interface ProviderAccountRecord {
-  id: string;
-  ownerId: string;
-  displayName: string;
-  enabled: boolean;
-  currentVersion: number;
-  baseURL: string;
-  credentialVersion: number | null;
-  deletedAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface ModelTargetRecord {
-  id: string;
-  ownerId: string;
-  accountId: string;
-  providerModel: string;
-  displayName: string;
-  protocol: ModelProtocolConfig;
-  capabilities: ModelCapabilities;
-  enabled: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
 
 export interface ModelExecutionSnapshot {
   targetId: string;
@@ -82,15 +57,3 @@ export const modelExecutionSnapshotSchema: z.ZodType<ModelExecutionSnapshot> = z
   accountVersion: z.number().int().positive(), credentialVersion: z.number().int().positive(),
   baseURL: z.url(), protocol: modelProtocolSchema, capabilities: modelCapabilitiesSchema,
 }).strict();
-
-export interface ModelTargetDto {
-  id: string;
-  providerAccountId: string;
-  providerModel: string;
-  protocol: ModelProtocolConfig;
-  displayName: string;
-  enabled: boolean;
-  capabilities: ModelCapabilities;
-  compatible?: boolean;
-  incompatibilityReasons?: string[];
-}

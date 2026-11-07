@@ -1,7 +1,7 @@
 import { tr } from '../../i18n';
 import type { JSONContent } from '@tiptap/vue-3';
 
-import type { AgentComposerDocument, AgentComposerNode } from '../types';
+import type { AgentComposerDocument, AgentComposerNode } from '../components/composer/types';
 
 export function createEmptyAgentComposer(): AgentComposerDocument {
   return { version: 1, nodes: [] };

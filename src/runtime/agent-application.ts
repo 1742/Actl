@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
-import type { AgentCommand, SessionReview } from '../shared/agent-ipc';
+import type { AgentCommand } from '../shared/agent-ipc';
+import type { SessionReview } from '../shared/agent/review';
 import { reviewDiff } from '../agent-core/runtime/review-diff';
 import type { AppDependencies } from '../agent-core/app/dependencies';
 import type { Session } from '../agent-core/runtime/workspace-store';
@@ -9,7 +10,11 @@ import { toProjectJson, toSessionJson } from '../agent-core/contracts/common/pre
 import { ApiError } from '../agent-core/contracts/common/api-error';
 import { inputFromDto, toAgentResponseDto } from '../agent-core/contracts/agent-responses/presenter';
 import { AgentStreamProjector } from '../agent-core/contracts/agent-responses/stream-projector';
-import type { ResponseInputMessageDto } from '../agent-core/contracts/agent-responses/types';
+import type { AgentStreamEvent, ResponseInputMessageDto } from '../shared/agent/responses';
+import type { SessionContext } from '../shared/agent/sessions';
+import type { RuntimeStoredFile } from '../shared/agent/files';
+import type { RuntimeProviderAccount } from '../shared/agent/models';
+import type { RuntimeSkillCatalog, SkillDetail } from '../shared/agent/skills';
 import * as sessions from '../agent-core/contracts/sessions/session.schemas';
 import * as projects from '../agent-core/contracts/projects/project.schemas';
 import * as models from '../agent-core/contracts/models/model.schemas';
@@ -46,7 +51,7 @@ const fileSchema = z.object({
 export class AgentApplication {
   constructor(readonly dependencies: AppDependencies) {}
 
-  async invoke(command: AgentCommand, onEvent?: (event: unknown) => void): Promise<unknown> {
+  async invoke(command: AgentCommand, onEvent?: (event: AgentStreamEvent) => void): Promise<unknown> {
     const d = this.dependencies;
     const params = command.params ?? {};
     const query = command.query ?? {};
@@ -150,7 +155,7 @@ export class AgentApplication {
             summarized_run_count: session.contextState?.summarizedRunCount ?? 0,
             compressions: session.compressionRecords.map((record) => ({ summarized_run_count: record.summarizedRunCount, summary: record.summary, created_at: record.createdAt })),
           },
-        };
+        } satisfies SessionContext;
       }
       case 'sessions.compact': {
         const session = await this.session(sessionId()); const input = sessions.compactSessionBodySchema.parse(body);
@@ -274,7 +279,7 @@ export class AgentApplication {
           ...(input.q !== undefined ? { query: input.q } : {}), ...(input.category !== undefined ? { category: input.category } : {}),
           ...(input.page !== undefined ? { page: input.page } : {}), ...(input.limit !== undefined ? { limit: input.limit } : {}),
         });
-        return { ...page, data: page.data.map(toCatalogDto) };
+        return { ...page, data: page.data.map(toCatalogDto) } satisfies RuntimeSkillCatalog;
       }
       case 'skills.detail': {
         const input = skills.listSkillsQuerySchema.parse(query); const { skillId } = skills.skillParamsSchema.parse(params);
@@ -284,7 +289,7 @@ export class AgentApplication {
         return { ...toCatalogDto(skill), ...(skill.package ? {
           manifest: structuredClone(skill.package.manifest), languages: inferLanguages(entries), content_digest: skill.package.contentDigest,
           files: { root: skill.package.rootPath, skill: skill.package.skillFilePath, entries },
-        } : {}) };
+        } : {}) } satisfies SkillDetail;
       }
       default: throw new ApiError(400, 'invalid_operation', 'Unsupported Agent operation.');
     }
@@ -319,15 +324,15 @@ export class AgentApplication {
   private responseDto(run: Parameters<typeof toAgentResponseDto>[0]) {
     return toAgentResponseDto(run, this.dependencies.storedFiles.describeForSession.bind(this.dependencies.storedFiles));
   }
-  private accountDto(account: Awaited<ReturnType<AppDependencies['modelStore']['createProviderAccount']>>) {
+  private accountDto(account: Awaited<ReturnType<AppDependencies['modelStore']['createProviderAccount']>>): RuntimeProviderAccount {
     return { id: account.id, displayName: account.displayName, baseURL: account.baseURL, enabled: account.enabled,
       hasCredential: account.credentialVersion !== null, createdAt: account.createdAt, updatedAt: account.updatedAt };
   }
-  private fileDto(file: Awaited<ReturnType<AppDependencies['storedFiles']['upload']>>) {
+  private fileDto(file: Awaited<ReturnType<AppDependencies['storedFiles']['upload']>>): RuntimeStoredFile {
     return { id: file.id, object: 'stored_file', session_id: file.sessionId, filename: file.filename,
       media_type: file.mediaType, size: file.size, created_at: file.createdAt };
   }
-  private projectEvents(onEvent: ((event: unknown) => void) | undefined): AgentDomainEventHandler | undefined {
+  private projectEvents(onEvent: ((event: AgentStreamEvent) => void) | undefined): AgentDomainEventHandler | undefined {
     if (!onEvent) return undefined;
     const projector = new AgentStreamProjector(this.dependencies.storedFiles.describeForSession.bind(this.dependencies.storedFiles));
     return async (run, event) => { for (const projected of projector.project(run, event)) onEvent(structuredClone(projected)); };

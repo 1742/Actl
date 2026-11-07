@@ -3,7 +3,7 @@ import { tr } from '../../../i18n';
 import { computed } from 'vue';
 import { AlertCircle } from '@lucide/vue';
 import AIResponseConversation from '../responses/AIResponseConversation.vue';
-import type { AIFileContent } from '../../types/aiResponse.ts';
+import type { AIFileContent } from '../responses/types';
 import { useNotifyStore } from '../../../composables/notify';
 import { downloadAgentFile } from '../../composables/useAgent';
 import { getAgentRuntimeContext } from '../../services/runtimeClient';

@@ -1,14 +1,21 @@
-import type { AgentCommand, AgentResult } from '../../../../shared/agent-ipc';
-import type { RuntimeControlError } from '../types';
+import type { AgentCommand, AgentFailure, AgentResult } from '../../../../shared/agent-ipc';
+
+import type { AgentStreamEvent } from "../../../../shared/agent/responses";
+
+interface RuntimeErrorDetails {
+  sessionId?: string;
+  responseId?: string;
+  [key: string]: unknown;
+}
 
 export class RuntimeRequestError extends Error {
   readonly code: string;
   readonly status: number | undefined;
-  readonly details: RuntimeControlError['error']['details'];
-  constructor(error: { code: string; message: string; status?: number; details?: unknown }) {
+  readonly details: RuntimeErrorDetails | undefined;
+  constructor(error: AgentFailure) {
     super(error.message); this.name = 'RuntimeRequestError';
     this.code = error.code; this.status = error.status;
-    this.details = error.details && typeof error.details === 'object' ? error.details as NonNullable<RuntimeControlError['error']['details']> : undefined;
+    this.details = error.details && typeof error.details === 'object' ? error.details as RuntimeErrorDetails : undefined;
   }
 }
 
@@ -21,7 +28,7 @@ export async function desktopRequest<T>(command: AgentCommand): Promise<T> {
   return unwrap(await window.actlAgent.request(command)) as T;
 }
 
-export function desktopStream<T>(command: AgentCommand, onEvent: (event: unknown) => void, signal?: AbortSignal): Promise<T> {
+export function desktopStream<T>(command: AgentCommand, onEvent: (event: AgentStreamEvent) => void, signal?: AbortSignal): Promise<T> {
   signal?.throwIfAborted();
   const id = crypto.randomUUID();
   return new Promise((resolve, reject) => {

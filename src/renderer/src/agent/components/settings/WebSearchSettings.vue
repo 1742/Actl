@@ -5,7 +5,7 @@ import { computed, onMounted, ref } from 'vue';
 import { useNotifyStore } from '../../../composables/notify';
 import { getAgentRuntimeClient } from '../../services/runtimeClient';
 import { useAgentStore } from '../../stores/agent';
-import type { RuntimeWebSearchSettings } from '../../types';
+import type { RuntimeWebSearchSettings } from '../../../../../shared/agent/web-search';
 
 const DEFAULT_BASE_URLS: Record<RuntimeWebSearchSettings['provider'], string> = {
   brave: 'https://api.search.brave.com/res/v1/web/search',

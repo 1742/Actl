@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue';
-import type { AIMessageItem } from '../../types/aiResponse.ts';
+import type { AIMessageItem } from './types';
 import { readContentText } from '../../utils/aiResponse.ts';
 import MessageHtml from './MessageHtml.vue';
 import MessageTools from './MessageTools.vue';

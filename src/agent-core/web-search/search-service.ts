@@ -1,3 +1,8 @@
+import type {
+  RuntimeWebSearchResult, RuntimeWebSearchSettings, WebSearchMode, WebSearchProvider,
+  WebSearchResultItem,
+} from "../../shared/agent/web-search.js";
+import type { WebSearchSettingsRecord, WebSearchSettingsRepository } from "../repositories/web-search-settings-repository.js";
 import type { SecretProtector } from "../security/secret-protector.js";
 import type { ModelExecutionSnapshot } from "../model/catalog-types.js";
 import { nowIso } from "../utils.js";
@@ -7,13 +12,6 @@ import {
   DEFAULT_SERPER_SEARCH_BASE_URL,
   DEFAULT_TAVILY_SEARCH_BASE_URL,
   type WebSearchRequest,
-  type WebSearchResult,
-  type WebSearchResultItem,
-  type WebSearchMode,
-  type WebSearchProvider,
-  type WebSearchSettingsRecord,
-  type WebSearchSettingsRepository,
-  type WebSearchSettingsView,
 } from "./types.js";
 import { resolveWebSearchExecutionStrategy, type WebSearchExecutionStrategy } from "./strategy.js";
 
@@ -70,7 +68,7 @@ export class WebSearchService {
     private readonly fetchImpl: typeof fetch = fetch,
   ) {}
 
-  getSettings(ownerId: string): WebSearchSettingsView {
+  getSettings(ownerId: string): RuntimeWebSearchSettings {
     const record = this.repository.getWebSearchSettings(ownerId);
     return record ? {
       provider: record.provider,
@@ -88,7 +86,7 @@ export class WebSearchService {
     };
   }
 
-  async configure(ownerId: string, input: ConfigureWebSearchInput): Promise<WebSearchSettingsView> {
+  async configure(ownerId: string, input: ConfigureWebSearchInput): Promise<RuntimeWebSearchSettings> {
     const existing = this.repository.getWebSearchSettings(ownerId);
     const mode = input.mode ?? existing?.mode ?? "auto";
     const provider = input.provider ?? existing?.provider ?? "brave";
@@ -112,7 +110,7 @@ export class WebSearchService {
     return this.getSettings(ownerId);
   }
 
-  async clearCredential(ownerId: string): Promise<WebSearchSettingsView> {
+  async clearCredential(ownerId: string): Promise<RuntimeWebSearchSettings> {
     await this.repository.clearWebSearchCredential(ownerId, nowIso());
     return this.getSettings(ownerId);
   }
@@ -121,7 +119,7 @@ export class WebSearchService {
     return resolveWebSearchExecutionStrategy(this.getSettings(ownerId), model);
   }
 
-  async test(ownerId: string, signal?: AbortSignal): Promise<WebSearchResult> {
+  async test(ownerId: string, signal?: AbortSignal): Promise<RuntimeWebSearchResult> {
     const settings = this.repository.getWebSearchSettings(ownerId);
     if (!settings?.credential) throw new WebSearchServiceError(
       "web_search_credential_missing",
@@ -134,7 +132,7 @@ export class WebSearchService {
     );
   }
 
-  async search(ownerId: string, input: WebSearchRequest, signal?: AbortSignal): Promise<WebSearchResult> {
+  async search(ownerId: string, input: WebSearchRequest, signal?: AbortSignal): Promise<RuntimeWebSearchResult> {
     const settings = this.repository.getWebSearchSettings(ownerId);
     if (!settings?.enabled) throw new WebSearchServiceError(
       "web_search_disabled",
@@ -156,7 +154,7 @@ export class WebSearchService {
     settings: WebSearchSettingsRecord & { credential: NonNullable<WebSearchSettingsRecord["credential"]> },
     input: WebSearchRequest,
     signal?: AbortSignal,
-  ): Promise<WebSearchResult> {
+  ): Promise<RuntimeWebSearchResult> {
     const request = createProviderRequest(settings, this.credentials.decrypt(settings.credential), input);
 
     const timeoutSignal = AbortSignal.timeout(REQUEST_TIMEOUT_MS);

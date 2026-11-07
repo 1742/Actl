@@ -1,3 +1,5 @@
+import type { AgentStreamEvent } from "./agent/responses.js";
+
 // Business operation names; payload validation and ownership checks run in the Agent.
 export const agentOperations = [
   'runtime.info',
@@ -48,28 +50,6 @@ export const agentOperations = [
 ] as const;
 
 export type AgentOperation = (typeof agentOperations)[number];
-export interface ReviewLine {
-  kind: 'context' | 'added' | 'removed' | 'gap';
-  text: string;
-  oldLine?: number;
-  newLine?: number;
-}
-export interface ReviewFile {
-  id: string;
-  path: string;
-  additions: number;
-  deletions: number;
-  unavailable: boolean;
-}
-export interface SessionReview {
-  runId: string | null;
-  files: ReviewFile[];
-  lines?: ReviewLine[];
-}
-export type WorkspaceFilePreview =
-  | { kind: 'text'; text: string }
-  | { kind: 'image'; mediaType: string; bytes: Uint8Array }
-  | { kind: 'missing' | 'unsupported' | 'too-large' };
 export interface AgentCommand {
   operation: AgentOperation;
   params?: Record<string, string>;
@@ -78,7 +58,7 @@ export interface AgentCommand {
 }
 export interface AgentFailure { code: string; message: string; status?: number; details?: unknown }
 export type AgentResult<T = unknown> = { ok: true; value: T } | { ok: false; error: AgentFailure };
-export interface AgentEventBatch { subscriptionId: string; events: unknown[] }
+export interface AgentEventBatch { subscriptionId: string; events: AgentStreamEvent[] }
 export interface AgentRuntimeInfo { mode: 'development' | 'release'; ownerId: string; modelConfigurationEnabled: boolean }
 export interface DesktopSettings { storageDirectory: string }
 export interface DesktopApi {
@@ -106,5 +86,5 @@ export type AgentWorkerResponse =
   | { type: 'ready' }
   | { type: 'initialized'; result: AgentResult<AgentRuntimeInfo> }
   | { type: 'result'; id: string; result: AgentResult }
-  | { type: 'events'; id: string; events: unknown[] }
+  | { type: 'events'; id: string; events: AgentStreamEvent[] }
   | { type: 'stopped' };

@@ -4,8 +4,9 @@ import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import type { AgentBootOptions, AgentCommand, AgentResult, AgentRuntimeInfo, AgentWorkerResponse } from '../shared/agent-ipc';
 import { WindowsProcessJob } from './windows-process-job';
+import type { AgentStreamEvent } from "../shared/agent/responses";
 
-interface Pending { resolve: (result: AgentResult) => void; onEvents?: ((events: unknown[]) => void) | undefined }
+interface Pending { resolve: (result: AgentResult) => void; onEvents?: ((events: AgentStreamEvent[]) => void) | undefined }
 
 export class AgentProcessHost {
   private child: UtilityProcess | undefined;
@@ -28,7 +29,7 @@ export class AgentProcessHost {
     return this.boot;
   }
 
-  async request(command: AgentCommand, onEvents?: (events: unknown[]) => void, id: string = randomUUID()): Promise<AgentResult> {
+  async request(command: AgentCommand, onEvents?: (events: AgentStreamEvent[]) => void, id: string = randomUUID()): Promise<AgentResult> {
     await this.ready();
     if (this.closing || !this.child) throw new Error('Agent is unavailable.');
     if (this.pending.size >= 64) throw new Error('Too many pending Agent requests.');

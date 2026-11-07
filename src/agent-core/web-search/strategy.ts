@@ -1,13 +1,13 @@
 import type { ModelExecutionSnapshot } from "../model/catalog-types.js";
-import type { WebSearchSettingsView } from "./types.js";
+import type { RuntimeWebSearchSettings, WebSearchProvider } from "../../shared/agent/web-search.js";
 
 export type WebSearchExecutionStrategy =
   | { kind: "native"; provider: "openai_responses" }
-  | { kind: "external"; provider: "brave" | "tavily" | "serper" | "bocha" }
+  | { kind: "external"; provider: WebSearchProvider }
   | { kind: "unavailable"; reason: "disabled" | "native_unsupported" | "credential_missing" };
 
 export function resolveWebSearchExecutionStrategy(
-  settings: WebSearchSettingsView,
+  settings: RuntimeWebSearchSettings,
   model: ModelExecutionSnapshot,
 ): WebSearchExecutionStrategy {
   if (!settings.enabled) return { kind: "unavailable", reason: "disabled" };

@@ -5,12 +5,12 @@ import { ArrowUp, Check, ChevronDown, ChevronRight, Square } from '@lucide/vue';
 
 import FloatingMenu from '../../../components/FloatingMenu.vue';
 
-export interface AIMessageInputModelOption {
+interface AIMessageInputModelOption {
   label: string;
   value: string;
 }
 
-export interface AIMessageInputReasoningOption {
+interface AIMessageInputReasoningOption {
   label: string;
   value: string;
   description?: string;

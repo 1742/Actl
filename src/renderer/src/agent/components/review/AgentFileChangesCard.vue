@@ -2,7 +2,7 @@
 import { computed, inject, shallowRef, watch } from 'vue';
 import { FileDiff } from '@lucide/vue';
 import { useRouter } from 'vue-router';
-import type { ReviewFile } from '../../../../../shared/agent-ipc';
+import type { ReviewFile } from '../../../../../shared/agent/review';
 import { getAgentRuntimeContext } from '../../services/runtimeClient';
 import { reviewTargetKey } from './reviewNavigation';
 import AgentResultCard from '../conversation/AgentResultCard.vue';

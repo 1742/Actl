@@ -6,7 +6,7 @@ import { Cable, LoaderCircle, Save, Trash2, Zap } from '@lucide/vue';
 import { useNotifyStore } from '../../../composables/notify';
 import { getAgentRuntimeClient } from '../../services/runtimeClient';
 import { useAgentStore } from '../../stores/agent';
-import type { RuntimeMcpServer, RuntimeMcpServerConfig } from '../../types';
+import type { RuntimeMcpServer, RuntimeMcpServerConfig } from '../../../../../shared/agent/mcp';
 import { mcpRefreshVersion } from '../navigation/libraryNavigation';
 
 const router = useRouter();

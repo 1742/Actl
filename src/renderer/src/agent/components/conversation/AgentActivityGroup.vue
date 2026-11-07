@@ -3,7 +3,7 @@ import { tr } from '../../../i18n';
 import { computed, ref } from 'vue';
 import { ChevronRight } from '@lucide/vue';
 import UnknownOutput from '../responses/UnknownOutput.vue';
-import type { AgentOutputBlock } from '../../types';
+import type { AgentOutputBlock } from './types';
 import { agentOutputHint } from '../../utils';
 import AgentReasoningBlock from './AgentReasoningBlock.vue';
 import AgentToolBlock from './AgentToolBlock.vue';

@@ -170,10 +170,3 @@ export interface AIResponseContext {
   /** Latest applied IPC sequence; used only to make stream replay idempotent. */
   lastSequenceNumber?: number;
 }
-
-export interface AIResponseStreamEvent extends Record<string, unknown> {
-  type: string;
-  response_id?: string;
-  response?: unknown;
-  sequence_number?: number;
-}

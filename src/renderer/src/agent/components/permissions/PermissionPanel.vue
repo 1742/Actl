@@ -6,13 +6,13 @@ import { computed, ref, watch } from 'vue';
 import { useNotifyStore } from '../../../composables/notify';
 import { resolveAgentPermissionBatch, stopAgentResponse } from '../../composables/useAgent';
 import { useAgentStore } from '../../stores/agent';
-import type { PermissionDecision } from '../../types';
+import type { PermissionResolutionDto } from '../../../../../shared/agent/responses';
 
 const agentStore = useAgentStore();
 const notify = useNotifyStore();
 const currentIndex = ref(0);
 const previewExpanded = ref(false);
-const decisions = ref<Record<string, PermissionDecision>>({});
+const decisions = ref<Record<string, PermissionResolutionDto>>({});
 const denialReasons = ref<Record<string, string>>({});
 const batch = computed(() => agentStore.pendingPermissionBatch);
 const permissions = computed(() => batch.value?.permissions || []);
@@ -119,7 +119,7 @@ function move(offset: number) {
   if (next >= 0 && next < permissions.value.length) currentIndex.value = next;
 }
 
-async function applyDecision(decision: PermissionDecision) {
+async function applyDecision(decision: PermissionResolutionDto) {
   const sessionId = agentStore.selectedSessionId;
   const updated = { ...decisions.value, [decision.permission_id]: decision };
   decisions.value = updated;
@@ -132,7 +132,7 @@ async function applyDecision(decision: PermissionDecision) {
     }
   }
 
-  const orderedDecisions = permissions.value.map((item) => updated[item.id]).filter((item): item is PermissionDecision => !!item);
+  const orderedDecisions = permissions.value.map((item) => updated[item.id]).filter((item): item is PermissionResolutionDto => !!item);
   const result = await resolveAgentPermissionBatch(orderedDecisions, sessionId);
   notify.display(result.status, result.message);
 }

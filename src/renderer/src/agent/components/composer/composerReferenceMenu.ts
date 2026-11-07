@@ -1,4 +1,6 @@
-import type { RuntimeMcpCatalogServer, RuntimeSkill, RuntimeWorkspaceFile } from '../../types';
+import type { RuntimeMcpCatalogServer } from '../../../../../shared/agent/mcp';
+import type { RuntimeSkill } from '../../../../../shared/agent/skills';
+import type { RuntimeWorkspaceFile } from '../../../../../shared/agent/workspace';
 
 export type ComposerMenuCandidate =
   | { key: string; type: 'attachment' }

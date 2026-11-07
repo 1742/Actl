@@ -1,5 +1,5 @@
-import type { AIWebSearchCallItem } from "../types/aiResponse";
-import type { AgentOutputBlock } from "../types";
+import type { AIWebSearchCallItem } from '../components/responses/types';
+import type { AgentOutputBlock } from '../components/conversation/types';
 
 /** A web search source normalized for display: bare host plus path, with the provider title when present. */
 export interface AgentWebSource {

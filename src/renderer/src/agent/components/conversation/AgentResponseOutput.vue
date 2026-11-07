@@ -4,7 +4,7 @@ import { computed, ref, watch } from 'vue';
 import { ChevronRight } from '@lucide/vue';
 import MessageOutput from '../responses/MessageOutput.vue';
 import MessageTools from '../responses/MessageTools.vue';
-import type { AIResponseContext } from '../../types/aiResponse';
+import type { AIResponseContext } from '../responses/types';
 import { buildAgentOutputGroups, type AgentOutputGroup } from '../../utils';
 import { collectWebQueries, collectWebSources } from '../../utils/webSearch';
 import AgentActivityGroup from './AgentActivityGroup.vue';

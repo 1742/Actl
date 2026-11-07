@@ -2,7 +2,7 @@
 import { ref } from 'vue';
 import { ChevronRight, Ellipsis, Folder, Pencil, Trash2 } from '@lucide/vue';
 import FloatingMenu from '../../../components/FloatingMenu.vue';
-import type { AgentProject } from '../../types';
+import type { AgentProject } from '../../../../../shared/agent/sessions';
 import { projectName } from '../../utils';
 
 defineProps<{

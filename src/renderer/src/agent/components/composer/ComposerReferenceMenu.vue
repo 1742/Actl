@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from 'vue';
-import { currentLocale } from '../../../i18n';
 import {
   ArrowLeft,
   ChevronRight,
@@ -238,9 +237,7 @@ defineExpose({ scrollToCandidate });
         <template v-if="candidate.type === 'skill'">
           <span class="shrink-0 text-sm font-medium">{{ candidate.item.name }}</span>
           <span class="min-w-0 flex-1 truncate text-xs text-gray-400">{{
-            currentLocale === 'zh-CN'
-              ? candidate.item.description_zh || candidate.item.description
-              : candidate.item.description || candidate.item.description_zh
+            candidate.item.description
           }}</span>
           <span v-if="selectedSkillIds.has(candidate.item.id)" class="shrink-0 text-xs">{{
             $t('ui.referenced')

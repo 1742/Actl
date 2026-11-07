@@ -1,15 +1,31 @@
 import type {
-  AgentInputContent, AgentPermissionMode, AgentResponse, AgentRuntimeCapabilities, AgentRuntimeKind,
-  CreateRuntimeProviderAccount, PermissionDecision, RuntimeModel, RuntimeModelCatalog, RuntimeModelConfig,
-  RuntimeProviderAccount, RuntimeReasoningEffort, AgentProject, AgentSession,
-  RuntimeSkill, RuntimeSkillContext, SkillDetail, RuntimeStoredFile, RuntimeStreamEvent, RuntimeWorkspaceFileSearchResult,
-  RuntimeWorkspaceTree,
-  RuntimeWebSearchResult, RuntimeWebSearchSettings, RuntimePromptSettings,
-  RuntimeMcpServer, RuntimeMcpServerConfig, RuntimeMcpCatalogServer,
-  SessionContext,
-} from "../types";
+  ResponseInputPartDto, PermissionMode, AgentResponseDto, PermissionResolutionDto, AgentStreamEvent,
+} from '../../../../shared/agent/responses';
+import type {
+  CreateRuntimeProviderAccount, RuntimeModelCatalog, RuntimeModelConfig, RuntimeProviderAccount,
+  ReasoningEffort,
+} from '../../../../shared/agent/models';
+import type { AgentProject, AgentSession, SessionContext } from '../../../../shared/agent/sessions';
+import type { RuntimeSkill, RuntimeSkillContext, SkillDetail } from '../../../../shared/agent/skills';
+import type { RuntimeStoredFile } from '../../../../shared/agent/files';
+import type { RuntimeWorkspaceFileSearchResult, RuntimeWorkspaceTree, WorkspaceFilePreview } from '../../../../shared/agent/workspace';
+import type { RuntimeWebSearchResult, RuntimeWebSearchSettings } from '../../../../shared/agent/web-search';
+import type { RuntimePromptSettings } from '../../../../shared/agent/prompts';
+import type { RuntimeMcpServer, RuntimeMcpServerConfig, RuntimeMcpCatalogServer } from '../../../../shared/agent/mcp';
 import { localClient } from "./localClient";
-import type { SessionReview, WorkspaceFilePreview } from "../../../../shared/agent-ipc";
+import type { SessionReview } from '../../../../shared/agent/review';
+
+export type AgentRuntimeKind = "local";
+
+export interface AgentRuntimeCapabilities {
+  modelConfiguration: boolean;
+  skills: boolean;
+  workspace: boolean;
+  uploadFile: boolean;
+  permissions: boolean;
+  sessionProjectBinding: boolean;
+  localProjectPaths: boolean;
+}
 
 export { RuntimeRequestError } from "./desktopTransport";
 
@@ -46,7 +62,7 @@ export interface AgentRuntimeClient {
   deleteSession(sessionId: string): Promise<void>;
   getContext(sessionId: string): Promise<SessionContext>;
   getSessionReview(sessionId: string, options?: { fileId?: string; runId?: string }): Promise<SessionReview>;
-  compactSession(sessionId: string, model: string, reasoningEffort?: RuntimeReasoningEffort): Promise<{ compressed: boolean; summarized_run_count: number }>;
+  compactSession(sessionId: string, model: string, reasoningEffort?: ReasoningEffort): Promise<{ compressed: boolean; summarized_run_count: number }>;
 
   //#endregion
 
@@ -60,10 +76,10 @@ export interface AgentRuntimeClient {
   replaceProviderCredential(accountId: string, apiKey: string): Promise<void>;
   deleteProviderAccount(accountId: string): Promise<void>;
   clearProviderCredential(accountId: string): Promise<void>;
-  createModel(accountId: string, model: RuntimeModelConfig): Promise<RuntimeModel>;
-  updateModel(modelTargetId: string, model: RuntimeModelConfig): Promise<RuntimeModel>;
+  createModel(accountId: string, model: RuntimeModelConfig): Promise<{ id: string }>;
+  updateModel(modelTargetId: string, model: RuntimeModelConfig): Promise<{ id: string }>;
   deleteModel(modelTargetId: string): Promise<void>;
-  setModelPreference(modelTargetId: string | null, reasoningEffort?: RuntimeReasoningEffort): Promise<void>;
+  setModelPreference(modelTargetId: string | null, reasoningEffort?: ReasoningEffort): Promise<void>;
 
   //#endregion
 
@@ -112,21 +128,21 @@ export interface AgentRuntimeClient {
   streamResponse(
     sessionId: string, 
     model: string, 
-    content: AgentInputContent[], 
-    reasoningEffort: RuntimeReasoningEffort | undefined, 
-    permissionMode: AgentPermissionMode, 
-    onEvent: (event: RuntimeStreamEvent) => void, 
+    content: ResponseInputPartDto[],
+    reasoningEffort: ReasoningEffort | undefined,
+    permissionMode: PermissionMode,
+    onEvent: (event: AgentStreamEvent) => void,
     signal?: AbortSignal
-  ): Promise<AgentResponse>;
-  cancelResponse(sessionId: string, responseId: string): Promise<AgentResponse>;
+  ): Promise<AgentResponseDto>;
+  cancelResponse(sessionId: string, responseId: string): Promise<AgentResponseDto>;
   streamPermission(
     sessionId: string, 
     responseId: string, 
     batchId: string, 
-    decisions: PermissionDecision[], 
-    onEvent: (event: RuntimeStreamEvent) => void, 
+    decisions: PermissionResolutionDto[],
+    onEvent: (event: AgentStreamEvent) => void,
     signal?: AbortSignal
-  ): Promise<AgentResponse>;
+  ): Promise<AgentResponseDto>;
 
   //#endregion
 }

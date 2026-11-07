@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import type { AIResponseContext, AIResponseContent } from '../../types/aiResponse';
+import type { AIResponseContext, AIResponseContent } from './types';
 import { readInputContentDisplayText } from '../../utils/aiResponse';
 
 const props = defineProps<{ contexts: AIResponseContext[]; activeResponseId?: string | null }>();

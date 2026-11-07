@@ -1,7 +1,9 @@
 import { lstat, open, readFile, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { canonicalizePotentialPath, isPathInside, pathsEqual } from "../tools/path-security.js";
-import type { WorkspaceFilePreview } from "../../shared/agent-ipc.js";
+import type {
+  RuntimeWorkspaceFile, RuntimeWorkspaceFileSearchResult, RuntimeWorkspaceTree, WorkspaceFilePreview,
+} from "../../shared/agent/workspace.js";
 
 export type WorkspaceDirectoryErrorCode =
   | "workspace_directory_not_found"
@@ -30,29 +32,6 @@ export interface WalkFilesOptions {
 
 export interface WalkFilesResult {
   scannedFiles: number;
-  truncated: boolean;
-}
-
-export interface WorkspaceFileSearchItem {
-  type: "workspace_file";
-  path: string;
-  name: string;
-}
-
-export interface WorkspaceFileQueryResult {
-  data: WorkspaceFileSearchItem[];
-  truncated: boolean;
-}
-
-export interface WorkspaceDirectoryEntry {
-  type: "file" | "directory";
-  name: string;
-  path: string;
-}
-
-export interface WorkspaceDirectoryTree {
-  path: string;
-  entries: WorkspaceDirectoryEntry[];
   truncated: boolean;
 }
 
@@ -111,7 +90,7 @@ export class WorkspaceFileService {
   async listDirectory(
     workspaceRootInput: string,
     options: { path?: string; maxEntries: number },
-  ): Promise<WorkspaceDirectoryTree> {
+  ): Promise<RuntimeWorkspaceTree> {
     const workspaceRoot = await canonicalizePotentialPath(workspaceRootInput);
     let target: string;
     try {
@@ -235,9 +214,9 @@ export class WorkspaceFileService {
     query: string,
     limit: number,
     signal?: AbortSignal,
-  ): Promise<WorkspaceFileQueryResult> {
+  ): Promise<RuntimeWorkspaceFileSearchResult> {
     const normalizedQuery = query.trim().toLocaleLowerCase();
-    const matches: Array<{ item: WorkspaceFileSearchItem; score: number }> = [];
+    const matches: Array<{ item: RuntimeWorkspaceFile; score: number }> = [];
     const result = await this.walkFiles(
       workspaceRoot,
       { maxFiles: DEFAULT_MAX_SCANNED_FILES, ...(signal ? { signal } : {}) },

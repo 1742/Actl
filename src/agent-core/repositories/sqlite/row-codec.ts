@@ -1,7 +1,4 @@
-import type {
-  ProviderAccountRecord,
-  ModelTargetRecord,
-} from "../../model/catalog-types.js";
+import type { ModelTargetRecord, ProviderAccountRecord } from "../model-catalog-repository.js";
 import {
   modelCapabilitiesSchema,
   modelExecutionSnapshotSchema,

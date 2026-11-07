@@ -1,3 +1,4 @@
+import type { RuntimePromptSettings } from "../../shared/agent/prompts.js";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { TranscriptItem } from "../model/types.js";
@@ -20,19 +21,6 @@ export interface PromptSource {
 interface PromptPart {
   text: string | null;
   source: PromptSource;
-}
-
-export interface PromptBlock {
-  id: string;
-  title: string;
-  text: string;
-  enabled: boolean;
-}
-
-export interface PromptSettings {
-  revision: number;
-  blocks: PromptBlock[];
-  updatedAt: string | null;
 }
 
 export interface CompiledPrompt {
@@ -149,7 +137,7 @@ export const BASE_RUNTIME_INSTRUCTIONS = [
   "• If you are unsure, ask for clarification rather than guessing.",
 ].join("\n");
 
-export function createDefaultPromptSettings(): PromptSettings {
+export function createDefaultPromptSettings(): RuntimePromptSettings {
   return {
     revision: 0,
     blocks: [{

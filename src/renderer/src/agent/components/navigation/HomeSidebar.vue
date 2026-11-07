@@ -15,11 +15,12 @@ import { useRouter } from 'vue-router';
 import { useNotifyStore } from '../../../composables/notify';
 import { enterAgentConversation } from '../../router';
 import { pickDirectory } from '../../composables/useFileBridge';
-import AgentManageDialog from '../dialogs/AgentManageDialog.vue';
+import AgentManageDialog, { type DialogMode } from '../dialogs/AgentManageDialog.vue';
 import AgentSessionMenu from '../dialogs/AgentSessionMenu.vue';
 import SearchChatDialog from '../dialogs/SearchChatDialog.vue';
 import { useAgentStore } from '../../stores/agent.ts';
-import type { RuntimeProject, AgentRuntimeKind, RuntimeSession } from '../../types';
+import type { RuntimeProject, RuntimeSession } from './types';
+import type { AgentRuntimeKind } from '../../services/runtimeClient';
 import {
   createAgentProject,
   deleteAgentProject,
@@ -29,8 +30,6 @@ import {
   startNewAgentDraft,
 } from '../../composables/useAgent';
 import { conversationName, projectName } from '../../utils';
-
-type DialogMode = 'create-project' | 'rename-session' | 'delete-project' | 'delete-session';
 
 const emit = defineEmits<{ close: [] }>();
 const router = useRouter();

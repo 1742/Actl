@@ -5,6 +5,7 @@ import { runWithRequestContext } from '../agent-core/observability/request-conte
 import { AgentApplication } from './agent-application';
 import { toApiError } from '../agent-core/contracts/common/api-error';
 import type { AgentWorkerRequest, AgentWorkerResponse, AgentResult } from '../shared/agent-ipc';
+import type { AgentStreamEvent } from "../shared/agent/responses";
 import { z } from 'zod';
 import type { Logger } from '../agent-core/observability/logger';
 
@@ -45,7 +46,7 @@ parent.on('message', ({ data }: { data: AgentWorkerRequest }) => {
   } else if (data.type === 'request') {
     if (!application || stopping) { send({ type: 'result', id: data.id, result: { ok: false, error: { code: 'runtime_unavailable', message: 'Agent is not ready.' } } }); return; }
     const current = application;
-    const events: unknown[] = [];
+    const events: AgentStreamEvent[] = [];
     let timer: NodeJS.Timeout | undefined;
     const flush = () => {
       if (timer) clearTimeout(timer);
@@ -53,7 +54,7 @@ parent.on('message', ({ data }: { data: AgentWorkerRequest }) => {
       if (events.length && !detached.has(data.id)) send({ type: 'events', id: data.id, events: events.splice(0) });
       else events.length = 0;
     };
-    const onEvent = (event: unknown) => {
+    const onEvent = (event: AgentStreamEvent) => {
       if (detached.has(data.id)) return;
       events.push(event);
       if (events.length >= 64) flush();

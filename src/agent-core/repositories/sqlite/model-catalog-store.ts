@@ -1,8 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
-import type { ProviderAccountRecord, ModelTargetRecord } from "../../model/catalog-types.js";
 import type { EncryptedSecret } from "../../security/encrypted-secret.js";
 import { reasoningEffortSchema } from "../../model/catalog-types.js";
-import type { CreateProviderAccountRecord, ModelCatalogRepository, ModelPreferenceRecord } from "../model-catalog-repository.js";
+import type { CreateProviderAccountRecord, ModelCatalogRepository, ModelPreferenceRecord, ModelTargetRecord, ProviderAccountRecord } from "../model-catalog-repository.js";
 import {
   assertChanged, bufferColumn, nullableStringColumn, numberColumn, type SqliteRow,
   toProviderAccount, toModelTarget,

@@ -1,4 +1,4 @@
-import type { ReviewLine } from "../../shared/agent-ipc.js";
+import type { ReviewLine } from "../../shared/agent/review.js";
 
 // Preserve line endings so a change to the final newline is still visible.
 const splitLines = (text: string) => text.match(/[^\n]*\n|[^\n]+$/g) ?? [];

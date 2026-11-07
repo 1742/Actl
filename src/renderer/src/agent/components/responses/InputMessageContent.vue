@@ -3,7 +3,7 @@ import { tr } from '../../../i18n';
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { Download, FileText, Package, Plug } from '@lucide/vue';
 
-import type { AIFileContent, AIResponseContent } from '../../types/aiResponse.ts';
+import type { AIFileContent, AIResponseContent } from './types';
 import { readContentText } from '../../utils/aiResponse.ts';
 import MessageHtml from './MessageHtml.vue';
 

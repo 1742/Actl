@@ -1,16 +1,10 @@
-import type {
-  AIFunctionCallItem,
-  AIMessageItem,
-  AIReasoningItem,
-  AIResponseContext,
-  AIResponseOutputItem,
-  AIResponseStreamEvent,
-} from "../types/aiResponse";
+import type { AIFunctionCallItem, AIMessageItem, AIReasoningItem, AIResponseContext, AIResponseOutputItem } from '../components/responses/types';
+import type { AgentStreamEvent } from '../../../../shared/agent/responses';
 import { normalizeContent, normalizeResponse, normalizeResponseItem } from "../utils/aiResponse";
 
-export type ResponseReduceStatus = "streaming" | "completed" | "failed" | "incomplete" | "cancelled";
+type ResponseReduceStatus = "streaming" | "completed" | "failed" | "incomplete" | "cancelled";
 
-export interface ResponseReduceResult {
+interface ResponseReduceResult {
   status: ResponseReduceStatus;
   context: AIResponseContext;
   message?: string;
@@ -21,14 +15,12 @@ const asRecord = (value: unknown): Record<string, unknown> => (
   value !== null && typeof value === "object" ? value as Record<string, unknown> : {}
 );
 
-const numberAt = (event: AIResponseStreamEvent, key: string) => {
-  const value = event[key];
-  return typeof value === "number" ? value : Number(value);
-};
+type EventOf<Type extends AgentStreamEvent["type"]> = Extract<AgentStreamEvent, { type: Type }>;
+type OutputItemLocation = { output_index: number; item_id: string };
 
 export function reduceResponseEvent(
   current: AIResponseContext | undefined,
-  event: AIResponseStreamEvent,
+  event: AgentStreamEvent,
 ): ResponseReduceResult {
   const context = current ?? contextFromEvent(event);
   if (typeof event.sequence_number === "number") {
@@ -75,10 +67,8 @@ export function reduceResponseEvent(
       finishReasoningContent(context, event);
       return result("streaming", context);
     case "response.function_call_arguments.delta":
-      updateFunctionArguments(context, event, false);
-      return result("streaming", context);
     case "response.function_call_arguments.done":
-      updateFunctionArguments(context, event, true);
+      updateFunctionArguments(context, event);
       return result("streaming", context);
     case "response.completed":
       replaceResponse(context, event.response);
@@ -108,13 +98,14 @@ export function reduceResponseEvent(
   }
 }
 
-function contextFromEvent(event: AIResponseStreamEvent): AIResponseContext {
+function contextFromEvent(event: AgentStreamEvent): AIResponseContext {
   const now = new Date().toISOString();
+  const response = "response" in event ? event.response : undefined;
   return {
     sessionId: "",
     input: [],
-    response: normalizeResponse(event.response ?? { id: event.response_id, status: "in_progress", output: [] }),
-    createdAt: timestampFrom(event.response) ?? now,
+    response: normalizeResponse(response ?? { id: event.response_id, status: "in_progress", output: [] }),
+    createdAt: timestampFrom(response) ?? now,
     updatedAt: now,
   };
 }
@@ -152,8 +143,8 @@ function timestampFrom(source: unknown) {
   if (typeof value === "number") return new Date(value < 1e12 ? value * 1000 : value).toISOString();
 }
 
-function outputItem(context: AIResponseContext, event: AIResponseStreamEvent, fallbackType: string): AIResponseOutputItem {
-  const index = numberAt(event, "output_index");
+function outputItem(context: AIResponseContext, event: OutputItemLocation, fallbackType: string): AIResponseOutputItem {
+  const index = event.output_index;
   const itemId = typeof event.item_id === "string" ? event.item_id : undefined;
   const byId = itemId ? context.response.output.find((item) => item.id === itemId) : undefined;
   if (byId) return byId;
@@ -173,34 +164,34 @@ function outputItem(context: AIResponseContext, event: AIResponseStreamEvent, fa
   return fallback;
 }
 
-function setOutputItem(context: AIResponseContext, event: AIResponseStreamEvent) {
-  const index = numberAt(event, "output_index");
+function setOutputItem(context: AIResponseContext, event: EventOf<"response.output_item.added" | "response.output_item.done">) {
+  const index = event.output_index;
   const item = normalizeResponseItem(event.item);
   const byId = item.id ? context.response.output.findIndex((current) => current.id === item.id) : -1;
   const targetIndex = Number.isInteger(index) && index >= 0 ? index : byId >= 0 ? byId : context.response.output.length;
   context.response.output[targetIndex] = item;
 }
 
-function messageItem(context: AIResponseContext, event: AIResponseStreamEvent) {
+function messageItem(context: AIResponseContext, event: OutputItemLocation) {
   const item = outputItem(context, event, "message");
   return item.type === "message" ? item as AIMessageItem : undefined;
 }
 
-function reasoningItem(context: AIResponseContext, event: AIResponseStreamEvent) {
+function reasoningItem(context: AIResponseContext, event: OutputItemLocation) {
   const item = outputItem(context, event, "reasoning");
   return item.type === "reasoning" ? item as AIReasoningItem : undefined;
 }
 
-function setContentPart(context: AIResponseContext, event: AIResponseStreamEvent) {
+function setContentPart(context: AIResponseContext, event: EventOf<"response.content_part.added" | "response.content_part.done">) {
   const item = messageItem(context, event);
-  const index = numberAt(event, "content_index");
+  const index = event.content_index;
   if (!item || !Number.isInteger(index)) return;
   item.content[index] = normalizeContent(event.part);
 }
 
-function appendOutputText(context: AIResponseContext, event: AIResponseStreamEvent) {
+function appendOutputText(context: AIResponseContext, event: EventOf<"response.output_text.delta">) {
   const item = messageItem(context, event);
-  const index = numberAt(event, "content_index");
+  const index = event.content_index;
   if (!item || !Number.isInteger(index)) return;
   const current = item.content[index];
   const part = current?.type === "output_text" ? current : { type: "output_text" as const, text: "", annotations: [] };
@@ -208,23 +199,23 @@ function appendOutputText(context: AIResponseContext, event: AIResponseStreamEve
   item.content[index] = part;
 }
 
-function finishOutputText(context: AIResponseContext, event: AIResponseStreamEvent) {
+function finishOutputText(context: AIResponseContext, event: EventOf<"response.output_text.done">) {
   const item = messageItem(context, event);
-  const index = numberAt(event, "content_index");
+  const index = event.content_index;
   if (!item || !Number.isInteger(index)) return;
   item.content[index] = { type: "output_text", text: typeof event.text === "string" ? event.text : "", annotations: [] };
 }
 
-function setReasoningPart(context: AIResponseContext, event: AIResponseStreamEvent) {
+function setReasoningPart(context: AIResponseContext, event: EventOf<"response.reasoning_summary_part.added" | "response.reasoning_summary_part.done">) {
   const item = reasoningItem(context, event);
-  const index = numberAt(event, "summary_index");
+  const index = event.summary_index;
   if (!item || !Number.isInteger(index)) return;
   item.summary[index] = normalizeContent(event.part);
 }
 
-function appendReasoningText(context: AIResponseContext, event: AIResponseStreamEvent) {
+function appendReasoningText(context: AIResponseContext, event: EventOf<"response.reasoning_summary_text.delta">) {
   const item = reasoningItem(context, event);
-  const index = numberAt(event, "summary_index");
+  const index = event.summary_index;
   if (!item || !Number.isInteger(index)) return;
   const current = item.summary[index];
   const part = current?.type === "summary_text" ? current : { type: "summary_text" as const, text: "" };
@@ -232,16 +223,16 @@ function appendReasoningText(context: AIResponseContext, event: AIResponseStream
   item.summary[index] = part;
 }
 
-function finishReasoningText(context: AIResponseContext, event: AIResponseStreamEvent) {
+function finishReasoningText(context: AIResponseContext, event: EventOf<"response.reasoning_summary_text.done">) {
   const item = reasoningItem(context, event);
-  const index = numberAt(event, "summary_index");
+  const index = event.summary_index;
   if (!item || !Number.isInteger(index)) return;
   item.summary[index] = { type: "summary_text", text: typeof event.text === "string" ? event.text : "" };
 }
 
-function appendReasoningContent(context: AIResponseContext, event: AIResponseStreamEvent) {
+function appendReasoningContent(context: AIResponseContext, event: EventOf<"response.reasoning_text.delta">) {
   const item = reasoningItem(context, event);
-  const index = numberAt(event, "content_index");
+  const index = event.content_index;
   if (!item || !Number.isInteger(index)) return;
   const current = item.content[index];
   const part = current?.type === "reasoning_text" ? current : { type: "reasoning_text" as const, text: "" };
@@ -249,20 +240,20 @@ function appendReasoningContent(context: AIResponseContext, event: AIResponseStr
   item.content[index] = part;
 }
 
-function finishReasoningContent(context: AIResponseContext, event: AIResponseStreamEvent) {
+function finishReasoningContent(context: AIResponseContext, event: EventOf<"response.reasoning_text.done">) {
   const item = reasoningItem(context, event);
-  const index = numberAt(event, "content_index");
+  const index = event.content_index;
   if (!item || !Number.isInteger(index)) return;
   item.content[index] = { type: "reasoning_text", text: typeof event.text === "string" ? event.text : "" };
 }
 
-function updateFunctionArguments(context: AIResponseContext, event: AIResponseStreamEvent, done: boolean) {
+function updateFunctionArguments(context: AIResponseContext, event: EventOf<"response.function_call_arguments.delta" | "response.function_call_arguments.done">) {
   const item = outputItem(context, event, "function_call");
   if (item.type !== "function_call") return;
   const call = item as AIFunctionCallItem;
-  if (done) {
+  if (event.type === "response.function_call_arguments.done") {
     call.arguments = typeof event.arguments === "string" ? event.arguments : call.arguments;
-    if (typeof event.name === "string") call.name = event.name;
+    if ("name" in event && typeof event.name === "string") call.name = event.name;
   } else {
     call.arguments += typeof event.delta === "string" ? event.delta : "";
   }

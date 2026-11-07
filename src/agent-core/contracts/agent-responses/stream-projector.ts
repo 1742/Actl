@@ -1,7 +1,11 @@
 import type { TranscriptMessage, TranscriptReasoning } from "../../model/types.js";
 import type { AgentDomainEvent, AgentRunRecord, AgentTimelineItem } from "../../runtime/agent-domain.js";
 import { toAgentItemDto, toAgentResponseDto, toPendingPermissionBatchDto, type StoredFileMetadataResolver } from "./presenter.js";
-import type { AgentStreamEvent, AgentStreamEventPayload } from "./types.js";
+import type { AgentStreamEvent } from "../../../shared/agent/responses.js";
+
+type AgentStreamEventPayload = AgentStreamEvent extends infer Event
+  ? Event extends AgentStreamEvent ? Omit<Event, "response_id" | "sequence_number"> : never
+  : never;
 
 export class AgentStreamProjector {
   private readonly announcedParts = new Set<string>();
@@ -14,7 +18,7 @@ export class AgentStreamProjector {
       ...payload,
       response_id: run.id,
       sequence_number: run.nextSequenceNumber++,
-    } as AgentStreamEvent));
+    }));
   }
 
   private projectPayload(event: AgentDomainEvent): AgentStreamEventPayload[] {

@@ -1,17 +1,17 @@
+import type {
+  CreateRuntimeProviderAccount, RuntimeModel, RuntimeModelCatalog, RuntimeProviderAccount,
+} from "../../shared/agent/models.js";
 import type { RuntimeMode } from "../app/config.js";
 import type {
   ModelCapabilities,
   ModelExecutionSnapshot,
   ModelProtocolConfig,
-  ModelTargetDto,
-  ProviderAccountRecord,
   ReasoningEffort,
-  ModelTargetRecord,
 } from "../model/catalog-types.js";
 import { modelCapabilitiesSchema, modelProtocolSchema, TEXT_TOOL_CAPABILITIES } from "../model/catalog-types.js";
 import type { ModelClient } from "../model/client.js";
 import { createModelClient } from "../model/client-factory.js";
-import type { ModelCatalogRepository } from "../repositories/model-catalog-repository.js";
+import type { ModelCatalogRepository, ModelTargetRecord, ProviderAccountRecord } from "../repositories/model-catalog-repository.js";
 import type { SecretProtector } from "../security/secret-protector.js";
 import { createRandomId, nowIso } from "../utils.js";
 
@@ -31,29 +31,6 @@ export class ModelStoreError extends Error {
   }
 }
 
-export interface ModelCatalogResult {
-  data: ModelTargetDto[];
-  selectedModelTargetId?: string;
-  selectedReasoningEffort?: ReasoningEffort;
-  diagnostics: Array<{ code: string; message: string }>;
-}
-
-export interface ProviderAccountView {
-  id: string;
-  displayName: string;
-  baseURL: string;
-  enabled: boolean;
-  hasCredential: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface CreateProviderAccountInput {
-  displayName: string;
-  baseURL: string;
-  apiKey: string;
-}
-
 export class ModelStore {
   constructor(
     private readonly repository: ModelCatalogRepository,
@@ -61,7 +38,7 @@ export class ModelStore {
     readonly mode: RuntimeMode,
   ) {}
 
-  async list(ownerId: string): Promise<ModelCatalogResult> {
+  async list(ownerId: string): Promise<RuntimeModelCatalog> {
     const data = this.repository.listUserModelTargets(ownerId).flatMap((target) => {
       const account = this.repository.getProviderAccount(ownerId, target.accountId);
       return account ? [toDto(target, account)] : [];
@@ -87,7 +64,7 @@ export class ModelStore {
     };
   }
 
-  listProviderAccounts(ownerId: string): ProviderAccountView[] {
+  listProviderAccounts(ownerId: string): RuntimeProviderAccount[] {
     return this.repository.listProviderAccounts(ownerId).map((account) => ({
       id: account.id,
       displayName: account.displayName,
@@ -99,7 +76,7 @@ export class ModelStore {
     }));
   }
 
-  async createProviderAccount(ownerId: string, input: CreateProviderAccountInput): Promise<ProviderAccountRecord> {
+  async createProviderAccount(ownerId: string, input: CreateRuntimeProviderAccount): Promise<ProviderAccountRecord> {
     const now = nowIso();
     const account: ProviderAccountRecord = {
       id: createRandomId("provider"),
@@ -287,7 +264,7 @@ export class ModelStore {
   }
 }
 
-function toDto(target: ModelTargetRecord, account: ProviderAccountRecord): ModelTargetDto {
+function toDto(target: ModelTargetRecord, account: ProviderAccountRecord): RuntimeModel {
   return {
     id: target.id,
     providerAccountId: account.id,

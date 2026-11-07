@@ -2,31 +2,21 @@ import { tr } from '../../i18n';
 import { bridge } from '../../services/bridge';
 import { reduceResponseEvent } from './useResponseReducer';
 import { releaseSelections } from './useFileBridge';
-import type { AIFileContent, AIResponseContext } from '../types/aiResponse';
+import type { AIFileContent, AIResponseContext } from '../components/responses/types';
 import { normalizeResponseContext } from '../utils/aiResponse';
 import { getAgentRuntimeContext, RuntimeRequestError } from '../services/runtimeClient';
 import { useAgentStore } from '../stores/agent';
+import type { AgentComposerAttachment } from '../components/composer/types';
 import type {
-  AgentComposerAttachment,
-  AgentInputContent,
-  AgentPermissionMode,
-  ActionResult,
-  AgentPermissionEvent,
-  AgentResponse,
-  PermissionDecision,
-  PermissionRequestItem,
-  RuntimeModelConfig,
-  RuntimeStreamEvent,
-  CreateRuntimeProviderAccount,
-  RuntimeSkill,
-  RuntimeSkillContext,
-  RuntimeReasoningEffort,
-  AgentRuntimeKind,
-  RuntimeProject,
-  RuntimeSession,
-  AgentProject,
-  AgentSession,
-} from '../types';
+  ResponseInputPartDto, PermissionMode, PendingPermissionBatchDto, AgentResponseDto,
+  PermissionResolutionDto, PermissionRequestItemDto, AgentStreamEvent,
+} from '../../../../shared/agent/responses';
+import type { ActionResult } from '../../types/common';
+import type { RuntimeModelConfig, CreateRuntimeProviderAccount, ReasoningEffort } from '../../../../shared/agent/models';
+import type { RuntimeSkill, RuntimeSkillContext } from '../../../../shared/agent/skills';
+import type { AgentRuntimeKind } from '../services/runtimeClient';
+import type { RuntimeProject, RuntimeSession } from '../components/navigation/types';
+import type { AgentProject, AgentSession } from '../../../../shared/agent/sessions';
 import { agentResponsesToContexts, titleFromInput } from '../utils';
 
 const activeStreamControllers = new Map<string, AbortController>();
@@ -453,7 +443,7 @@ export async function selectAgentModel(modelTargetId: string): Promise<ActionRes
   }
 }
 
-export async function selectAgentReasoning(effort?: RuntimeReasoningEffort): Promise<ActionResult> {
+export async function selectAgentReasoning(effort?: ReasoningEffort): Promise<ActionResult> {
   const store = useAgentStore();
   const previous = store.selectedReasoningEffort;
   store.selectReasoningEffort(effort);
@@ -686,10 +676,10 @@ type AttachmentUpdate = (
 ) => void;
 
 export async function sendAgentMessage(
-  content: AgentInputContent[],
+  content: ResponseInputPartDto[],
   attachments: AgentComposerAttachment[] = [],
   updateAttachment?: AttachmentUpdate,
-  permissionMode: AgentPermissionMode = 'ask',
+  permissionMode: PermissionMode = 'ask',
 ): Promise<ActionResult> {
   const store = useAgentStore();
   const draftContextKey = store.draftContextKey;
@@ -802,7 +792,7 @@ export async function sendAgentMessage(
     }
   }
 
-  const uploadedContent: AgentInputContent[] = attachments.flatMap((attachment) => {
+  const uploadedContent: ResponseInputPartDto[] = attachments.flatMap((attachment) => {
     const file = uploadedFiles.get(attachment.id);
     return file
       ? [
@@ -920,12 +910,7 @@ export async function stopAgentResponse(sessionId?: string): Promise<ActionResul
     const { session, client } = sessionContext(targetSessionId);
     const response = await client.cancelResponse(session.runtimeId, responseId);
     activeStreamControllers.get(targetSessionId)?.abort();
-    applyRuntimeEvent(targetSessionId, {
-      type: 'response.cancelled',
-      response_id: response.id,
-      response,
-    });
-    store.setPendingPermissionBatch(targetSessionId);
+    applyStreamResponseSnapshot(targetSessionId, response);
     return { status: 'success', message: tr('ui.generationStopped') };
   } catch (error) {
     const result = errorResult(error);
@@ -937,7 +922,7 @@ export async function stopAgentResponse(sessionId?: string): Promise<ActionResul
 
 async function setInitialSessionTitle(
   sessionId: string,
-  content: AgentInputContent[],
+  content: ResponseInputPartDto[],
   skills: RuntimeSkill[],
 ) {
   const store = useAgentStore();
@@ -957,7 +942,7 @@ async function setInitialSessionTitle(
 }
 
 export async function resolveAgentPermissionBatch(
-  decisions: PermissionDecision[],
+  decisions: PermissionResolutionDto[],
   sessionId?: string,
 ): Promise<ActionResult> {
   const store = useAgentStore();
@@ -1021,7 +1006,7 @@ async function reconcileSessionContext(sessionId: string) {
   }
 }
 
-function applyStreamResponseSnapshot(sessionId: string, response: AgentResponse) {
+function applyStreamResponseSnapshot(sessionId: string, response: AgentResponseDto) {
   const store = useAgentStore();
   const previous = store.findResponse(sessionId, response.id);
   const context = normalizeResponseContext({
@@ -1030,6 +1015,7 @@ function applyStreamResponseSnapshot(sessionId: string, response: AgentResponse)
     response,
     created_at: response.created_at || previous?.createdAt,
     updated_at: response.updated_at,
+    completed_at: response.completed_at || previous?.completedAt,
   });
   if (previous?.lastSequenceNumber !== undefined) context.lastSequenceNumber = previous.lastSequenceNumber;
   advanceSessionState(sessionId);
@@ -1037,7 +1023,7 @@ function applyStreamResponseSnapshot(sessionId: string, response: AgentResponse)
   if (response.status === 'waiting_permission' && response.pending_permission_batch) {
     // IPC's invoke reply and pushed event batches are separate deliveries. The
     // final snapshot also supplies approvals when the last batch was not observed.
-    applyRuntimeEvent(sessionId, { type: 'agent.permissions.requested', response_id: response.id, batch: response.pending_permission_batch });
+    applyPendingPermissionBatch(sessionId, context, response.pending_permission_batch);
   } else {
     store.setPendingPermissionBatch(sessionId);
     syncStateFromResponse(sessionId, response);
@@ -1090,12 +1076,12 @@ async function handleRuntimeRequestError(
   return errorResult(error);
 }
 
-function applyRuntimeEvent(sessionId: string, event: RuntimeStreamEvent) {
+function applyRuntimeEvent(sessionId: string, event: AgentStreamEvent) {
   const store = useAgentStore();
   advanceSessionState(sessionId);
   const runtime = store.ensureRuntime(sessionId);
   if (event.type === 'response.created') {
-    const response = event.response as AgentResponse;
+    const response = event.response;
     const optimistic = runtime.responses.find(
       (item) => item.response.id === runtime.activeResponseId,
     );
@@ -1121,30 +1107,11 @@ function applyRuntimeEvent(sessionId: string, event: RuntimeStreamEvent) {
   const context = store.findResponse(sessionId, responseId);
   if (!context) return;
   if (event.type === 'agent.permissions.requested') {
-    const permissionEvent = event as AgentPermissionEvent;
-    const alreadyPending = runtime.pendingPermissionBatch?.id === permissionEvent.batch?.id;
-    context.response.status = 'waiting_permission';
-    context.updatedAt = new Date().toISOString();
-    store.upsertResponse(sessionId, context);
-    store.setPendingPermissionBatch(sessionId, permissionEvent.batch);
-    syncStateFromResponse(sessionId, { id: responseId, status: 'waiting_permission' });
-    if (!alreadyPending && permissionEvent.batch?.permissions.length) {
-      const first = permissionEvent.batch.permissions[0]!;
-      const summary =
-        first.prompt || tr('dynamic.toolRequestsAction', { name: first.tool_call.name });
-      const count = permissionEvent.batch.permissions.length;
-      notifyAgentEvent(
-        sessionId,
-        'permission_requested',
-        count > 1
-          ? tr('dynamic.reviewRequests', { summary, count })
-          : tr('dynamic.reviewRequest', { summary }),
-      );
-    }
+    applyPendingPermissionBatch(sessionId, context, event.batch);
     return;
   }
   if (event.type === 'agent.permissions.resolved') {
-    applyPermissionResolutions(context, (event as AgentPermissionEvent).decisions);
+    applyPermissionResolutions(context, event.decisions);
     store.upsertResponse(sessionId, context);
     store.setPendingPermissionBatch(sessionId);
     // The permission endpoint starts a new IPC request.  Its first event is the
@@ -1173,18 +1140,42 @@ function applyRuntimeEvent(sessionId: string, event: RuntimeStreamEvent) {
   }
 }
 
+function applyPendingPermissionBatch(sessionId: string, context: AIResponseContext, batch: PendingPermissionBatchDto) {
+  const store = useAgentStore();
+  const responseId = context.response.id;
+  const alreadyPending = store.ensureRuntime(sessionId).pendingPermissionBatch?.id === batch.id;
+  context.response.status = 'waiting_permission';
+  context.updatedAt = new Date().toISOString();
+  store.upsertResponse(sessionId, context);
+  store.setPendingPermissionBatch(sessionId, batch);
+  syncStateFromResponse(sessionId, { id: responseId, status: 'waiting_permission' });
+  if (!alreadyPending && batch.permissions.length) {
+    const first = batch.permissions[0]!;
+    const summary =
+      first.prompt || tr('dynamic.toolRequestsAction', { name: first.tool_call.name });
+    const count = batch.permissions.length;
+    notifyAgentEvent(
+      sessionId,
+      'permission_requested',
+      count > 1
+        ? tr('dynamic.reviewRequests', { summary, count })
+        : tr('dynamic.reviewRequest', { summary }),
+    );
+  }
+}
+
 /** Apply the runtime-only permission transition to the corresponding output items. */
 function applyPermissionResolutions(
   context: AIResponseContext,
-  decisions: AgentPermissionEvent['decisions'],
+  decisions: PermissionResolutionDto[],
 ) {
   const decisionsByPermissionId = new Map(
-    (decisions || []).map((decision) => [decision.permission_id, decision]),
+    decisions.map((decision) => [decision.permission_id, decision]),
   );
 
   for (const item of context.response.output) {
     if (item.type !== 'permission_request') continue;
-    const permission = item as unknown as PermissionRequestItem;
+    const permission = item as unknown as PermissionRequestItemDto;
     const decision = decisionsByPermissionId.get(permission.permission_id);
     if (!decision) continue;
     permission.status = decision.decision === 'approve' ? 'approved' : 'denied';

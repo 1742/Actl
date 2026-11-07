@@ -1,11 +1,12 @@
 import { z } from "zod";
+import { permissionModes, type PermissionMode } from "../../shared/agent/responses.js";
 import type { ToolCall } from "../runtime/transcript.js";
 import type { ToolPermissionRequirement } from "../tools/registry.js";
 import type { PermissionDecision, PermissionEngine } from "./types.js";
 import { classifyShellCommand } from "./shell-command-policy.js";
 
-export const permissionModeSchema = z.enum(["plan", "ask", "accept_edits", "full_access"]);
-export type PermissionMode = z.infer<typeof permissionModeSchema>;
+export const permissionModeSchema = z.enum(permissionModes);
+export type { PermissionMode };
 
 export interface RunPermissionSnapshot {
   permissionMode: PermissionMode;

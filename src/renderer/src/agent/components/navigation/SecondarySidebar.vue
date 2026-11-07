@@ -8,7 +8,8 @@ import { useNotifyStore } from '../../../composables/notify';
 import { bridge } from '../../../services/bridge';
 import { getAgentRuntimeClient } from '../../services/runtimeClient';
 import { useAgentStore } from '../../stores/agent';
-import type { RuntimeMcpServer, RuntimeSkill } from '../../types';
+import type { RuntimeMcpServer } from '../../../../../shared/agent/mcp';
+import type { RuntimeSkill } from '../../../../../shared/agent/skills';
 import HomeSidebar from './HomeSidebar.vue';
 import { mcpRefreshVersion, skillsRefreshVersion } from './libraryNavigation';
 

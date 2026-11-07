@@ -2,16 +2,10 @@ import type { Logger } from "../observability/logger.js";
 import { z } from "zod";
 import type { ToolCallContext, ToolDefinition, ToolPermissionRequirement, ToolProvider } from "../tools/registry.js";
 import type { SecretProtector } from "../security/secret-protector.js";
-import { serverSchema, type McpConfig, type McpConfigRepository, type McpServerConfig } from "./mcp-config.js";
+import { serverSchema, type McpConfig } from "./mcp-config.js";
+import type { McpConfigRepository } from "../repositories/mcp-config-repository.js";
+import type { RuntimeMcpCatalogServer, RuntimeMcpServer, RuntimeMcpServerConfig } from "../../shared/agent/mcp.js";
 import { McpToolProvider } from "./mcp-tool-provider.js";
-
-export interface McpServerView {
-  name: string;
-  config: McpServerConfig;
-  connected: boolean;
-  error: string | null;
-  tools: Array<{ name: string; description: string }>;
-}
 
 const searchInputSchema = z.object({
   query: z.string().trim().min(1).optional().describe("Optional words to match against MCP server names, tool names, and descriptions."),
@@ -57,7 +51,7 @@ export class McpServerManager implements ToolProvider {
     }));
   }
 
-  listServers(): McpServerView[] {
+  listServers(): RuntimeMcpServer[] {
     return Object.entries(this.config.servers).map(([name, config]) => {
       const provider = this.providers.get(name);
       return {
@@ -70,7 +64,7 @@ export class McpServerManager implements ToolProvider {
     });
   }
 
-  async saveServer(name: string, config: McpServerConfig): Promise<McpServerView> {
+  async saveServer(name: string, config: RuntimeMcpServerConfig): Promise<RuntimeMcpServer> {
     return this.mutate(async () => {
       this.assertUniquePublicPrefix(name);
       const nextProvider = config.enabled ? this.createProvider(name, config) : null;
@@ -108,7 +102,7 @@ export class McpServerManager implements ToolProvider {
     });
   }
 
-  async testServer(name: string, config: McpServerConfig): Promise<{ tools: Array<{ name: string; description: string }> }> {
+  async testServer(name: string, config: RuntimeMcpServerConfig): Promise<{ tools: RuntimeMcpServer["tools"] }> {
     const provider = this.createProvider(name, config);
     try {
       await provider.connect();
@@ -135,7 +129,7 @@ export class McpServerManager implements ToolProvider {
     ];
   }
 
-  async listCatalog(): Promise<Array<{ name: string; connected: boolean; toolCount: number }>> {
+  async listCatalog(): Promise<RuntimeMcpCatalogServer[]> {
     return Promise.all([...this.providers.entries()].map(async ([name, provider]) => {
       const tools = await provider.listTools();
       return { name, connected: provider.status.connected, toolCount: tools.length };
@@ -198,7 +192,7 @@ export class McpServerManager implements ToolProvider {
     void tracked.finally(() => this.retired.delete(tracked));
   }
 
-  private createProvider(name: string, config: McpServerConfig): McpToolProvider {
+  private createProvider(name: string, config: RuntimeMcpServerConfig): McpToolProvider {
     return new McpToolProvider(name, config, this.homeDirectory, this.logger);
   }
 

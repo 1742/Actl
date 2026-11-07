@@ -1,7 +1,7 @@
 import type { ToolSchema } from "../tools/registry.js";
-import type { ReasoningEffort } from "./catalog-types.js";
+import type { ReasoningEffort, RuntimeModelProtocol } from "../../shared/agent/models.js";
 
-export type ModelProtocol = "responses" | "chat_completions" | "anthropic_messages";
+export type ModelProtocol = RuntimeModelProtocol;
 export type TranscriptRole = "system" | "developer" | "user" | "assistant";
 
 export type JsonValue =

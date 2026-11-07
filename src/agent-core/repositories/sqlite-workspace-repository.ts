@@ -23,8 +23,7 @@ import {
   parseSqliteTimelineItem,
 } from "./sqlite-session-codec.js";
 import { nowIso } from "../utils.js";
-import type { ModelCatalogRepository, CreateProviderAccountRecord, ModelPreferenceRecord } from "./model-catalog-repository.js";
-import type { ProviderAccountRecord, ModelTargetRecord } from "../model/catalog-types.js";
+import type { ModelCatalogRepository, CreateProviderAccountRecord, ModelPreferenceRecord, ModelTargetRecord, ProviderAccountRecord } from "./model-catalog-repository.js";
 import type { EncryptedSecret } from "../security/encrypted-secret.js";
 import { SqliteModelCatalogStore } from "./sqlite/model-catalog-store.js";
 import { SqliteStoredFileStore } from "./sqlite/stored-file-store.js";
@@ -34,9 +33,9 @@ import {
   toFileChange, toProject, toSessionMetadata,
 } from "./sqlite/row-codec.js";
 import { INITIAL_SCHEMA_SQL, SQLITE_SCHEMA_GENERATION, SQLITE_SCHEMA_VERSION } from "./sqlite/schema.js";
-import type { WebSearchSettingsRecord, WebSearchSettingsRepository } from "../web-search/types.js";
-import type { McpConfigRepository, StoredMcpServer } from "../mcp/mcp-config.js";
-import type { PromptBlock, PromptSettings } from "../runtime/prompt-compiler.js";
+import type { WebSearchSettingsRecord, WebSearchSettingsRepository } from "./web-search-settings-repository.js";
+import type { McpConfigRepository, StoredMcpServer } from "./mcp-config-repository.js";
+import type { RuntimePromptBlock, RuntimePromptSettings } from "../../shared/agent/prompts.js";
 import type { PromptSettingsRepository } from "./prompt-settings-repository.js";
 
 type Row = Record<string, unknown>;
@@ -469,21 +468,21 @@ export class SqliteWorkspaceRepository implements WorkspaceRepository, StoredFil
       auth_tag = NULL, key_version = NULL, updated_at = ? WHERE owner_id = ?`).run(updatedAt, ownerId);
   }
 
-  getPromptSettings(ownerId: string): PromptSettings | undefined {
+  getPromptSettings(ownerId: string): RuntimePromptSettings | undefined {
     const row = this.db.prepare("SELECT revision, blocks_json, updated_at FROM prompt_settings WHERE owner_id = ?").get(ownerId) as Row | undefined;
     if (!row) return undefined;
     return {
       revision: numberColumn(row, "revision"),
-      blocks: JSON.parse(stringColumn(row, "blocks_json")) as PromptBlock[],
+      blocks: JSON.parse(stringColumn(row, "blocks_json")) as RuntimePromptBlock[],
       updatedAt: stringColumn(row, "updated_at"),
     };
   }
 
-  savePromptSettings(ownerId: string, expectedRevision: number, blocks: PromptBlock[]): PromptSettings | null {
+  savePromptSettings(ownerId: string, expectedRevision: number, blocks: RuntimePromptBlock[]): RuntimePromptSettings | null {
     return this.transaction(() => {
       const current = this.getPromptSettings(ownerId);
       if ((current?.revision ?? 0) !== expectedRevision) return null;
-      const next: PromptSettings = { revision: expectedRevision + 1, blocks: structuredClone(blocks), updatedAt: nowIso() };
+      const next: RuntimePromptSettings = { revision: expectedRevision + 1, blocks: structuredClone(blocks), updatedAt: nowIso() };
       this.db.prepare(`INSERT INTO prompt_settings(owner_id, revision, blocks_json, updated_at)
         VALUES (?, ?, ?, ?)
         ON CONFLICT(owner_id) DO UPDATE SET revision = excluded.revision,

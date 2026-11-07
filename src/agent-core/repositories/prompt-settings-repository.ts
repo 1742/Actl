@@ -1,6 +1,6 @@
-import type { PromptBlock, PromptSettings } from "../runtime/prompt-compiler.js";
+import type { RuntimePromptBlock, RuntimePromptSettings } from "../../shared/agent/prompts.js";
 
 export interface PromptSettingsRepository {
-  getPromptSettings(ownerId: string): PromptSettings | undefined;
-  savePromptSettings(ownerId: string, expectedRevision: number, blocks: PromptBlock[]): PromptSettings | null;
+  getPromptSettings(ownerId: string): RuntimePromptSettings | undefined;
+  savePromptSettings(ownerId: string, expectedRevision: number, blocks: RuntimePromptBlock[]): RuntimePromptSettings | null;
 }

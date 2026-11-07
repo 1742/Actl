@@ -3,7 +3,7 @@ import { tr } from '../../../i18n';
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { ArrowLeft, FileCode2, FolderOpen, LoaderCircle } from '@lucide/vue';
-import { type SkillDetail } from '../../types';
+import type { SkillDetail } from '../../../../../shared/agent/skills';
 import { getAgentRuntimeClient } from '../../services/runtimeClient';
 import { skillsRefreshVersion } from '../navigation/libraryNavigation';
 

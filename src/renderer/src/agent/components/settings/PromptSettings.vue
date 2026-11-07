@@ -5,7 +5,7 @@ import { computed, onMounted, ref } from 'vue';
 import { useNotifyStore } from '../../../composables/notify';
 import { getAgentRuntimeClient } from '../../services/runtimeClient';
 import { useAgentStore } from '../../stores/agent';
-import type { RuntimePromptBlock } from '../../types';
+import type { RuntimePromptBlock } from '../../../../../shared/agent/prompts';
 
 const store = useAgentStore();
 const notify = useNotifyStore();

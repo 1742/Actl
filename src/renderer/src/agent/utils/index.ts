@@ -1,31 +1,13 @@
 import { tr } from '../../i18n';
-import type {
-  AIFunctionCallItem,
-  AIFunctionCallOutputItem,
-  AIMessageItem,
-  AIReasoningItem,
-  AIResponseContext,
-  AIResponseOutputItem,
-  AIWebSearchCallItem,
-  AIUnknownOutputItem,
-} from '../types/aiResponse';
+import type { AIFunctionCallItem, AIFunctionCallOutputItem, AIMessageItem, AIReasoningItem, AIResponseContext, AIResponseOutputItem, AIWebSearchCallItem, AIUnknownOutputItem } from '../components/responses/types';
 import { normalizeResponseContext, readContentText } from './aiResponse';
-import type {
-  AgentComposerDocument,
-  AgentInputContent,
-  AgentResponse,
-  AgentOutputBlock,
-  AgentToolPresentation,
-  AgentToolResultEnvelope,
-  AgentToolStatus,
-  PermissionRequestItem,
-  ResolvedAgentComposer,
-  RuntimeSkill,
-} from '../types';
+import type { AgentComposerDocument, ResolvedAgentComposer } from '../components/composer/types';
+import type { ResponseInputPartDto, AgentResponseDto, PermissionRequestItemDto } from '../../../../shared/agent/responses';
+import type { AgentOutputBlock, AgentToolPresentation, AgentToolResultEnvelope, AgentToolStatus } from '../components/conversation/types';
+import type { RuntimeSkill } from '../../../../shared/agent/skills';
 
 const toolPresentations: Readonly<Record<string, AgentToolPresentation>> = {
   shell: 'shell',
-  shell_start: 'shell', // Keep rendering historical tool calls from existing conversations.
   shell_poll: 'process',
   shell_stop: 'process',
   read_file: 'read',
@@ -79,7 +61,7 @@ export function parseToolResult(value: unknown): AgentToolResultEnvelope {
 
 function isPermissionItem(
   item: AIResponseOutputItem,
-): item is AIResponseOutputItem & PermissionRequestItem {
+): item is AIResponseOutputItem & PermissionRequestItemDto {
   return item.type === 'permission_request';
 }
 
@@ -87,7 +69,7 @@ function toolStatus(
   context: AIResponseContext,
   call: AIFunctionCallItem,
   result: AgentToolResultEnvelope | undefined,
-  permission: PermissionRequestItem | undefined,
+  permission: PermissionRequestItemDto | undefined,
 ): AgentToolStatus {
   if (permission?.status === 'pending') return 'waiting_permission';
   if (permission?.status === 'denied' || result?.ok === false) return 'error';
@@ -101,7 +83,7 @@ function toolStatus(
 export function buildAgentOutputBlocks(context: AIResponseContext): AgentOutputBlock[] {
   const outputs = context.response.output;
   const results = new Map<string, AIFunctionCallOutputItem>();
-  const permissions = new Map<string, PermissionRequestItem>();
+  const permissions = new Map<string, PermissionRequestItemDto>();
 
   for (const item of outputs) {
     if (
@@ -111,7 +93,7 @@ export function buildAgentOutputBlocks(context: AIResponseContext): AgentOutputB
     ) {
       results.set(item.call_id, item as AIFunctionCallOutputItem);
     } else if (isPermissionItem(item) && typeof item.call_id === 'string') {
-      permissions.set(item.call_id, item as unknown as PermissionRequestItem);
+      permissions.set(item.call_id, item as unknown as PermissionRequestItemDto);
     }
   }
 
@@ -156,7 +138,7 @@ export function buildAgentOutputBlocks(context: AIResponseContext): AgentOutputB
             candidate.call_id === item.call_id,
         )
         ? []
-        : [{ type: 'permission', key, item: item as unknown as PermissionRequestItem }];
+        : [{ type: 'permission', key, item: item as unknown as PermissionRequestItemDto }];
     }
     return [
       {
@@ -295,7 +277,7 @@ export function buildAgentOutputGroups(context: AIResponseContext): AgentOutputG
   return groups;
 }
 
-export function agentResponseToContext(response: AgentResponse): AIResponseContext {
+export function agentResponseToContext(response: AgentResponseDto): AIResponseContext {
   return normalizeResponseContext({
     session_id: response.session_id,
     input: response.input,
@@ -306,7 +288,7 @@ export function agentResponseToContext(response: AgentResponse): AIResponseConte
   });
 }
 
-export function agentResponsesToContexts(responses: AgentResponse[]) {
+export function agentResponsesToContexts(responses: AgentResponseDto[]) {
   return responses.map(agentResponseToContext);
 }
 
@@ -321,7 +303,7 @@ export function conversationName(title?: string) {
 }
 
 export function resolveAgentComposer(document: AgentComposerDocument): ResolvedAgentComposer {
-  const content: AgentInputContent[] = [];
+  const content: ResponseInputPartDto[] = [];
   const skillIds = new Set<string>();
   const mcpServers = new Set<string>();
 
@@ -368,7 +350,7 @@ export function resolveAgentComposer(document: AgentComposerDocument): ResolvedA
 }
 
 export function inputContentSummary(
-  content: readonly AgentInputContent[],
+  content: readonly ResponseInputPartDto[],
   skills: readonly RuntimeSkill[] = [],
 ) {
   const skillNames = new Map(skills.map((skill) => [skill.id, skill.name]));
@@ -385,7 +367,7 @@ export function inputContentSummary(
 }
 
 export function titleFromInput(
-  content: readonly AgentInputContent[],
+  content: readonly ResponseInputPartDto[],
   skills: readonly RuntimeSkill[] = [],
 ) {
   const oneLine = inputContentSummary(content, skills).trim().replace(/\s+/g, ' ');

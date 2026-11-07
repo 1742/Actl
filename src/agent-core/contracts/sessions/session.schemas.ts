@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { CreateResponseRequest, ResolvePermissionsRequest } from "../../../shared/agent/responses.js";
 import { reasoningEffortSchema } from "../../model/catalog-types.js";
 import { permissionModeSchema } from "../../permissions/engine.js";
 const nonEmptyString = z.string().trim().min(1);
@@ -18,7 +19,7 @@ const permissionDecisionSchema = z.discriminatedUnion("decision", [
 export const resolvePermissionsBodySchema = z.object({
   batchId: nonEmptyString,
   decisions: z.array(permissionDecisionSchema).min(1),
-}).strict();
+}).strict() satisfies z.ZodType<ResolvePermissionsRequest>;
 
 const inputContentSchema = z.discriminatedUnion("type", [
   z.object({
@@ -57,7 +58,7 @@ export const createResponseBodySchema = z.object({
   model: nonEmptyString,
   reasoningEffort: reasoningEffortSchema.optional(),
   permissionMode: permissionModeSchema.optional().default("ask"),
-}).strict();
+}).strict() satisfies z.ZodType<CreateResponseRequest>;
 
 export const compactSessionBodySchema = z.object({
   model: nonEmptyString,

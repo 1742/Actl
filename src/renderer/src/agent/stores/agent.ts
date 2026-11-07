@@ -1,25 +1,34 @@
 import { defineStore } from "pinia";
-import type { AIResponseContext } from "../types/aiResponse";
-import type {
-  AgentComposerAttachment,
-  AgentComposerContextKey,
-  AgentComposerDocument,
-  AgentPermissionMode,
-  AgentRuntimeCapabilities,
-  AgentRuntimeAvailability,
-  AgentRuntimeKind,
-  AgentRuntimeConflict,
-  AgentSessionRuntime,
-  SessionContextSummary,
-  AgentViewStatus,
-  RuntimeModel,
-  RuntimeModelCatalog,
-  RuntimeProviderAccount,
-  RuntimeReasoningEffort,
-  RuntimeProject,
-  RuntimeSession,
-  RuntimeSkill,
-} from "../types";
+import type { AIResponseContext } from '../components/responses/types';
+import type { AgentComposerAttachment, AgentComposerContextKey, AgentComposerDocument } from '../components/composer/types';
+import type { PendingPermissionBatchDto, PermissionMode } from '../../../../shared/agent/responses';
+import type { AgentRuntimeCapabilities, AgentRuntimeKind } from '../services/runtimeClient';
+import type { SessionContextSummary } from '../../../../shared/agent/sessions';
+import type { RuntimeModel, RuntimeModelCatalog, RuntimeProviderAccount, ReasoningEffort } from '../../../../shared/agent/models';
+import type { RuntimeProject, RuntimeSession } from '../components/navigation/types';
+import type { RuntimeSkill } from '../../../../shared/agent/skills';
+
+type AgentRuntimeAvailability = "idle" | "checking" | "available" | "unavailable";
+
+interface AgentRuntimeConflict {
+  sessionId: string;
+  responseId?: string;
+}
+
+interface AgentSessionRuntime {
+  responses: AIResponseContext[];
+  status: AgentViewStatus;
+  pendingPermissionBatch?: PendingPermissionBatchDto;
+  activeResponseId: string;
+  errorMessage: string;
+  loadingHistory: boolean;
+  hydrated: boolean;
+  conflict?: AgentRuntimeConflict;
+  context?: SessionContextSummary;
+  compressionInProgress: boolean;
+}
+
+type AgentViewStatus = "idle" | "running" | "waiting_permission" | "stopping";
 
 const byUpdated = (a: RuntimeSession, b: RuntimeSession) => b.updated_at.localeCompare(a.updated_at);
 function projectActivityAt(project: RuntimeProject, sessions: RuntimeSession[]) {
@@ -63,8 +72,8 @@ export const useAgentStore = defineStore("agent", {
     models: [] as RuntimeModel[],
     providerAccounts: [] as RuntimeProviderAccount[],
     selectedModel: "",
-    selectedReasoningEffort: undefined as RuntimeReasoningEffort | undefined,
-    selectedPermissionMode: "accept_edits" as AgentPermissionMode,
+    selectedReasoningEffort: undefined as ReasoningEffort | undefined,
+    selectedPermissionMode: "accept_edits" as PermissionMode,
     modelsLoading: false,
     modelsLoaded: false,
     modelsError: "",
@@ -207,10 +216,10 @@ export const useAgentStore = defineStore("agent", {
       if (!resetReasoning && this.selectedReasoningEffort && capabilities.reasoningEfforts.includes(this.selectedReasoningEffort)) return;
       this.selectedReasoningEffort = capabilities.defaultReasoningEffort ?? capabilities.reasoningEfforts[0];
     },
-    selectReasoningEffort(effort?: RuntimeReasoningEffort) {
+    selectReasoningEffort(effort?: ReasoningEffort) {
       this.selectedReasoningEffort = effort;
     },
-    selectPermissionMode(mode: AgentPermissionMode) {
+    selectPermissionMode(mode: PermissionMode) {
       this.selectedPermissionMode = mode;
     },
     setProjects(projects: RuntimeProject[]) { this.projects = projects; },

@@ -2,7 +2,7 @@
 import { computed } from 'vue';
 import MessageOutput from '../AIResponse/MessageOutput.vue';
 import UnknownOutput from '../AIResponse/UnknownOutput.vue';
-import type { AIResponseContext } from '../../types/aiResponse.ts';
+import type { AIResponseContext } from '../responses/types';
 import { buildAgentOutputBlocks } from '../../utils';
 import AgentReasoningBlock from './AgentReasoningBlock.vue';
 import AgentToolBlock from './AgentToolBlock.vue';

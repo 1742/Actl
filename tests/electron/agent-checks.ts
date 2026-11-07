@@ -5,10 +5,12 @@ import { createServer } from 'node:http';
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { AgentProcessHost } from '../../src/main/agent-process-host';
-import type { AgentCommand, AgentResult, SessionReview, WorkspaceFilePreview } from '../../src/shared/agent-ipc';
+import type { AgentCommand, AgentResult } from '../../src/shared/agent-ipc';
 import { runCoreChecks } from './core-checks';
 import type { VerificationCheck } from './types';
-import type { AgentResponseDto } from '../../src/agent-core/contracts/agent-responses/types';
+import type { AgentResponseDto, AgentStreamEvent } from '../../src/shared/agent/responses';
+import type { SessionReview } from '../../src/shared/agent/review';
+import type { WorkspaceFilePreview } from '../../src/shared/agent/workspace';
 
 // This loopback provider exists only behind --verify-agent. It never forwards requests.
 async function startFixture(processCommands: Map<string, string>) {
@@ -107,7 +109,7 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
     return result.value as T;
   };
   let projectId = ''; let sessionId = ''; let model = '';
-  const run = (text: string, onEvents?: (events: unknown[]) => void) => host.request({
+  const run = (text: string, onEvents?: (events: AgentStreamEvent[]) => void) => host.request({
     operation: 'responses.create', params: { sessionId }, body: {
       model, permissionMode: 'ask', input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text }] }],
     },

@@ -14,13 +14,11 @@ import {
   composerDocumentFromJson,
   composerDocumentToJson,
 } from '../../composables/useAgentComposer';
-import type {
-  AgentComposerDocument,
-  AgentRuntimeKind,
-  RuntimeSkill,
-  RuntimeMcpCatalogServer,
-  RuntimeWorkspaceFile,
-} from '../../types';
+import type { AgentComposerDocument } from './types';
+import type { AgentRuntimeKind } from '../../services/runtimeClient';
+import type { RuntimeSkill } from '../../../../../shared/agent/skills';
+import type { RuntimeMcpCatalogServer } from '../../../../../shared/agent/mcp';
+import type { RuntimeWorkspaceFile } from '../../../../../shared/agent/workspace';
 import ComposerReferenceMenu from './ComposerReferenceMenu.vue';
 import {
   ATTACHMENT_ACTION_KEY,
@@ -111,7 +109,7 @@ const filteredSkills = computed(() => {
     (skill) =>
       !query ||
       skill.name.toLocaleLowerCase().includes(query) ||
-      skill.description.toLocaleLowerCase().includes(query),
+      skill.description?.toLocaleLowerCase().includes(query),
   );
 });
 const filteredMcpServers = computed(() => {

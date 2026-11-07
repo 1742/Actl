@@ -1,9 +1,6 @@
 <script lang="ts">
-import type {
-  AIResponseContext,
-  AIResponseInputItem,
-  AIResponseStreamEvent,
-} from '../../types/aiResponse';
+import type { AIResponseContext, AIResponseInputItem } from './types';
+import type { AgentStreamEvent } from '../../../../../shared/agent/responses';
 
 export type AIResponseProviderStatus =
   'idle' | 'streaming' | 'completed' | 'failed' | 'incomplete' | 'cancelled';
@@ -16,7 +13,7 @@ export interface AIResponseStreamRequest<TPayload = unknown> {
 
 export type AIResponseRequestHandler<TPayload = unknown> = (
   request: AIResponseStreamRequest<TPayload>,
-  onEvent: (event: AIResponseStreamEvent) => void,
+  onEvent: (event: AgentStreamEvent) => void,
   signal: AbortSignal,
 ) => Promise<void>;
 </script>
@@ -38,7 +35,7 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   'update:contexts': [contexts: AIResponseContext[]];
-  event: [event: AIResponseStreamEvent];
+  event: [event: AgentStreamEvent];
   error: [error: Error];
 }>();
 
@@ -62,7 +59,7 @@ const findContext = (responseId?: string) => {
   return contexts.value.find((context) => context.response.id === id);
 };
 
-const ingestEvent = (event: AIResponseStreamEvent) => {
+const ingestEvent = (event: AgentStreamEvent) => {
   emit('event', event);
   if (event.type === 'response.created') {
     const optimistic = contexts.value.find(

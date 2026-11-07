@@ -1,19 +1,27 @@
 import { desktopRequest as request, desktopStream } from './desktopTransport';
 import type { AgentRuntimeClient } from './runtimeClient';
 import type {
-  AgentInputContent, AgentPermissionMode, AgentProject, AgentResponse, AgentSession,
-  CreateRuntimeProviderAccount, PermissionDecision, RuntimeMcpCatalogServer,
-  RuntimeMcpServer, RuntimeMcpServerConfig, RuntimeModel, RuntimeModelCatalog,
-  RuntimeModelConfig, RuntimePromptSettings, RuntimeProviderAccount, RuntimeReasoningEffort,
-  RuntimeSkillCatalog, RuntimeSkillContext, SkillDetail, RuntimeStoredFile, RuntimeStreamEvent, RuntimeWebSearchResult,
-  RuntimeWebSearchSettings, RuntimeWorkspaceFileSearchResult, RuntimeWorkspaceTree, SessionContext,
-} from '../types';
-import type { AgentCommand, SessionReview, WorkspaceFilePreview } from '../../../../shared/agent-ipc';
+  ResponseInputPartDto, PermissionMode, AgentResponseDto, PermissionResolutionDto, AgentStreamEvent,
+  CreateResponseRequest, ResolvePermissionsRequest,
+} from '../../../../shared/agent/responses';
+import type { AgentProject, AgentSession, SessionContext } from '../../../../shared/agent/sessions';
+import type {
+  CreateRuntimeProviderAccount, RuntimeModelCatalog, RuntimeModelConfig, RuntimeProviderAccount,
+  ReasoningEffort,
+} from '../../../../shared/agent/models';
+import type { RuntimeMcpCatalogServer, RuntimeMcpServer, RuntimeMcpServerConfig } from '../../../../shared/agent/mcp';
+import type { RuntimePromptSettings } from '../../../../shared/agent/prompts';
+import type { RuntimeSkillCatalog, RuntimeSkillContext, SkillDetail } from '../../../../shared/agent/skills';
+import type { RuntimeStoredFile } from '../../../../shared/agent/files';
+import type { RuntimeWebSearchResult, RuntimeWebSearchSettings } from '../../../../shared/agent/web-search';
+import type { RuntimeWorkspaceFileSearchResult, RuntimeWorkspaceTree, WorkspaceFilePreview } from '../../../../shared/agent/workspace';
+import type { AgentCommand } from '../../../../shared/agent-ipc';
+import type { SessionReview } from '../../../../shared/agent/review';
 
-function stream(command: AgentCommand, onEvent: (event: RuntimeStreamEvent) => void, signal?: AbortSignal) {
-  return desktopStream<AgentResponse>(command, (event) => {
+function stream(command: AgentCommand, onEvent: (event: AgentStreamEvent) => void, signal?: AbortSignal) {
+  return desktopStream<AgentResponseDto>(command, (event) => {
     if (!event || typeof event !== 'object' || !('type' in event)) throw new Error('Invalid Agent event.');
-    onEvent(event as RuntimeStreamEvent);
+    onEvent(event);
   }, signal);
 }
 
@@ -39,7 +47,7 @@ export class LocalRuntimeClient implements AgentRuntimeClient {
       operation: 'sessions.review', params: { sessionId }, ...(options ? { query: options } : {}),
     });
   }
-  compactSession(sessionId: string, model: string, reasoningEffort?: RuntimeReasoningEffort) {
+  compactSession(sessionId: string, model: string, reasoningEffort?: ReasoningEffort) {
     return request<{ compressed: boolean; summarized_run_count: number }>({ operation: 'sessions.compact', params: { sessionId }, body: { model, ...(reasoningEffort ? { reasoningEffort } : {}) } });
   }
 
@@ -50,10 +58,10 @@ export class LocalRuntimeClient implements AgentRuntimeClient {
   replaceProviderCredential(accountId: string, apiKey: string) { return request<void>({ operation: 'accounts.credential.replace', params: { accountId }, body: { apiKey } }); }
   clearProviderCredential(accountId: string) { return request<void>({ operation: 'accounts.credential.clear', params: { accountId } }); }
   deleteProviderAccount(accountId: string) { return request<void>({ operation: 'accounts.delete', params: { accountId } }); }
-  createModel(accountId: string, model: RuntimeModelConfig) { return request<RuntimeModel>({ operation: 'models.create', params: { accountId }, body: model }); }
-  updateModel(modelTargetId: string, model: RuntimeModelConfig) { return request<RuntimeModel>({ operation: 'models.update', params: { modelTargetId }, body: model }); }
+  createModel(accountId: string, model: RuntimeModelConfig) { return request<{ id: string }>({ operation: 'models.create', params: { accountId }, body: model }); }
+  updateModel(modelTargetId: string, model: RuntimeModelConfig) { return request<{ id: string }>({ operation: 'models.update', params: { modelTargetId }, body: model }); }
   deleteModel(modelTargetId: string) { return request<void>({ operation: 'models.delete', params: { modelTargetId } }); }
-  setModelPreference(modelTargetId: string | null, reasoningEffort?: RuntimeReasoningEffort) { return request<void>({ operation: 'models.preference', body: { modelTargetId, reasoningEffort: reasoningEffort ?? null } }); }
+  setModelPreference(modelTargetId: string | null, reasoningEffort?: ReasoningEffort) { return request<void>({ operation: 'models.preference', body: { modelTargetId, reasoningEffort: reasoningEffort ?? null } }); }
 
   getPromptSettings() { return request<RuntimePromptSettings>({ operation: 'prompts.get' }); }
   getDefaultPromptSettings() { return request<RuntimePromptSettings>({ operation: 'prompts.defaults' }); }
@@ -86,14 +94,14 @@ export class LocalRuntimeClient implements AgentRuntimeClient {
     const result = await request<{ bytes: Uint8Array; mediaType: string }>({ operation: 'files.content', params: { sessionId, fileId } });
     return new Blob([new Uint8Array(result.bytes)], { type: result.mediaType });
   }
-  streamResponse(sessionId: string, model: string, content: AgentInputContent[], reasoningEffort: RuntimeReasoningEffort | undefined, permissionMode: AgentPermissionMode, onEvent: (event: RuntimeStreamEvent) => void, signal?: AbortSignal) {
-    const input = content.map((part) => part.type === 'input_file' ? { type: 'input_file', file_id: part.file_id } : part);
-    return stream({ operation: 'responses.create', params: { sessionId }, body: { model, ...(reasoningEffort ? { reasoningEffort } : {}), permissionMode, input: [{ type: 'message', role: 'user', content: input }] } }, onEvent, signal);
+  streamResponse(sessionId: string, model: string, content: ResponseInputPartDto[], reasoningEffort: ReasoningEffort | undefined, permissionMode: PermissionMode, onEvent: (event: AgentStreamEvent) => void, signal?: AbortSignal) {
+    const input = content.map((part) => part.type === 'input_file' ? { type: 'input_file' as const, file_id: part.file_id } : part);
+    return stream({ operation: 'responses.create', params: { sessionId }, body: { model, ...(reasoningEffort ? { reasoningEffort } : {}), permissionMode, input: [{ type: 'message', role: 'user', content: input }] } satisfies CreateResponseRequest }, onEvent, signal);
   }
-  streamPermission(sessionId: string, responseId: string, batchId: string, decisions: PermissionDecision[], onEvent: (event: RuntimeStreamEvent) => void, signal?: AbortSignal) {
-    return stream({ operation: 'responses.permissions', params: { sessionId, responseId }, body: { batchId, decisions } }, onEvent, signal);
+  streamPermission(sessionId: string, responseId: string, batchId: string, decisions: PermissionResolutionDto[], onEvent: (event: AgentStreamEvent) => void, signal?: AbortSignal) {
+    return stream({ operation: 'responses.permissions', params: { sessionId, responseId }, body: { batchId, decisions } satisfies ResolvePermissionsRequest }, onEvent, signal);
   }
-  cancelResponse(sessionId: string, responseId: string) { return request<AgentResponse>({ operation: 'responses.cancel', params: { sessionId, responseId } }); }
+  cancelResponse(sessionId: string, responseId: string) { return request<AgentResponseDto>({ operation: 'responses.cancel', params: { sessionId, responseId } }); }
 }
 
 export const localClient: AgentRuntimeClient = new LocalRuntimeClient();

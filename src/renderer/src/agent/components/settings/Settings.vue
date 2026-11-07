@@ -22,11 +22,8 @@ import AgentServiceSettings from './AgentServiceSettings.vue';
 import WebSearchSettings from './WebSearchSettings.vue';
 import PromptSettings from './PromptSettings.vue';
 import type {
-  RuntimeModel,
-  RuntimeModelCapabilities,
-  RuntimeModelConfig,
-  RuntimeModelProtocol,
-} from '../../types';
+  RuntimeModel, RuntimeModelCapabilities, RuntimeModelConfig, RuntimeModelProtocol,
+} from '../../../../../shared/agent/models';
 import {
   loadAgentModels,
   removeAgentModel,

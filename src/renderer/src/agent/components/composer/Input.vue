@@ -23,12 +23,8 @@ import { useAgentStore } from '../../stores/agent.ts';
 import { getAgentRuntimeContext } from '../../services/runtimeClient';
 import { composerPlainText, createEmptyAgentComposer } from '../../composables/useAgentComposer';
 import { resolveAgentComposer } from '../../utils';
-import type {
-  AgentComposerAttachment,
-  AgentComposerContextKey,
-  AgentComposerDocument,
-  RuntimeReasoningEffort,
-} from '../../types';
+import type { AgentComposerAttachment, AgentComposerContextKey, AgentComposerDocument } from './types';
+import type { ReasoningEffort } from '../../../../../shared/agent/models';
 
 interface ComposerEditorHandle {
   focus: () => void;
@@ -66,7 +62,7 @@ const modelOptions = computed(() =>
       value: item.id,
     })),
 );
-const reasoningLabels = computed<Record<RuntimeReasoningEffort, string>>(() => ({
+const reasoningLabels = computed<Record<ReasoningEffort, string>>(() => ({
   none: tr('ui.off'),
   minimal: tr('ui.minimal'),
   low: tr('ui.low'),
@@ -86,7 +82,7 @@ const reasoningOptions = computed(() =>
 );
 const reasoningEffort = computed({
   get: () => agentStore.selectedReasoningEffort,
-  set: async (value: RuntimeReasoningEffort | undefined) => {
+  set: async (value: ReasoningEffort | undefined) => {
     const result = await selectAgentReasoning(value);
     if (result.status === 'error')
       notify.error(result.message || tr('ui.failedToChangeReasoningEffort'));

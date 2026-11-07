@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { AIUnknownOutputItem } from '../../types/aiResponse';
+import type { AIUnknownOutputItem } from './types';
 defineProps<{ item: AIUnknownOutputItem }>();
 </script>
 

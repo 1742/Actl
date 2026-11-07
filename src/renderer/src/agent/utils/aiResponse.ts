@@ -1,19 +1,9 @@
 import { tr } from '../../i18n';
-import type {
-  AIFileContent,
-  AIMessageItem,
-  AIResponse,
-  AIResponseContent,
-  AIResponseContext,
-  AIResponseInputItem,
-  AIResponseOutputItem,
-  AIResponseStatus,
-  AIResponseUsage,
-  AISkillContent,
-  AIMcpServerContent,
-  AIWebSearchCallItem,
-  AIWorkspaceFileContent,
-} from '../types/aiResponse';
+import type { 
+  AIFileContent, AIMessageItem, AIResponse, AIResponseContent, AIResponseContext, AIResponseInputItem, 
+  AIResponseOutputItem, AIResponseStatus, AIResponseUsage, AISkillContent, AIMcpServerContent, 
+  AIWebSearchCallItem, AIWorkspaceFileContent 
+} from '../components/responses/types';
 
 const asRecord = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === 'object' ? (value as Record<string, unknown>) : {};

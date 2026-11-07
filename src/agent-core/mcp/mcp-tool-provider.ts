@@ -4,7 +4,7 @@ import { Client, type Tool } from "@modelcontextprotocol/client";
 import { getDefaultEnvironment, StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import type { Logger } from "../observability/logger.js";
 import type { ExternalToolDefinition, ToolCallContext, ToolPermissionRequirement, ToolProvider } from "../tools/registry.js";
-import type { McpServerConfig } from "./mcp-config.js";
+import type { RuntimeMcpServerConfig } from "../../shared/agent/mcp.js";
 
 export class McpToolProvider implements ToolProvider {
   readonly name: string;
@@ -22,7 +22,7 @@ export class McpToolProvider implements ToolProvider {
 
   constructor(
     readonly serverName: string,
-    private readonly config: McpServerConfig,
+    private readonly config: RuntimeMcpServerConfig,
     private readonly homeDirectory: string,
     private readonly logger: Logger,
   ) {

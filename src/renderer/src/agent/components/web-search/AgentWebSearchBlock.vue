@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
 import { ChevronRight, ExternalLink, Globe } from '@lucide/vue';
-import type { AIWebSearchCallItem } from '../../types/aiResponse.ts';
+import type { AIWebSearchCallItem } from '../responses/types';
 import { webSourcesFromOutput, webSourcesFromSearchCall } from '../../utils/webSearch.ts';
 import AgentResultCard from '../conversation/AgentResultCard.vue';
 import AgentWebSourceRow from './AgentWebSourceRow.vue';

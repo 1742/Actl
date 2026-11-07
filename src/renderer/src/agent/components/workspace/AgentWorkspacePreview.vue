@@ -3,7 +3,7 @@ import { computed, ref, shallowRef, watch } from 'vue';
 import { RefreshCw } from '@lucide/vue';
 import hljs from 'highlight.js';
 import 'highlight.js/styles/github.css';
-import type { WorkspaceFilePreview } from '../../../../../shared/agent-ipc';
+import type { WorkspaceFilePreview } from '../../../../../shared/agent/workspace';
 import { getAgentRuntimeContext } from '../../services/runtimeClient';
 
 const props = defineProps<{ projectId: string; path: string }>();

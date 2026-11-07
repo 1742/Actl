@@ -110,7 +110,7 @@ model 是本地目标 ID，不是 providerModel。reasoningEffort 只能在目�
 | responses.cancel | params.sessionId、responseId | cancelled Response；已取消时幂等 |
 | responses.permissions | params.sessionId、responseId；body=`{batchId,decisions}` | 本轮继续执行到边界后的完整 Response |
 
-Response 字段见 [types.ts](../src/agent-core/contracts/agent-responses/types.ts)：id/object/session_id/status/model/reasoning_effort?/permission_mode/input/output/pending_permission_batch?/error?/created_at/updated_at/completed_at?。output 包含 message、reasoning、function_call、function_call_output、web_search_call 和 permission_request。工具结果 output 为序列化 JSON 字符串，可另带媒体 content。
+Response 字段见 [responses.ts](../src/shared/agent/responses.ts)：id/object/session_id/status/model/reasoning_effort?/permission_mode/input/output/pending_permission_batch?/error?/created_at/updated_at/completed_at?。output 包含 message、reasoning、function_call、function_call_output、web_search_call 和 permission_request。工具结果 output 为序列化 JSON 字符串，可另带媒体 content。
 
 创建与审批操作可走 request 或 stream。订阅由 stream 调用决定，body 不接受 stream 标志。到达终态或 waiting_permission 都会完成当前请求，不会保持一个请求一直等待用户决策。
 

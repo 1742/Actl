@@ -4,10 +4,10 @@ import { computed, type Component } from 'vue';
 import { Check, ChevronDown, FileCheck2, Hand, ListChecks, ShieldAlert } from '@lucide/vue';
 
 import FloatingMenu from '../../../components/FloatingMenu.vue';
-import type { AgentPermissionMode } from '../../types';
+import type { PermissionMode } from '../../../../../shared/agent/responses';
 
 interface PermissionModeOption {
-  value: AgentPermissionMode;
+  value: PermissionMode;
   label: string;
   description: string;
   icon: Component;
@@ -15,12 +15,12 @@ interface PermissionModeOption {
 }
 
 const props = defineProps<{
-  modelValue: AgentPermissionMode;
+  modelValue: PermissionMode;
   disabled?: boolean;
 }>();
 
 const emit = defineEmits<{
-  'update:modelValue': [value: AgentPermissionMode];
+  'update:modelValue': [value: PermissionMode];
 }>();
 
 const options = computed<PermissionModeOption[]>(() => [

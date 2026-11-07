@@ -2,7 +2,7 @@
 import { tr } from '../../../i18n';
 import { computed, ref } from 'vue';
 import { ChevronRight } from '@lucide/vue';
-import type { AIReasoningItem } from '../../types/aiResponse';
+import type { AIReasoningItem } from '../responses/types';
 import { readContentText } from '../../utils/aiResponse';
 
 const props = defineProps<{ item: AIReasoningItem; completed?: boolean }>();

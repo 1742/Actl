@@ -1,9 +1,31 @@
-import type {
-  ProviderAccountRecord,
-  ReasoningEffort,
-  ModelTargetRecord,
-} from "../model/catalog-types.js";
+import type { ModelCapabilities, ModelProtocolConfig, ReasoningEffort } from "../model/catalog-types.js";
 import type { EncryptedSecret } from "../security/encrypted-secret.js";
+
+export interface ProviderAccountRecord {
+  id: string;
+  ownerId: string;
+  displayName: string;
+  enabled: boolean;
+  currentVersion: number;
+  baseURL: string;
+  credentialVersion: number | null;
+  deletedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ModelTargetRecord {
+  id: string;
+  ownerId: string;
+  accountId: string;
+  providerModel: string;
+  displayName: string;
+  protocol: ModelProtocolConfig;
+  capabilities: ModelCapabilities;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
 
 export interface CreateProviderAccountRecord {
   account: ProviderAccountRecord;

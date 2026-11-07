@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { AgentCommand, AgentEventBatch, AgentResult } from '../../../src/shared/agent-ipc';
+import type { AgentStreamEvent } from '../../../src/shared/agent/responses';
 import { desktopStream, RuntimeRequestError } from '../../../src/renderer/src/agent/services/desktopTransport';
 import { LocalRuntimeClient } from '../../../src/renderer/src/agent/services/localClient';
 
@@ -17,11 +18,12 @@ test('concurrent IPC streams isolate event subscriptions and remove listeners on
     onEvents(listener: (batch: AgentEventBatch) => void) { listeners.add(listener); return () => listeners.delete(listener); },
     stream(id: string) { const reply = deferred<AgentResult>(); requests.push({ id, reply }); return reply.promise; },
   } } });
-  const first: unknown[] = []; const second: unknown[] = [];
+  const first: AgentStreamEvent[] = []; const second: AgentStreamEvent[] = [];
   const one = desktopStream({ operation: 'responses.create' }, (event) => first.push(event));
   const two = desktopStream({ operation: 'responses.create' }, (event) => second.push(event));
-  for (const listener of listeners) listener({ subscriptionId: requests[1]!.id, events: ['second-only'] });
-  assert.deepEqual(first, []); assert.deepEqual(second, ['second-only']);
+  const event = { type: 'response.output_text.delta', response_id: 'second', sequence_number: 1, item_id: 'item', output_index: 0, content_index: 0, delta: 'second-only' } satisfies AgentStreamEvent;
+  for (const listener of listeners) listener({ subscriptionId: requests[1]!.id, events: [event] });
+  assert.deepEqual(first, []); assert.deepEqual(second, [event]);
   requests[1]!.reply.resolve({ ok: true, value: 'two' });
   assert.equal(await two, 'two'); assert.equal(listeners.size, 1);
   requests[0]!.reply.resolve({ ok: true, value: 'one' });

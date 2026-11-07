@@ -9,7 +9,7 @@ import type {
   ResponseInputMessageDto,
   ResponseInputPartDto,
   ResponseMessagePartDto,
-} from "./types.js";
+} from "../../../shared/agent/responses.js";
 import type { StoredFileInputMetadata } from "../../stored-files/stored-file-service.js";
 
 export type StoredFileMetadataResolver = (sessionId: string, fileId: string) => StoredFileInputMetadata | undefined;
@@ -111,7 +111,7 @@ export function toAgentItemDto(item: AgentTimelineItem, status: "in_progress" | 
   };
 }
 
-export function toPendingPermissionDto(permission: PendingPermission): PendingPermissionDto {
+function toPendingPermissionDto(permission: PendingPermission): PendingPermissionDto {
   return {
     id: permission.id,
     response_id: permission.responseId,

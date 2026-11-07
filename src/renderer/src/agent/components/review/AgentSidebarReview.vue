@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, inject, ref, shallowRef, watch } from 'vue';
 import { FileDiff, RefreshCw } from '@lucide/vue';
-import type { ReviewLine, SessionReview } from '../../../../../shared/agent-ipc';
+import type { ReviewLine, SessionReview } from '../../../../../shared/agent/review';
 import { getAgentRuntimeContext } from '../../services/runtimeClient';
 import { useAgentStore } from '../../stores/agent';
 import { reviewTargetKey } from './reviewNavigation';

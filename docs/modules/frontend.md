@@ -93,7 +93,7 @@ Agent 就绪通过 preload.ready() 确认；业务状态位于 Agent store。前
 | `components/skills` / `mcp` | 本地能力库及详情/连接配置                           |
 | `components/dialogs`        | 管理、会话菜单、前端标题搜索                        |
 
-响应规范化位于 [utils/aiResponse.ts](../../src/renderer/src/agent/utils/aiResponse.ts)，Markdown 渲染位于 [utils/markdown.ts](../../src/renderer/src/utils/markdown.ts)。统一类型分布在 `agent/types/index.ts` 和 `aiResponse.ts`，与后端类型独立维护；修改 DTO 要同步校验两端。
+响应规范化位于 [utils/aiResponse.ts](../../src/renderer/src/agent/utils/aiResponse.ts)，Markdown 渲染位于 [utils/markdown.ts](../../src/renderer/src/utils/markdown.ts)。IPC 的业务类型按领域定义在 [shared/agent](../../src/shared/agent)。前端响应视图类型在 [components/responses/types.ts](../../src/renderer/src/agent/components/responses/types.ts)，其他前端类型跟随所属业务或实现。跨业务仅导入被调用业务公开的参数和结果。
 
 ## 7. 前端持久化与系统能力
 

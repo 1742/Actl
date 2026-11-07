@@ -3,9 +3,9 @@ import { tr } from '../../../i18n';
 import { computed, nextTick, ref, watch } from 'vue';
 import { FolderOpen, X } from '@lucide/vue';
 import { pickDirectory } from '../../composables/useFileBridge';
-import type { AgentRuntimeKind } from '../../types';
+import type { AgentRuntimeKind } from '../../services/runtimeClient';
 
-type DialogMode = 'create-project' | 'rename-session' | 'delete-project' | 'delete-session';
+export type DialogMode = 'create-project' | 'rename-session' | 'delete-project' | 'delete-session';
 
 const props = defineProps<{
   open: boolean;

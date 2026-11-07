@@ -18,7 +18,7 @@ function createHomeTab(): Tab {
 <script setup lang="ts">
 import { computed, inject, onActivated, onDeactivated, ref, watch } from 'vue';
 import { ClipboardCheck, File, Folder, LayoutGrid, Plus, X } from '@lucide/vue';
-import type { RuntimeWorkspaceDirectoryEntry } from '../../types';
+import type { RuntimeWorkspaceDirectoryEntry } from '../../../../../shared/agent/workspace';
 import { useAgentStore } from '../../stores/agent';
 import { projectName } from '../../utils';
 import AgentSidebarHome from './AgentSidebarHome.vue';

@@ -2,8 +2,8 @@
 import { tr } from '../../../i18n';
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { ArrowDown } from '@lucide/vue';
-import type { SessionContextCompression } from '../../types/index.ts';
-import type { AIFileContent, AIMessageItem, AIResponseContext } from '../../types/aiResponse.ts';
+import type { SessionContextCompression } from '../../../../../shared/agent/sessions';
+import type { AIFileContent, AIMessageItem, AIResponseContext } from './types';
 import { readInputContentDisplayText } from '../../utils/aiResponse.ts';
 import InputMessageContent from './InputMessageContent.vue';
 import MessageTools from './MessageTools.vue';

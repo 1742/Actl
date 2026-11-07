@@ -1,10 +1,7 @@
 import { readdir } from "node:fs/promises";
 import path from "node:path";
 import type { SkillCatalog } from "../../skills/index.js";
-interface SkillFileDto {
-  path: string;
-  type: "file" | "directory";
-}
+import type { RuntimeSkill, SkillFileDto } from "../../../shared/agent/skills.js";
 
 const MAX_SKILL_FILES = 500;
 const languageByExtension: Record<string, string> = {
@@ -39,7 +36,7 @@ export function inferLanguages(entries: SkillFileDto[]): string[] {
     .filter((language): language is string => Boolean(language)))].sort();
 }
 
-export function toCatalogDto(skill: Awaited<ReturnType<SkillCatalog["listSkills"]>>[number]) {
+export function toCatalogDto(skill: Awaited<ReturnType<SkillCatalog["listSkills"]>>[number]): RuntimeSkill {
   return {
     id: skill.id, name: skill.name,
     ...(skill.description === undefined ? {} : { description: skill.description }),

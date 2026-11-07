@@ -11,7 +11,7 @@ import {
 } from '@lucide/vue';
 
 import { getAgentRuntimeContext } from '../../services/runtimeClient';
-import type { RuntimeWorkspaceDirectoryEntry, RuntimeWorkspaceTree } from '../../types';
+import type { RuntimeWorkspaceDirectoryEntry, RuntimeWorkspaceTree } from '../../../../../shared/agent/workspace';
 
 const props = defineProps<{ projectId: string; projectLabel: string }>();
 const emit = defineEmits<{ openFile: [entry: RuntimeWorkspaceDirectoryEntry] }>();
