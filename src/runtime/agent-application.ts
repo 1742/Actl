@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
-import type { AgentCommand } from '../shared/agent-ipc';
+import type { AgentCommand, SessionReview } from '../shared/agent-ipc';
+import { reviewDiff } from '../agent-core/runtime/review-diff';
 import type { AppDependencies } from '../agent-core/app/dependencies';
 import type { Session } from '../agent-core/runtime/workspace-store';
 import type { AgentDomainEventHandler } from '../agent-core/runtime/agent-domain';
@@ -113,6 +114,32 @@ export class AgentApplication {
           await d.storedFiles.cleanupOrphans();
         });
         return;
+      }
+      case 'sessions.review': {
+        const session = await this.session(sessionId());
+        const { fileId, runId } = z.object({
+          fileId: z.string().max(128).optional(),
+          runId: z.string().max(128).optional(),
+        }).strict().parse(query);
+        const run = session.runs.findLast((item) =>
+          item.completedAt !== undefined && (runId === undefined || item.id === runId),
+        );
+        const review: SessionReview = { runId: run?.id ?? null, files: [] };
+        if (!run) return review;
+        for (const change of session.fileChanges) {
+          if (change.runId !== run.id) continue;
+          const before = change.changeType === 'create' ? '' : change.oldContent;
+          const after = change.newContent;
+          const unavailable = before === undefined || after === undefined;
+          if (!unavailable && before === after && change.changeType !== 'create') continue;
+          const diff = unavailable ? undefined : reviewDiff(before, after, change.id === fileId);
+          review.files.push({
+            id: change.id, path: change.filePath.replaceAll('\\', '/'), unavailable,
+            additions: diff?.additions ?? 0, deletions: diff?.deletions ?? 0,
+          });
+          if (change.id === fileId && diff) review.lines = diff.lines;
+        }
+        return review;
       }
       case 'sessions.context': {
         const session = await this.session(sessionId());

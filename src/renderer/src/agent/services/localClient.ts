@@ -8,7 +8,7 @@ import type {
   RuntimeSkillCatalog, RuntimeSkillContext, SkillDetail, RuntimeStoredFile, RuntimeStreamEvent, RuntimeWebSearchResult,
   RuntimeWebSearchSettings, RuntimeWorkspaceFileSearchResult, RuntimeWorkspaceTree, SessionContext,
 } from '../types';
-import type { AgentCommand, WorkspaceFilePreview } from '../../../../shared/agent-ipc';
+import type { AgentCommand, SessionReview, WorkspaceFilePreview } from '../../../../shared/agent-ipc';
 
 function stream(command: AgentCommand, onEvent: (event: RuntimeStreamEvent) => void, signal?: AbortSignal) {
   return desktopStream<AgentResponse>(command, (event) => {
@@ -34,6 +34,11 @@ export class LocalRuntimeClient implements AgentRuntimeClient {
   bindSessionToProject(sessionId: string, projectId: string) { return request<AgentSession>({ operation: 'sessions.bind', params: { sessionId }, body: { projectId } }); }
   deleteSession(sessionId: string) { return request<void>({ operation: 'sessions.delete', params: { sessionId } }); }
   getContext(sessionId: string) { return request<SessionContext>({ operation: 'sessions.context', params: { sessionId } }); }
+  getSessionReview(sessionId: string, options?: { fileId?: string; runId?: string }) {
+    return request<SessionReview>({
+      operation: 'sessions.review', params: { sessionId }, ...(options ? { query: options } : {}),
+    });
+  }
   compactSession(sessionId: string, model: string, reasoningEffort?: RuntimeReasoningEffort) {
     return request<{ compressed: boolean; summarized_run_count: number }>({ operation: 'sessions.compact', params: { sessionId }, body: { model, ...(reasoningEffort ? { reasoningEffort } : {}) } });
   }

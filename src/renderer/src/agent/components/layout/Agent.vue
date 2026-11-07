@@ -1,15 +1,18 @@
 <script setup lang="ts">
+import { provide, shallowRef } from 'vue';
 import { useRouter } from "vue-router";
 
 import AgentMessages from "../conversation/MessagesArea.vue";
 import AgentInput from "../composer/Input.vue";
 import AgentTopBar from "./AgentTopBar.vue";
 import RightSidebarContainer from "./AgentSidebarContainer.vue";
+import { reviewTargetKey, type ReviewTarget } from './reviewNavigation';
 
 const emit = defineEmits<{
   openNavSidebar: [];
 }>();
 const router = useRouter();
+provide(reviewTargetKey, shallowRef<ReviewTarget>());
 
 async function toggleRightSidebar() {
   const target = "aiAgentRightSidebarHome";

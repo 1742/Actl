@@ -57,6 +57,7 @@ export interface SessionContentRecord {
 export interface FileChangeRecord {
   id: string;
   sessionId: string;
+  runId?: string;
   filePath: string;
   changeType: "create" | "modify" | "delete";
   summary: string;

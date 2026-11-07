@@ -311,8 +311,19 @@ export class WorkspaceStore {
       created_at: nowIso(),
     };
     await this.enqueue(async () => {
+      const index = change.runId === undefined ? -1 : session.fileChanges.findIndex(
+        (previous) => previous.runId === change.runId && cwdKey(previous.filePath) === cwdKey(fileChange.filePath),
+      );
+      const previous = session.fileChanges[index];
+      if (previous) {
+        fileChange.id = previous.id;
+        fileChange.changeType = previous.changeType;
+        if (previous.oldContent === undefined) delete fileChange.oldContent;
+        else fileChange.oldContent = previous.oldContent;
+      }
       await this.repository.appendFileChange(fileChange);
-      session.fileChanges.push(fileChange);
+      if (previous) session.fileChanges[index] = fileChange;
+      else session.fileChanges.push(fileChange);
       const metadata = this.requireSessionMetadata(session.id);
       metadata.updated_at = fileChange.created_at;
       session.updated_at = fileChange.created_at;

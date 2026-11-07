@@ -10,6 +10,7 @@ import { collectWebQueries, collectWebSources } from '../../utils/webSearch';
 import AgentActivityGroup from './AgentActivityGroup.vue';
 import AgentReasoningBlock from './AgentReasoningBlock.vue';
 import AgentWebSearchSourcesCard from './AgentWebSearchSourcesCard.vue';
+import AgentFileChangesCard from './AgentFileChangesCard.vue';
 
 const props = defineProps<{ context: AIResponseContext }>();
 const groups = computed(() => buildAgentOutputGroups(props.context));
@@ -95,6 +96,11 @@ watch(isActive, (active, wasActive) => {
     <template v-for="group in displayedGroups" :key="group.key">
       <MessageOutput v-if="group.type === 'message'" :item="group.item" :show-tools="false">
         <template v-if="group.isFinal" #footer="{ content }">
+          <AgentFileChangesCard
+            v-if="!isActive"
+            :session-id="context.sessionId"
+            :run-id="context.response.id"
+          />
           <AgentWebSearchSourcesCard
             :sources="finalWebSearch.sources"
             :queries="finalWebSearch.queries"
@@ -108,6 +114,11 @@ watch(isActive, (active, wasActive) => {
       </MessageOutput>
       <AgentActivityGroup v-else :blocks="group.blocks" :response-active="isActive" />
     </template>
+    <AgentFileChangesCard
+      v-if="!isActive && finalMessageIndex < 0"
+      :session-id="context.sessionId"
+      :run-id="context.response.id"
+    />
     <div v-if="!groups.length && isActive" class="flex items-center py-0.5 text-sm text-gray-500">
       <span :class="{ 'status-shimmer': context.response.status === 'in_progress' }">{{
         context.response.status === 'waiting_permission'

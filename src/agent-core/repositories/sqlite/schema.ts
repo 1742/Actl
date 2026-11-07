@@ -1,5 +1,5 @@
 export const SQLITE_SCHEMA_GENERATION = "multi-user-multi-model";
-export const SQLITE_SCHEMA_VERSION = 18;
+export const SQLITE_SCHEMA_VERSION = 19;
 
 export const INITIAL_SCHEMA_SQL = `
 CREATE TABLE schema_metadata(id INTEGER PRIMARY KEY CHECK(id = 1), generation TEXT NOT NULL, version INTEGER NOT NULL CHECK(version > 0), created_at TEXT NOT NULL) STRICT;
@@ -22,7 +22,7 @@ CREATE TABLE provider_response_ids(run_id TEXT NOT NULL REFERENCES agent_runs(id
 CREATE TABLE session_context_states(session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, summary TEXT NOT NULL, summarized_run_count INTEGER NOT NULL CHECK(summarized_run_count >= 0), last_input_tokens INTEGER, updated_at TEXT NOT NULL) STRICT;
 CREATE TABLE context_compressions(session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, summarized_run_count INTEGER NOT NULL CHECK(summarized_run_count > 0), summary TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(session_id, summarized_run_count)) STRICT;
 CREATE TABLE model_invocation_usage(run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE, step INTEGER NOT NULL CHECK(step >= 0), input_tokens INTEGER, output_tokens INTEGER, total_tokens INTEGER, created_at TEXT NOT NULL, PRIMARY KEY(run_id, step)) STRICT;
-CREATE TABLE file_changes(id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, file_path TEXT NOT NULL, change_type TEXT NOT NULL, summary TEXT NOT NULL, diff TEXT, new_content TEXT, old_content TEXT, created_at TEXT NOT NULL) STRICT;
+CREATE TABLE file_changes(id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, run_id TEXT REFERENCES agent_runs(id) ON DELETE CASCADE, file_path TEXT NOT NULL, change_type TEXT NOT NULL, summary TEXT NOT NULL, diff TEXT, new_content TEXT, old_content TEXT, created_at TEXT NOT NULL) STRICT;
 CREATE INDEX file_changes_session_idx ON file_changes(session_id, created_at);
 CREATE TABLE stored_files(id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, filename TEXT NOT NULL, media_type TEXT NOT NULL, byte_size INTEGER NOT NULL CHECK(byte_size >= 0), sha256 TEXT NOT NULL, storage_key TEXT NOT NULL, created_at TEXT NOT NULL) STRICT;
 CREATE INDEX stored_files_session_idx ON stored_files(session_id, created_at);

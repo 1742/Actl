@@ -1,7 +1,7 @@
 <script lang="ts">
 import { reactive } from 'vue';
 type Tab =
-  | { id: string; kind: 'home' | 'files' }
+  | { id: string; kind: 'home' | 'files' | 'review' }
   | { id: string; kind: 'file'; name: string; path: string };
 interface TabGroup {
   tabs: Tab[];
@@ -16,14 +16,16 @@ function createHomeTab(): Tab {
 </script>
 
 <script setup lang="ts">
-import { computed, onActivated, onDeactivated, ref, watch } from 'vue';
-import { File, Folder, LayoutGrid, Plus, X } from '@lucide/vue';
+import { computed, inject, onActivated, onDeactivated, ref, watch } from 'vue';
+import { ClipboardCheck, File, Folder, LayoutGrid, Plus, X } from '@lucide/vue';
 import type { RuntimeWorkspaceDirectoryEntry } from '../../types';
 import { useAgentStore } from '../../stores/agent';
 import { projectName } from '../../utils';
 import AgentSidebarHome from './AgentSidebarHome.vue';
 import AgentWorkspacePanel from './AgentWorkspacePanel.vue';
 import AgentWorkspacePreview from './AgentWorkspacePreview.vue';
+import AgentSidebarReview from './AgentSidebarReview.vue';
+import { reviewTargetKey } from './reviewNavigation';
 
 defineEmits<{ close: [] }>();
 const store = useAgentStore();
@@ -38,6 +40,7 @@ const projectLabel = computed(() =>
 );
 const strip = ref<HTMLElement>();
 const visible = ref(true);
+const reviewTarget = inject(reviewTargetKey);
 
 watch(projectId, (id) => {
   if (groups.has(id)) return;
@@ -64,6 +67,15 @@ function openTab(tab: Tab) {
   group.value.activeId = tab.id;
 }
 
+watch(() => reviewTarget?.value, (target) => {
+  if (target) openTab({ id: 'review', kind: 'review' });
+}, { immediate: true });
+
+function openLatestReview() {
+  if (reviewTarget) reviewTarget.value = undefined;
+  openTab({ id: 'review', kind: 'review' });
+}
+
 function openFile(entry: RuntimeWorkspaceDirectoryEntry) {
   openTab({ id: `file:${entry.path.toLowerCase()}`, kind: 'file', name: entry.name, path: entry.path });
 }
@@ -71,6 +83,7 @@ function openFile(entry: RuntimeWorkspaceDirectoryEntry) {
 function closeTab(index: number) {
   const state = group.value;
   const [closed] = state.tabs.splice(index, 1);
+  if (closed?.kind === 'review' && reviewTarget) reviewTarget.value = undefined;
   if (!state.tabs.length) state.tabs.push(createHomeTab());
   if (closed?.id === state.activeId) state.activeId = (state.tabs[index] ?? state.tabs[index - 1])!.id;
 }
@@ -95,8 +108,9 @@ function closeTab(index: number) {
           >
             <File v-if="tab.kind === 'file'" :size="14" class="shrink-0" />
             <Folder v-else-if="tab.kind === 'files'" :size="14" class="shrink-0" />
+            <ClipboardCheck v-else-if="tab.kind === 'review'" :size="14" class="shrink-0" />
             <LayoutGrid v-else :size="14" class="shrink-0" />
-            <span class="truncate">{{ tab.kind === 'file' ? tab.name : $t(tab.kind === 'files' ? 'ui.files' : 'ui.newSidebarTab') }}</span>
+            <span class="truncate">{{ tab.kind === 'file' ? tab.name : $t(tab.kind === 'files' ? 'ui.files' : tab.kind === 'review' ? 'ui.review' : 'ui.newSidebarTab') }}</span>
           </button>
           <button class="tab-icon h-5 w-5" type="button" :aria-label="$t('ui.closeSidebarTab')" :title="$t('ui.closeSidebarTab')" @click="closeTab(index)">
             <X :size="13" />
@@ -117,6 +131,7 @@ function closeTab(index: number) {
         :project-label="projectLabel"
         :has-project="Boolean(projectId)"
         @open-files="openTab({ id: 'files', kind: 'files' })"
+        @open-review="openLatestReview"
       />
       <KeepAlive>
         <AgentWorkspacePanel
@@ -134,6 +149,7 @@ function closeTab(index: number) {
         :project-id="projectId"
         :path="activeTab.path"
       />
+      <AgentSidebarReview v-if="visible && activeTab?.kind === 'review'" />
     </div>
   </div>
 </template>

@@ -363,6 +363,21 @@ export class ToolBatchExecutor {
       authorization: { requirement, approvedByUser },
       signal,
       modelCapabilities: run.modelSnapshot.capabilities,
+      recordFileChange: async ({ filePath, created, before, after }) => {
+        if (!created && before !== undefined && before === after) return;
+        try {
+          await this.workspaceStore.addFileChange(session, {
+            runId: run.id,
+            filePath,
+            changeType: created ? "create" : "modify",
+            summary: toolCall.name,
+            ...(before === undefined ? {} : { oldContent: before }),
+            ...(after === undefined ? {} : { newContent: after }),
+          });
+        } catch (error) {
+          this.logger.warn({ event: "agent.file_change.record_failed", ...logFields(session, run), error: String(error) });
+        }
+      },
     };
     const result = await this.toolRegistry.callTool(toolCall, context);
     signal.throwIfAborted();

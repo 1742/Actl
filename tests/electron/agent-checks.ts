@@ -5,7 +5,7 @@ import { createServer } from 'node:http';
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { AgentProcessHost } from '../../src/main/agent-process-host';
-import type { AgentCommand, AgentResult, WorkspaceFilePreview } from '../../src/shared/agent-ipc';
+import type { AgentCommand, AgentResult, SessionReview, WorkspaceFilePreview } from '../../src/shared/agent-ipc';
 import { runCoreChecks } from './core-checks';
 import type { VerificationCheck } from './types';
 import type { AgentResponseDto } from '../../src/agent-core/contracts/agent-responses/types';
@@ -43,6 +43,17 @@ async function startFixture(processCommands: Map<string, string>) {
         emit({ tool_calls: [{ index: 0, id: `call-${randomUUID()}`, type: 'function', function: {
           name: 'shell', arguments: JSON.stringify({ command, yieldTimeMs: 1_000 }),
         } }] }, 'tool_calls');
+        done();
+      } else if (text.includes('review-fixture') && payload.messages.at(-1)?.role !== 'tool') {
+        const toolCalls = [
+          { name: 'write_file', arguments: JSON.stringify({ path: 'review.txt', content: 'intermediate\n' }) },
+          { name: 'apply_patch', arguments: JSON.stringify({ patches: [{
+            path: 'review.txt', replacements: [{ oldText: 'intermediate', newText: 'final', expectedOccurrences: 1 }],
+          }] }) },
+        ];
+        emit({ tool_calls: toolCalls.map((fn, index) => ({
+          index, id: `call-${randomUUID()}`, type: 'function', function: fn,
+        })) }, 'tool_calls');
         done();
       } else if (text.includes('write-fixture:') && payload.messages.at(-1)?.role !== 'tool') {
         const file = /write-fixture:([a-z-]+\.txt)/.exec(text)?.[1];
@@ -180,6 +191,32 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
       assert.deepEqual(await preview('large.txt'), { kind: 'too-large' });
       assert.deepEqual(await preview('binary.bin'), { kind: 'unsupported' });
       await assert.rejects(preview('../outside.txt'));
+    });
+    await step('Last-run review persists net changes from both file tools', async () => {
+      const review = (fileId?: string) => request<SessionReview>({
+        operation: 'sessions.review', params: { sessionId }, ...(fileId ? { query: { fileId } } : {}),
+      });
+      await writeFile(path.join(workspace, 'review.txt'), 'original\n');
+      const pending = success(await run('review-fixture'));
+      assert.equal(pending.status, 'waiting_permission');
+      assert.deepEqual((await review()).files, []);
+      const completed = await resume(pending, 'approve');
+      assert.equal(completed.status, 'completed');
+      assert.equal(await readFile(path.join(workspace, 'review.txt'), 'utf8'), 'final\n');
+      await host.close();
+      host = new AgentProcessHost(options);
+      await host.ready();
+      const saved = await review();
+      assert.equal(saved.runId, completed.id);
+      assert.equal(saved.files.length, 1);
+      const file = saved.files[0]!;
+      assert.deepEqual({ ...file, id: '' }, {
+        id: '', path: 'review.txt', additions: 1, deletions: 1, unavailable: false,
+      });
+      assert.deepEqual((await review(file.id)).lines, [
+        { kind: 'removed', text: 'original\n', oldLine: 1 },
+        { kind: 'added', text: 'final\n', newLine: 1 },
+      ]);
     });
     await step('Streaming text, event ordering and persisted history', async () => {
       const events: Array<{ type: string; sequence_number: number }> = [];

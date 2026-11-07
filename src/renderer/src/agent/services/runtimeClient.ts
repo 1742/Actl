@@ -9,7 +9,7 @@ import type {
   SessionContext,
 } from "../types";
 import { localClient } from "./localClient";
-import type { WorkspaceFilePreview } from "../../../../shared/agent-ipc";
+import type { SessionReview, WorkspaceFilePreview } from "../../../../shared/agent-ipc";
 
 export { RuntimeRequestError } from "./desktopTransport";
 
@@ -45,6 +45,7 @@ export interface AgentRuntimeClient {
   bindSessionToProject(sessionId: string, projectId: string): Promise<AgentSession>;
   deleteSession(sessionId: string): Promise<void>;
   getContext(sessionId: string): Promise<SessionContext>;
+  getSessionReview(sessionId: string, options?: { fileId?: string; runId?: string }): Promise<SessionReview>;
   compactSession(sessionId: string, model: string, reasoningEffort?: RuntimeReasoningEffort): Promise<{ compressed: boolean; summarized_run_count: number }>;
 
   //#endregion

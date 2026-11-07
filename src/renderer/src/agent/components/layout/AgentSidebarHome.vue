@@ -2,7 +2,7 @@
 import { ClipboardCheck, Folder, Globe2, Terminal } from '@lucide/vue';
 
 defineProps<{ hasProject: boolean; projectLabel: string }>();
-defineEmits<{ openFiles: [] }>();
+defineEmits<{ openFiles: []; openReview: [] }>();
 </script>
 
 <template>
@@ -19,7 +19,7 @@ defineEmits<{ openFiles: [] }>();
         <Folder :size="16" />
         {{ $t('ui.files') }}
       </button>
-      <button class="tool" type="button" disabled :title="$t('ui.reviewIsComingSoon')">
+      <button class="tool" type="button" @click="$emit('openReview')">
         <ClipboardCheck :size="16" />
         {{ $t('ui.review') }}
       </button>

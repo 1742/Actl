@@ -13,6 +13,7 @@ export const agentOperations = [
   'sessions.delete',
   'sessions.bind',
   'sessions.context',
+  'sessions.review',
   'sessions.compact',
   'responses.create',
   'responses.permissions',
@@ -47,6 +48,24 @@ export const agentOperations = [
 ] as const;
 
 export type AgentOperation = (typeof agentOperations)[number];
+export interface ReviewLine {
+  kind: 'context' | 'added' | 'removed' | 'gap';
+  text: string;
+  oldLine?: number;
+  newLine?: number;
+}
+export interface ReviewFile {
+  id: string;
+  path: string;
+  additions: number;
+  deletions: number;
+  unavailable: boolean;
+}
+export interface SessionReview {
+  runId: string | null;
+  files: ReviewFile[];
+  lines?: ReviewLine[];
+}
 export type WorkspaceFilePreview =
   | { kind: 'text'; text: string }
   | { kind: 'image'; mediaType: string; bytes: Uint8Array }

@@ -171,6 +171,13 @@ export const SQLITE_MIGRATIONS: readonly SqliteMigration[] = [
       `);
     },
   },
+  {
+    from: 18,
+    to: 19,
+    up(database: DatabaseSync): void {
+      database.exec("ALTER TABLE file_changes ADD COLUMN run_id TEXT REFERENCES agent_runs(id) ON DELETE CASCADE;");
+    },
+  },
 ];
 
 export function runSqliteMigrations(

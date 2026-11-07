@@ -223,9 +223,10 @@ export class SqliteWorkspaceRepository implements WorkspaceRepository, StoredFil
   async appendFileChange(change: FileChangeRecord): Promise<void> {
     this.transaction(() => {
       this.db.prepare(`
-        INSERT INTO file_changes(id, session_id, file_path, change_type, summary, diff, new_content, old_content, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(change.id, change.sessionId, change.filePath, change.changeType, change.summary,
+        INSERT INTO file_changes(id, session_id, run_id, file_path, change_type, summary, diff, new_content, old_content, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET new_content = excluded.new_content, created_at = excluded.created_at
+      `).run(change.id, change.sessionId, change.runId ?? null, change.filePath, change.changeType, change.summary,
         change.diff ?? null, change.newContent ?? null, change.oldContent ?? null, change.created_at);
       this.db.prepare("UPDATE sessions SET updated_at = ? WHERE id = ?").run(change.created_at, change.sessionId);
     });

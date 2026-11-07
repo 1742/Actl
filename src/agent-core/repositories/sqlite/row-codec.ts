@@ -34,11 +34,13 @@ export function toSessionMetadata(row: SqliteRow): SessionMetadataRecord {
 }
 
 export function toFileChange(row: SqliteRow): FileChangeRecord {
+  const runId = nullableStringColumn(row, "run_id");
   const diff = nullableStringColumn(row, "diff");
   const newContent = nullableStringColumn(row, "new_content");
   const oldContent = nullableStringColumn(row, "old_content");
   return {
     id: stringColumn(row, "id"), sessionId: stringColumn(row, "session_id"), filePath: stringColumn(row, "file_path"),
+    ...(runId === null ? {} : { runId }),
     changeType: stringColumn(row, "change_type") as FileChangeRecord["changeType"], summary: stringColumn(row, "summary"),
     ...(diff === null ? {} : { diff }), ...(newContent === null ? {} : { newContent }),
     ...(oldContent === null ? {} : { oldContent }), created_at: stringColumn(row, "created_at"),

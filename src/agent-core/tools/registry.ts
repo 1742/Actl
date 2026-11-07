@@ -49,6 +49,12 @@ export interface ToolCallContext {
   authorization?: ToolExecutionAuthorization;
   signal?: AbortSignal;
   modelCapabilities?: ModelCapabilities;
+  recordFileChange?: (change: {
+    filePath: string;
+    created: boolean;
+    before: string | undefined;
+    after: string | undefined;
+  }) => Promise<void>;
 }
 
 export interface ToolProvider {

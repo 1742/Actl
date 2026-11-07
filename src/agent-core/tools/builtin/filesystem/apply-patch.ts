@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
+import { reviewText, tracksFile } from "../../review-snapshot.js";
 import path from "node:path";
 import { z } from "zod";
 import {
@@ -148,6 +149,15 @@ export class ApplyPatchToolHandler implements FilesystemToolHandler {
       throw new Error(`apply_patch failed: ${errorMessage(error)}.${suffix}`);
     }
 
+    for (const patch of staged) {
+      if (patch.originalContent === patch.newContent || !tracksFile(context, patch.resolvedPath)) continue;
+      await context.recordFileChange?.({
+        filePath: patch.resolvedPath,
+        created: false,
+        before: reviewText(patch.originalContent),
+        after: reviewText(patch.newContent),
+      });
+    }
     return {
       filesChanged: staged.length,
       files: staged.map((patch) => ({

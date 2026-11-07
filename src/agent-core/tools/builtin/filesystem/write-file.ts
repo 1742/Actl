@@ -8,6 +8,7 @@ import {
 } from "../../registry.js";
 import { pathsEqual, resolveToolPath, toolBaseDirectory } from "../../path-security.js";
 import type { FilesystemToolHandler } from "./types.js";
+import { readReviewSnapshot, reviewText, tracksFile } from "../../review-snapshot.js";
 
 export const writeFileInputSchema = z.object({
   path: z.string().trim().min(1).describe("Absolute path or path relative to the Session cwd."),
@@ -56,7 +57,11 @@ export class WriteFileToolHandler implements FilesystemToolHandler {
     context.signal?.throwIfAborted();
     await mkdir(path.dirname(resolvedPath), { recursive: true });
     context.signal?.throwIfAborted();
+    const snapshot = tracksFile(context, resolvedPath) ? await readReviewSnapshot(resolvedPath) : undefined;
     await writeFile(resolvedPath, parsedInput.content, { encoding: "utf8", signal: context.signal });
+    if (snapshot) await context.recordFileChange?.({
+      filePath: resolvedPath, ...snapshot, after: reviewText(parsedInput.content),
+    });
     return {
       path: path.isAbsolute(parsedInput.path)
         ? resolvedPath
