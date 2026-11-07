@@ -3,7 +3,7 @@ import { tr } from '../../../i18n';
 import { computed, ref } from 'vue';
 import { ChevronRight } from '@lucide/vue';
 import type { AgentToolTimelineBlock } from '../../types';
-import AgentWebSearchBlock from './AgentWebSearchBlock.vue';
+import AgentWebSearchBlock from '../web-search/AgentWebSearchBlock.vue';
 
 const props = defineProps<{ block: AgentToolTimelineBlock }>();
 

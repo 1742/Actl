@@ -5,6 +5,7 @@ import { useRouter } from 'vue-router';
 import type { ReviewFile } from '../../../../../shared/agent-ipc';
 import { getAgentRuntimeContext } from '../../services/runtimeClient';
 import { reviewTargetKey } from './reviewNavigation';
+import AgentResultCard from '../conversation/AgentResultCard.vue';
 
 const props = defineProps<{ sessionId: string; runId: string }>();
 const files = shallowRef<ReviewFile[]>([]);
@@ -39,23 +40,19 @@ watch(() => [props.sessionId, props.runId] as const, async ([sessionId, runId], 
 </script>
 
 <template>
-  <section v-if="files.length" class="mt-3 w-full min-w-0 overflow-hidden rounded-xl border border-gray-200 bg-white text-sm">
-    <header class="flex items-center gap-3 px-3 py-2.5">
-      <span class="flex size-8 shrink-0 items-center justify-center rounded-lg bg-gray-100 text-gray-600">
-        <FileDiff :size="16" />
+  <AgentResultCard v-if="files.length" class="mt-3">
+    <template #icon><FileDiff :size="16" /></template>
+    <template #title>{{ $t('dynamic.reviewFileCount', { count: files.length }) }}</template>
+    <template #detail>
+      <span class="flex gap-2 text-xs">
+        <span class="text-green-700">+{{ totals.additions }}</span>
+        <span class="text-red-700">−{{ totals.deletions }}</span>
       </span>
-      <div class="min-w-0">
-        <p class="font-medium text-gray-900">{{ $t('dynamic.reviewFileCount', { count: files.length }) }}</p>
-        <p class="flex gap-2 text-xs">
-          <span class="text-green-700">+{{ totals.additions }}</span>
-          <span class="text-red-700">−{{ totals.deletions }}</span>
-        </p>
-      </div>
-    </header>
-    <ul class="max-h-44 overflow-y-auto border-t border-gray-100 px-3">
+    </template>
+    <ul class="max-h-44 overflow-y-auto">
       <li v-for="file in files" :key="file.id" class="border-b border-gray-100 last:border-b-0">
         <button
-          class="flex w-full min-w-0 items-center gap-2 rounded-md px-1 py-2 text-left text-xs hover:bg-gray-50"
+          class="agent-result-row"
           type="button"
           :title="file.path"
           @click="openFile(file.id)"
@@ -68,5 +65,5 @@ watch(() => [props.sessionId, props.runId] as const, async ([sessionId, runId], 
         </button>
       </li>
     </ul>
-  </section>
+  </AgentResultCard>
 </template>

@@ -7,7 +7,7 @@ import type { AgentOutputBlock } from '../../types';
 import { agentOutputHint } from '../../utils';
 import AgentReasoningBlock from './AgentReasoningBlock.vue';
 import AgentToolBlock from './AgentToolBlock.vue';
-import AgentWebSearchBlock from './AgentWebSearchBlock.vue';
+import AgentWebSearchBlock from '../web-search/AgentWebSearchBlock.vue';
 
 const props = defineProps<{
   blocks: Exclude<AgentOutputBlock, { type: 'message' }>[];
