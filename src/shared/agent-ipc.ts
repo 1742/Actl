@@ -6,6 +6,7 @@ export const agentOperations = [
   'projects.delete',
   'workspace.search',
   'workspace.tree',
+  'workspace.preview',
   'sessions.list',
   'sessions.create',
   'sessions.rename',
@@ -46,6 +47,10 @@ export const agentOperations = [
 ] as const;
 
 export type AgentOperation = (typeof agentOperations)[number];
+export type WorkspaceFilePreview =
+  | { kind: 'text'; text: string }
+  | { kind: 'image'; mediaType: string; bytes: Uint8Array }
+  | { kind: 'missing' | 'unsupported' | 'too-large' };
 export interface AgentCommand {
   operation: AgentOperation;
   params?: Record<string, string>;

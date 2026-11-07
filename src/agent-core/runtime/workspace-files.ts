@@ -1,6 +1,7 @@
-import { lstat, readFile, readdir, realpath } from "node:fs/promises";
+import { lstat, open, readFile, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { canonicalizePotentialPath, isPathInside, pathsEqual } from "../tools/path-security.js";
+import type { WorkspaceFilePreview } from "../../shared/agent-ipc.js";
 
 export type WorkspaceDirectoryErrorCode =
   | "workspace_directory_not_found"
@@ -57,8 +58,56 @@ export interface WorkspaceDirectoryTree {
 
 const EXCLUDED_DIRECTORIES = new Set([".git", "node_modules", "dist", "build"]);
 const DEFAULT_MAX_SCANNED_FILES = 50_000;
+const PREVIEW_IMAGE_TYPES = new Map([
+  [".png", "image/png"], [".jpg", "image/jpeg"], [".jpeg", "image/jpeg"],
+  [".webp", "image/webp"], [".gif", "image/gif"],
+]);
 
 export class WorkspaceFileService {
+  async previewFile(workspaceRootInput: string, relativePath: string): Promise<WorkspaceFilePreview> {
+    if (relativePath.includes(":")) throw new Error("Invalid workspace file path.");
+    const root = await canonicalizePotentialPath(workspaceRootInput);
+    try {
+      const file = await this.validateReference(root, relativePath);
+      const mediaType = PREVIEW_IMAGE_TYPES.get(path.extname(file).toLowerCase());
+      const limit = (mediaType ? 10 : 1) * 1024 * 1024;
+      const handle = await open(path.resolve(root, file), "r");
+      try {
+        const stat = await handle.stat();
+        if (!stat.isFile()) return { kind: "unsupported" };
+        if (stat.size > limit) return { kind: "too-large" };
+        const buffer = Buffer.allocUnsafe(Math.min(stat.size + 1, limit + 1));
+        let length = 0;
+        while (length < buffer.length) {
+          const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length);
+          if (!bytesRead) break;
+          length += bytesRead;
+        }
+        if (length > stat.size) {
+          if (length > limit || (await handle.stat()).size > limit) return { kind: "too-large" };
+          throw new Error("File changed while being read. Try again.");
+        }
+        const bytes = buffer.subarray(0, length);
+        if (mediaType) return { kind: "image", mediaType, bytes: new Uint8Array(bytes) };
+        const encoding = bytes[0] === 0xff && bytes[1] === 0xfe ? "utf-16le"
+          : bytes[0] === 0xfe && bytes[1] === 0xff ? "utf-16be" : "utf-8";
+        let text: string;
+        try {
+          text = new TextDecoder(encoding, { fatal: true }).decode(bytes);
+        } catch {
+          return { kind: "unsupported" };
+        }
+        return /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(text)
+          ? { kind: "unsupported" } : { kind: "text", text };
+      } finally {
+        await handle.close();
+      }
+    } catch (error) {
+      if (isMissingPathError(error)) return { kind: "missing" };
+      throw error;
+    }
+  }
+
   async listDirectory(
     workspaceRootInput: string,
     options: { path?: string; maxEntries: number },

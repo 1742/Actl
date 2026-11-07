@@ -8,7 +8,7 @@ import type {
   RuntimeSkillCatalog, RuntimeSkillContext, SkillDetail, RuntimeStoredFile, RuntimeStreamEvent, RuntimeWebSearchResult,
   RuntimeWebSearchSettings, RuntimeWorkspaceFileSearchResult, RuntimeWorkspaceTree, SessionContext,
 } from '../types';
-import type { AgentCommand } from '../../../../shared/agent-ipc';
+import type { AgentCommand, WorkspaceFilePreview } from '../../../../shared/agent-ipc';
 
 function stream(command: AgentCommand, onEvent: (event: RuntimeStreamEvent) => void, signal?: AbortSignal) {
   return desktopStream<AgentResponse>(command, (event) => {
@@ -72,6 +72,7 @@ export class LocalRuntimeClient implements AgentRuntimeClient {
 
   searchWorkspaceFiles(projectId: string, q = '', limit = 20) { return request<RuntimeWorkspaceFileSearchResult>({ operation: 'workspace.search', params: { projectId }, query: { q, limit: String(limit) } }); }
   listWorkspaceDirectory(projectId: string, path = '.', maxEntries = 200) { return request<RuntimeWorkspaceTree>({ operation: 'workspace.tree', params: { projectId }, query: { path, maxEntries: String(maxEntries) } }); }
+  previewWorkspaceFile(projectId: string, path: string) { return request<WorkspaceFilePreview>({ operation: 'workspace.preview', params: { projectId }, query: { path } }); }
   async uploadFile(sessionId: string, file: File, filename = file.name) {
     if (file.size > 25 * 1024 * 1024) throw new Error('File exceeds the 25 MiB limit.');
     return request<RuntimeStoredFile>({ operation: 'files.upload', params: { sessionId }, body: { filename, mediaType: file.type || 'application/octet-stream', bytes: new Uint8Array(await file.arrayBuffer()) } });

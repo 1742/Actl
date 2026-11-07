@@ -5,7 +5,7 @@ import { createServer } from 'node:http';
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { AgentProcessHost } from '../../src/main/agent-process-host';
-import type { AgentCommand, AgentResult } from '../../src/shared/agent-ipc';
+import type { AgentCommand, AgentResult, WorkspaceFilePreview } from '../../src/shared/agent-ipc';
 import { runCoreChecks } from './core-checks';
 import type { VerificationCheck } from './types';
 import type { AgentResponseDto } from '../../src/agent-core/contracts/agent-responses/types';
@@ -162,6 +162,24 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
       const other = await request<{ id: string }>({ operation: 'sessions.create' });
       const rejected = await host.request({ operation: 'files.content', params: { sessionId: other.id, fileId: file.id } });
       assert.equal(rejected.ok, false);
+    });
+    await step('Workspace preview returns text and image bytes within project boundaries', async () => {
+      const source = 'const message = "中文";\r\n';
+      const image = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jHj8AAAAASUVORK5CYII=', 'base64');
+      await writeFile(path.join(workspace, '源码.ts'), source);
+      await writeFile(path.join(workspace, 'preview.png'), image);
+      await writeFile(path.join(workspace, 'large.txt'), Buffer.alloc(1024 * 1024 + 1));
+      await writeFile(path.join(workspace, 'binary.bin'), Buffer.from([0, 255, 1]));
+      await writeFile(path.join(root, 'outside.txt'), 'outside the project');
+      const preview = (file: string) => request<WorkspaceFilePreview>({
+        operation: 'workspace.preview', params: { projectId }, query: { path: file },
+      });
+      assert.deepEqual(await preview('源码.ts'), { kind: 'text', text: source });
+      assert.deepEqual(await preview('preview.png'), { kind: 'image', mediaType: 'image/png', bytes: new Uint8Array(image) });
+      assert.deepEqual(await preview('missing.txt'), { kind: 'missing' });
+      assert.deepEqual(await preview('large.txt'), { kind: 'too-large' });
+      assert.deepEqual(await preview('binary.bin'), { kind: 'unsupported' });
+      await assert.rejects(preview('../outside.txt'));
     });
     await step('Streaming text, event ordering and persisted history', async () => {
       const events: Array<{ type: string; sequence_number: number }> = [];

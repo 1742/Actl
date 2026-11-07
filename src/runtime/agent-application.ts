@@ -80,6 +80,11 @@ export class AgentApplication {
         const project = this.project(projectId()); const input = projects.listProjectDirectoryQuerySchema.parse(query);
         return d.workspaceFiles.listDirectory(project.cwd, input);
       }
+      case 'workspace.preview': {
+        const project = this.project(projectId());
+        const input = projects.previewProjectFileQuerySchema.parse(query);
+        return d.workspaceFiles.previewFile(project.cwd, input.path);
+      }
       case 'sessions.list': {
         const input = sessions.listSessionsQuerySchema.parse(query);
         return d.workspaceStore.listSessions(ownerId, input.scope === 'standalone' ? null : input.projectId).map(toSessionJson);

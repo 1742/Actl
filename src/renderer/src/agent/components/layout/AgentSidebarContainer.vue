@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRouter } from "vue-router";
 
 const router = useRouter();
-const DEFAULT_WIDTH = 480;
+const DEFAULT_WIDTH = 520;
 const STORAGE_KEY = 'ai-agent-right-sidebar-width';
 const panel = ref<HTMLElement>();
 const preferredWidth = ref(DEFAULT_WIDTH);
@@ -77,6 +77,9 @@ watch(panel, (element) => {
   observer = new ResizeObserver(() => { availableWidth.value = parent.clientWidth; });
   observer.observe(parent);
 }, { flush: 'post' });
+watch(() => router.currentRoute.value.name, (name) => {
+  if (name !== 'aiAgentRightSidebarHome') stopResize();
+});
 
 onMounted(() => {
   const saved = Number(localStorage.getItem(STORAGE_KEY));
@@ -93,7 +96,7 @@ async function closeRightSidebar() {
   <router-view v-slot="{ Component }">
     <Transition name="right-sidebar-panel">
       <div
-        v-if="Component"
+        v-show="Component"
         ref="panel"
         class="right-sidebar-panel relative h-full min-h-0 overflow-hidden border-l border-gray-200 bg-white"
         :style="{ '--sidebar-width': `${width}px` }"
@@ -117,7 +120,9 @@ async function closeRightSidebar() {
           @dblclick="resetWidth"
           @keydown="handleKeydown"
         />
-        <component :is="Component" @close="closeRightSidebar" />
+        <KeepAlive>
+          <component :is="Component" v-if="Component" @close="closeRightSidebar" />
+        </KeepAlive>
       </div>
     </Transition>
   </router-view>

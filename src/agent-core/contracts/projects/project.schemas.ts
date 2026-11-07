@@ -25,6 +25,10 @@ export const listProjectDirectoryQuerySchema = z.object({
   maxEntries: z.coerce.number().int().min(1).max(500).default(200),
 }).strict();
 
+export const previewProjectFileQuerySchema = z.object({
+  path: z.string().min(1).max(4096),
+}).strict();
+
 export type CreateProjectBody = z.infer<typeof createProjectBodySchema>;
 export type UpdateProjectBody = z.infer<typeof updateProjectBodySchema>;
 export type ProjectParams = z.infer<typeof projectParamsSchema>;

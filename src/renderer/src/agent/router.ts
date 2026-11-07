@@ -1,4 +1,10 @@
-import type { RouteRecordRaw } from 'vue-router';
+import type { RouteRecordRaw, Router } from 'vue-router';
+
+export async function enterAgentConversation(router: Router) {
+  if (router.currentRoute.value.name !== 'aiAgentRightSidebarHome') {
+    await router.push({ name: 'aiAgent' });
+  }
+}
 
 const agentRoutes: RouteRecordRaw = {
   path: "agent",
@@ -12,12 +18,12 @@ const agentRoutes: RouteRecordRaw = {
         {
           path: "sidebars",
           name: "aiAgentRightSidebarHome",
-          component: () => import("./components/layout/AgentSidebarHome.vue"),
+          component: () => import("./components/layout/AgentSidebarTabs.vue"),
         },
         {
           path: "sidebars/files",
           name: "aiAgentRightSidebarFiles",
-          component: () => import("./components/layout/AgentWorkspacePanel.vue"),
+          redirect: { name: "aiAgentRightSidebarHome" },
         },
       ],
     },

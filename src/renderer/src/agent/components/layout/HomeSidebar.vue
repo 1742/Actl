@@ -13,6 +13,7 @@ import {
 import { useRouter } from 'vue-router';
 
 import { useNotifyStore } from '../../../composables/notify';
+import { enterAgentConversation } from '../../router';
 import { pickDirectory } from '../../composables/useFileBridge';
 import AgentManageDialog from '../dialogs/AgentManageDialog.vue';
 import AgentSessionMenu from '../dialogs/AgentSessionMenu.vue';
@@ -64,7 +65,7 @@ async function openSession(sessionId: string) {
     }
   }
 
-  await router.push({ name: 'aiAgent' });
+  await enterAgentConversation(router);
   emit('close');
 }
 
@@ -75,7 +76,7 @@ async function startDraft(projectId?: string) {
     return;
   }
   if (result.status === 'success') {
-    await router.push({ name: 'aiAgent' });
+    await enterAgentConversation(router);
     emit('close');
   }
 }
@@ -89,7 +90,7 @@ async function addProjectFromDirectory() {
     const result = await createAgentProject(directory, 'local');
     notify.display(result.status, result.message);
     if (result.status === 'success') {
-      await router.push({ name: 'aiAgent' });
+      await enterAgentConversation(router);
       emit('close');
     }
   } catch (error) {

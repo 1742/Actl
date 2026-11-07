@@ -2,40 +2,24 @@
 import { tr } from '../../../i18n';
 import { computed, ref, watch } from 'vue';
 import {
-  ChevronLeft,
   ChevronRight,
   File,
   Folder,
   FolderOpen,
   LoaderCircle,
   RefreshCw,
-  X,
 } from '@lucide/vue';
-import { useRouter } from 'vue-router';
 
 import { getAgentRuntimeContext } from '../../services/runtimeClient';
-import { useAgentStore } from '../../stores/agent';
 import type { RuntimeWorkspaceDirectoryEntry, RuntimeWorkspaceTree } from '../../types';
-import { projectName } from '../../utils';
 
-const emit = defineEmits<{ close: [] }>();
-const router = useRouter();
-const store = useAgentStore();
+const props = defineProps<{ projectId: string; projectLabel: string }>();
+const emit = defineEmits<{ openFile: [entry: RuntimeWorkspaceDirectoryEntry] }>();
 const trees = ref(new Map<string, RuntimeWorkspaceTree>());
 const expanded = ref(new Set<string>());
 const loading = ref(new Set<string>());
 const error = ref('');
 const requestVersion = ref(0);
-
-const project = computed(() =>
-  store.session?.projectId
-    ? store.projects.find((item) => item.id === store.session?.projectId)
-    : store.draftProject,
-);
-const projectId = computed(() => project.value?.runtimeId || '');
-const projectLabel = computed(() =>
-  project.value ? projectName(project.value.cwd, project.value.name) : '',
-);
 
 interface VisibleEntry {
   entry: RuntimeWorkspaceDirectoryEntry;
@@ -66,14 +50,14 @@ function isLoading(path: string) {
 }
 
 async function loadDirectory(path: string, force = false) {
-  if (!projectId.value || (trees.value.has(path) && !force) || loading.value.has(path)) return;
+  if (!props.projectId || (trees.value.has(path) && !force) || loading.value.has(path)) return;
   const version = requestVersion.value;
   loading.value = new Set(loading.value).add(path);
   error.value = '';
   try {
-    const { client } = getAgentRuntimeContext(store.runtimeKind);
-    const tree = await client.listWorkspaceDirectory(projectId.value, path);
-    if (version !== requestVersion.value || projectId.value !== project.value?.runtimeId) return;
+    const { client } = getAgentRuntimeContext('local');
+    const tree = await client.listWorkspaceDirectory(props.projectId, path);
+    if (version !== requestVersion.value) return;
     const next = new Map(trees.value);
     next.set(path, tree);
     trees.value = next;
@@ -81,9 +65,7 @@ async function loadDirectory(path: string, force = false) {
     if (version === requestVersion.value)
       error.value = cause instanceof Error ? cause.message : tr('ui.failedToLoadFileTree');
   } finally {
-    const next = new Set(loading.value);
-    next.delete(path);
-    loading.value = next;
+    if (version === requestVersion.value) loading.value.delete(path);
   }
 }
 
@@ -94,27 +76,22 @@ async function toggleDirectory(path: string) {
     expanded.value = next;
     return;
   }
+  expanded.value.add(path);
   await loadDirectory(path);
-  const next = new Set(expanded.value);
-  next.add(path);
-  expanded.value = next;
 }
 
 async function refresh() {
-  if (!projectId.value) return;
+  if (!props.projectId) return;
   trees.value = new Map();
   expanded.value = new Set();
+  loading.value = new Set();
   error.value = '';
   requestVersion.value += 1;
   await loadDirectory('.', true);
 }
 
-async function returnToSidebarHome() {
-  await router.push({ name: 'aiAgentRightSidebarHome' });
-}
-
 watch(
-  projectId,
+  () => props.projectId,
   (current, previous) => {
     if (current === previous) return;
     requestVersion.value += 1;
@@ -132,15 +109,6 @@ watch(
   <aside class="flex h-full min-h-0 w-full flex-col bg-white" :aria-label="$t('ui.workspaceFiles')">
     <div class="flex h-14 shrink-0 items-center justify-between border-b border-gray-200 px-3">
       <div class="flex min-w-0 items-center gap-1">
-        <button
-          class="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100"
-          type="button"
-          :aria-label="$t('ui.backToSidebarHome')"
-          :title="$t('ui.back')"
-          @click="returnToSidebarHome"
-        >
-          <ChevronLeft :size="18" />
-        </button>
         <div class="min-w-0">
           <h2 class="truncate text-sm font-semibold text-gray-800">{{ $t('ui.files') }}</h2>
           <p class="truncate text-[11px] text-gray-400" :title="projectLabel">
@@ -157,15 +125,6 @@ watch(
           @click="refresh"
         >
           <RefreshCw :size="15" />
-        </button>
-        <button
-          class="flex h-8 w-8 items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100"
-          type="button"
-          :aria-label="$t('ui.closeFiles')"
-          :title="$t('ui.off')"
-          @click="emit('close')"
-        >
-          <X :size="17" />
         </button>
       </div>
     </div>
@@ -207,7 +166,7 @@ watch(
           type="button"
           :style="{ paddingLeft: `${item.depth * 16 + 8}px` }"
           :title="item.entry.path"
-          @click="item.entry.type === 'directory' ? toggleDirectory(item.entry.path) : undefined"
+          @click="item.entry.type === 'directory' ? toggleDirectory(item.entry.path) : emit('openFile', item.entry)"
         >
           <ChevronRight
             v-if="item.entry.type === 'directory'"

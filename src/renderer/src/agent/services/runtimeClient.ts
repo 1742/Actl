@@ -9,6 +9,7 @@ import type {
   SessionContext,
 } from "../types";
 import { localClient } from "./localClient";
+import type { WorkspaceFilePreview } from "../../../../shared/agent-ipc";
 
 export { RuntimeRequestError } from "./desktopTransport";
 
@@ -100,6 +101,7 @@ export interface AgentRuntimeClient {
   
   searchWorkspaceFiles(projectId: string, query?: string, limit?: number): Promise<RuntimeWorkspaceFileSearchResult>;
   listWorkspaceDirectory(projectId: string, path?: string, maxEntries?: number): Promise<RuntimeWorkspaceTree>;
+  previewWorkspaceFile(projectId: string, path: string): Promise<WorkspaceFilePreview>;
   
   //#endregion
 
