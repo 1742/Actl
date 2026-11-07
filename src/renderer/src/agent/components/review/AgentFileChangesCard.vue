@@ -4,7 +4,7 @@ import { FileDiff } from '@lucide/vue';
 import { useRouter } from 'vue-router';
 import type { ReviewFile } from '../../../../../shared/agent-ipc';
 import { getAgentRuntimeContext } from '../../services/runtimeClient';
-import { reviewTargetKey } from '../layout/reviewNavigation';
+import { reviewTargetKey } from './reviewNavigation';
 
 const props = defineProps<{ sessionId: string; runId: string }>();
 const files = shallowRef<ReviewFile[]>([]);

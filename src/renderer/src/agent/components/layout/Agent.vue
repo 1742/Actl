@@ -5,8 +5,8 @@ import { useRouter } from "vue-router";
 import AgentMessages from "../conversation/MessagesArea.vue";
 import AgentInput from "../composer/Input.vue";
 import AgentTopBar from "./AgentTopBar.vue";
-import RightSidebarContainer from "./AgentSidebarContainer.vue";
-import { reviewTargetKey, type ReviewTarget } from './reviewNavigation';
+import RightSidebarContainer from "../right-sidebar/AgentSidebarContainer.vue";
+import { reviewTargetKey, type ReviewTarget } from '../review/reviewNavigation';
 
 const emit = defineEmits<{
   openNavSidebar: [];

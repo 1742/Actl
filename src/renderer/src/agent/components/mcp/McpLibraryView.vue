@@ -7,7 +7,7 @@ import { useNotifyStore } from '../../../composables/notify';
 import { getAgentRuntimeClient } from '../../services/runtimeClient';
 import { useAgentStore } from '../../stores/agent';
 import type { RuntimeMcpServer, RuntimeMcpServerConfig } from '../../types';
-import { mcpRefreshVersion } from '../layout/libraryNavigation';
+import { mcpRefreshVersion } from '../navigation/libraryNavigation';
 
 const router = useRouter();
 const route = useRoute();

@@ -5,7 +5,7 @@ import { useRouter } from 'vue-router';
 import { ArrowLeft, FileCode2, FolderOpen, LoaderCircle } from '@lucide/vue';
 import { type SkillDetail } from '../../types';
 import { getAgentRuntimeClient } from '../../services/runtimeClient';
-import { skillsRefreshVersion } from '../layout/libraryNavigation';
+import { skillsRefreshVersion } from '../navigation/libraryNavigation';
 
 const props = defineProps<{ skillId: string }>();
 const router = useRouter();

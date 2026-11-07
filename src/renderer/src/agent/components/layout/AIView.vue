@@ -4,8 +4,8 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 
 import { useNotifyStore } from '../../../composables/notify';
-import ActivityBar from './ActivityBar.vue';
-import SecondarySidebar from './SecondarySidebar.vue';
+import ActivityBar from '../navigation/ActivityBar.vue';
+import SecondarySidebar from '../navigation/SecondarySidebar.vue';
 import AgentRecovery from '../conversation/AgentRecovery.vue';
 import { bridge } from '../../../services/bridge';
 import { getAgentRuntimeClient } from '../../services/runtimeClient';

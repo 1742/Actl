@@ -10,7 +10,7 @@ import { collectWebQueries, collectWebSources } from '../../utils/webSearch';
 import AgentActivityGroup from './AgentActivityGroup.vue';
 import AgentReasoningBlock from './AgentReasoningBlock.vue';
 import AgentWebSearchSourcesCard from './AgentWebSearchSourcesCard.vue';
-import AgentFileChangesCard from './AgentFileChangesCard.vue';
+import AgentFileChangesCard from '../review/AgentFileChangesCard.vue';
 
 const props = defineProps<{ context: AIResponseContext }>();
 const groups = computed(() => buildAgentOutputGroups(props.context));

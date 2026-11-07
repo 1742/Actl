@@ -18,7 +18,7 @@ const agentRoutes: RouteRecordRaw = {
         {
           path: "sidebars",
           name: "aiAgentRightSidebarHome",
-          component: () => import("./components/layout/AgentSidebarTabs.vue"),
+          component: () => import("./components/right-sidebar/AgentSidebarTabs.vue"),
         },
         {
           path: "sidebars/files",

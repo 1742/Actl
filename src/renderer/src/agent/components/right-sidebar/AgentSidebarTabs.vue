@@ -22,10 +22,10 @@ import type { RuntimeWorkspaceDirectoryEntry } from '../../types';
 import { useAgentStore } from '../../stores/agent';
 import { projectName } from '../../utils';
 import AgentSidebarHome from './AgentSidebarHome.vue';
-import AgentWorkspacePanel from './AgentWorkspacePanel.vue';
-import AgentWorkspacePreview from './AgentWorkspacePreview.vue';
-import AgentSidebarReview from './AgentSidebarReview.vue';
-import { reviewTargetKey } from './reviewNavigation';
+import AgentWorkspacePanel from '../workspace/AgentWorkspacePanel.vue';
+import AgentWorkspacePreview from '../workspace/AgentWorkspacePreview.vue';
+import AgentSidebarReview from '../review/AgentSidebarReview.vue';
+import { reviewTargetKey } from '../review/reviewNavigation';
 
 defineEmits<{ close: [] }>();
 const store = useAgentStore();
