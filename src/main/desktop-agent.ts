@@ -10,7 +10,7 @@ const commandSchema = z.object({
   operation: z.enum(agentOperations), params: z.record(z.string(), z.string().max(4_096)).optional(),
   query: z.record(z.string(), z.string().max(4_096)).optional(), body: z.unknown().optional(),
 }).strict();
-const subscriptionSchema = z.string().uuid();
+const subscriptionSchema = z.uuid();
 const settingsSchema = z.object({ storageDirectory: z.string().trim().min(1).refine(path.isAbsolute, 'An absolute storage directory is required.') }).strict();
 
 export class DesktopAgent {
@@ -63,6 +63,11 @@ export class DesktopAgent {
     handle('desktop:settings:save', async (value) => { await writeJson(this.settingsFile, settingsSchema.parse(value)); });
     handle('desktop:restart', () => this.restart());
     handle('desktop:clipboard:write-text', (value) => { clipboard.writeText(z.string().parse(value)); });
+    handle('desktop:open-external', (value) => {
+      const url = new URL(z.string().parse(value));
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('Only HTTP and HTTPS links can be opened.');
+      return shell.openExternal(url.href);
+    });
     handle('desktop:pick-directory', async () => {
       const window = this.getWindow();
       if (!window) return null;

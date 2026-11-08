@@ -2,7 +2,7 @@
 import { computed, ref } from 'vue';
 import { ChevronRight, ExternalLink, Globe } from '@lucide/vue';
 import type { AIWebSearchCallItem } from '../responses/types';
-import { webSourcesFromOutput, webSourcesFromSearchCall } from '../../utils/webSearch.ts';
+import { openWebLink, webLinkHref, webSourcesFromOutput, webSourcesFromSearchCall } from '../../utils/webSearch.ts';
 import AgentResultCard from '../conversation/AgentResultCard.vue';
 import AgentWebSourceRow from './AgentWebSourceRow.vue';
 
@@ -26,6 +26,7 @@ const queryLabel = computed(
 const sources = computed(() =>
   props.item ? webSourcesFromSearchCall(props.item) : webSourcesFromOutput(props.output),
 );
+const actionHref = computed(() => webLinkHref(props.item?.action.url));
 </script>
 
 <template>
@@ -58,10 +59,12 @@ const sources = computed(() =>
       </ul>
       <a
         v-else-if="!searching && item?.action.url"
-        :href="item.action.url"
+        :href="actionHref"
         target="_blank"
         rel="noreferrer"
         class="agent-result-row group"
+        @click.prevent="openWebLink(actionHref)"
+        @auxclick.middle.prevent="openWebLink(actionHref)"
       >
         <span class="min-w-0 flex-1 truncate text-gray-700">{{ item.action.url }}</span>
         <ExternalLink :size="12" class="shrink-0 text-gray-400 group-hover:text-gray-600" />

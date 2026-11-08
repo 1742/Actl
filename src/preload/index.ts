@@ -17,6 +17,7 @@ const desktop: DesktopApi = {
   saveSettings: (settings) => ipcRenderer.invoke('desktop:settings:save', settings),
   pickDirectory: () => ipcRenderer.invoke('desktop:pick-directory'),
   openDirectory: (kind) => ipcRenderer.invoke('desktop:open-directory', kind),
+  openExternal: (url) => ipcRenderer.invoke('desktop:open-external', url),
   notify: (kind, title, detail) => ipcRenderer.invoke('desktop:notify', kind, title, detail),
 };
 contextBridge.exposeInMainWorld('actlAgent', Object.freeze(desktop));

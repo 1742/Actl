@@ -13,6 +13,18 @@ export interface AgentWebSource {
 
 type AgentActivityBlock = Exclude<AgentOutputBlock, { type: "message" }>;
 
+export function webLinkHref(value: string | undefined): string | undefined {
+  const url = value ? URL.parse(value) : null;
+  if (url?.protocol === "http:" || url?.protocol === "https:") return url.href;
+}
+
+export function openWebLink(url: string | undefined): void {
+  if (!url) return;
+  void window.actlAgent.openExternal(url).catch((error: unknown) => {
+    console.error("Failed to open web link:", error);
+  });
+}
+
 const asRecord = (value: unknown): Record<string, unknown> | null => (
   value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null
 );

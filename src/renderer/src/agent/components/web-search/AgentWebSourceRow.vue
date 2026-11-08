@@ -1,16 +1,20 @@
 <script setup lang="ts">
 import { ExternalLink } from '@lucide/vue';
-import type { AgentWebSource } from '../../utils/webSearch';
+import { computed } from 'vue';
+import { openWebLink, webLinkHref, type AgentWebSource } from '../../utils/webSearch';
 
-defineProps<{ source: AgentWebSource; showSnippet?: boolean }>();
+const props = defineProps<{ source: AgentWebSource; showSnippet?: boolean }>();
+const href = computed(() => webLinkHref(props.source.url));
 </script>
 
 <template>
   <a
-    :href="source.url"
+    :href="href"
     target="_blank"
     rel="noreferrer"
     class="agent-result-row group"
+    @click.prevent="openWebLink(href)"
+    @auxclick.middle.prevent="openWebLink(href)"
   >
     <span class="min-w-0 flex-1">
       <span class="block truncate text-gray-700">{{ source.title }}</span>

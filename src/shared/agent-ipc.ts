@@ -72,6 +72,7 @@ export interface DesktopApi {
   saveSettings(settings: DesktopSettings): Promise<void>;
   pickDirectory(): Promise<string | null>;
   openDirectory(kind: 'storage' | 'logs' | 'skills' | 'config'): Promise<void>;
+  openExternal(url: string): Promise<void>;
   notify(kind: 'completed' | 'permission_requested', title: string, detail: string): Promise<void>;
 }
 
