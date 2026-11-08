@@ -1,8 +1,9 @@
 import { lstat, open, readFile, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
-import { canonicalizePotentialPath, isPathInside, pathsEqual } from "../tools/path-security.js";
+import { canonicalizePotentialPath, isPathInside, pathsEqual, workspaceDirectoryName } from "../tools/path-security.js";
 import type {
-  RuntimeWorkspaceFile, RuntimeWorkspaceFileSearchResult, RuntimeWorkspaceTree, WorkspaceFilePreview,
+  ProjectWorkspace, RuntimeProjectFileSearchResult, RuntimeWorkspaceFile, RuntimeWorkspaceFileSearchResult,
+  RuntimeWorkspaceTree, WorkspaceFilePreview,
 } from "../../shared/agent/workspace.js";
 
 export type WorkspaceDirectoryErrorCode =
@@ -35,6 +36,11 @@ export interface WalkFilesResult {
   truncated: boolean;
 }
 
+interface RankedWorkspaceFile {
+  item: RuntimeWorkspaceFile;
+  score: number;
+}
+
 const EXCLUDED_DIRECTORIES = new Set([".git", "node_modules", "dist", "build"]);
 const DEFAULT_MAX_SCANNED_FILES = 50_000;
 const PREVIEW_IMAGE_TYPES = new Map([
@@ -44,10 +50,8 @@ const PREVIEW_IMAGE_TYPES = new Map([
 
 export class WorkspaceFileService {
   async resolveFileForReveal(workspaceRootInput: string, relativePath: string): Promise<string | null> {
-    if (relativePath.includes(":")) throw new Error("Invalid workspace file path.");
-    const root = await canonicalizePotentialPath(workspaceRootInput);
     try {
-      return path.resolve(root, await this.validateReference(root, relativePath));
+      return await this.validateReference(workspaceRootInput, relativePath);
     } catch (error) {
       if (isMissingPathError(error) || (error as NodeJS.ErrnoException).code === "ENOTDIR") return null;
       throw error;
@@ -55,13 +59,11 @@ export class WorkspaceFileService {
   }
 
   async previewFile(workspaceRootInput: string, relativePath: string): Promise<WorkspaceFilePreview> {
-    if (relativePath.includes(":")) throw new Error("Invalid workspace file path.");
-    const root = await canonicalizePotentialPath(workspaceRootInput);
     try {
-      const file = await this.validateReference(root, relativePath);
+      const file = await this.validateReference(workspaceRootInput, relativePath);
       const mediaType = PREVIEW_IMAGE_TYPES.get(path.extname(file).toLowerCase());
       const limit = (mediaType ? 10 : 1) * 1024 * 1024;
-      const handle = await open(path.resolve(root, file), "r");
+      const handle = await open(file, "r");
       try {
         const stat = await handle.stat();
         if (!stat.isFile()) return { kind: "unsupported" };
@@ -226,8 +228,40 @@ export class WorkspaceFileService {
     limit: number,
     signal?: AbortSignal,
   ): Promise<RuntimeWorkspaceFileSearchResult> {
+    const { matches, truncated } = await this.rankFiles(workspaceRoot, query, limit, signal);
+    return { data: matches.map(({ item }) => item), truncated };
+  }
+
+  async searchProject(
+    workspaces: readonly ProjectWorkspace[],
+    query: string,
+    limit: number,
+  ): Promise<RuntimeProjectFileSearchResult> {
+    const results = await Promise.allSettled(workspaces.map(async (workspace) => {
+      const { matches, truncated } = await this.rankFiles(workspace.path, query, limit);
+      const workspaceName = workspaceDirectoryName(workspace.path);
+      return {
+        matches: matches.map(({ item, score }) => ({
+          item: { ...item, workspaceId: workspace.id, workspaceName },
+          score,
+        })),
+        truncated,
+      };
+    }));
+    const available = results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+    const first = results[0];
+    if (!available.length && first?.status === "rejected") throw first.reason;
+
+    const matches = available.flatMap((result) => result.matches).sort(compareRankedFiles);
+    return {
+      data: matches.slice(0, limit).map(({ item }) => item),
+      truncated: matches.length > limit || available.length < results.length || available.some(({ truncated }) => truncated),
+    };
+  }
+
+  private async rankFiles(workspaceRoot: string, query: string, limit: number, signal?: AbortSignal) {
     const normalizedQuery = query.trim().toLocaleLowerCase();
-    const matches: Array<{ item: RuntimeWorkspaceFile; score: number }> = [];
+    const matches: RankedWorkspaceFile[] = [];
     const result = await this.walkFiles(
       workspaceRoot,
       { maxFiles: DEFAULT_MAX_SCANNED_FILES, ...(signal ? { signal } : {}) },
@@ -240,15 +274,12 @@ export class WorkspaceFileService {
         });
       },
     );
-    matches.sort((left, right) => left.score - right.score || left.item.path.localeCompare(right.item.path));
-    return {
-      data: matches.slice(0, limit).map(({ item }) => item),
-      truncated: result.truncated || matches.length > limit,
-    };
+    matches.sort(compareRankedFiles);
+    return { matches: matches.slice(0, limit), truncated: result.truncated || matches.length > limit };
   }
 
   async validateReference(workspaceRootInput: string, inputPath: string): Promise<string> {
-    if (path.isAbsolute(inputPath)) throw new Error("Workspace file path must be relative.");
+    if (path.isAbsolute(inputPath) || inputPath.includes(":")) throw new Error("Workspace file path must be relative.");
     const workspaceRoot = await canonicalizePotentialPath(workspaceRootInput);
     const lexicalTarget = path.resolve(workspaceRoot, inputPath);
     if (!isPathInside(workspaceRoot, lexicalTarget)) throw new Error("Workspace file path is outside the workspace.");
@@ -258,7 +289,7 @@ export class WorkspaceFileService {
     }
     const targetStat = await lstat(canonicalTarget);
     if (!targetStat.isFile()) throw new Error("Workspace file path must identify a regular file.");
-    return normalizeRelative(workspaceRoot, canonicalTarget);
+    return canonicalTarget;
   }
 
   private async resolveSafePath(workspaceRoot: string, inputPath: string): Promise<string> {
@@ -339,6 +370,10 @@ function normalizeDirectoryRelative(root: string, candidate: string): string {
 
 function isMissingPathError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error && (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+
+function compareRankedFiles(left: RankedWorkspaceFile, right: RankedWorkspaceFile): number {
+  return left.score - right.score || left.item.path.localeCompare(right.item.path);
 }
 
 function fuzzyScore(relativePath: string, query: string): number | null {

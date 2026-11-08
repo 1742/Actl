@@ -16,7 +16,7 @@ import type { RuntimeModelConfig, CreateRuntimeProviderAccount, ReasoningEffort 
 import type { RuntimeSkill, RuntimeSkillContext } from '../../../../shared/agent/skills';
 import type { AgentRuntimeKind } from '../services/runtimeClient';
 import type { RuntimeProject, RuntimeSession } from '../components/navigation/types';
-import type { AgentProject, AgentSession } from '../../../../shared/agent/sessions';
+import type { AgentProject, AgentSession, ProjectSettings } from '../../../../shared/agent/sessions';
 import { agentResponsesToContexts, titleFromInput } from '../utils';
 
 const activeStreamControllers = new Map<string, AbortController>();
@@ -567,17 +567,29 @@ export async function createNewAgentSession(projectId?: string): Promise<ActionR
   }
 }
 
-export async function createAgentProject(
-  cwd: string,
-  kind: AgentRuntimeKind = useAgentStore().runtimeKind,
-): Promise<ActionResult> {
+export async function createAgentProject(settings: ProjectSettings): Promise<ActionResult> {
   const store = useAgentStore();
   try {
+    const kind = store.runtimeKind;
     const { client } = getAgentRuntimeContext(kind);
-    const project = decorateProject(kind, await client.createProject(cwd.trim()));
+    const project = decorateProject(kind, await client.createProject(settings));
     store.setProjects([...store.projects, project]);
     startNewAgentDraft(project.id);
     return { status: 'success', message: tr('ui.projectAdded') };
+  } catch (error) {
+    return errorResult(error);
+  }
+}
+
+export async function updateAgentProject(projectId: string, settings: ProjectSettings): Promise<ActionResult> {
+  const store = useAgentStore();
+  const blocked = projectActivityBlocked(projectId, tr('ui.editProject'));
+  if (blocked) return blocked;
+  try {
+    const { project, client } = projectContext(projectId);
+    const updated = decorateProject(project.runtimeKind, await client.updateProject(project.runtimeId, settings));
+    store.setProjects(store.projects.map((item) => item.id === projectId ? updated : item));
+    return { status: 'success', message: tr('ui.projectSaved') };
   } catch (error) {
     return errorResult(error);
   }

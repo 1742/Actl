@@ -2,7 +2,7 @@
 import { reactive } from 'vue';
 type Tab =
   | { id: string; kind: 'home' | 'files' | 'review' }
-  | { id: string; kind: 'file'; name: string; path: string };
+  | { id: string; kind: 'file'; name: string; path: string; workspaceId: string };
 interface TabGroup {
   tabs: Tab[];
   activeId: string;
@@ -35,6 +35,7 @@ const project = computed(() =>
     : store.draftProject,
 );
 const projectId = computed(() => project.value?.runtimeId ?? '');
+const workspaces = computed(() => project.value?.workspaces ?? []);
 const projectLabel = computed(() =>
   project.value ? projectName(project.value.cwd, project.value.name) : '',
 );
@@ -51,6 +52,16 @@ watch(projectId, (id) => {
 const group = computed(() => groups.get(projectId.value)!);
 const activeTab = computed(() => group.value.tabs.find((tab) => tab.id === group.value.activeId));
 const hasFilesTab = computed(() => group.value.tabs.some((tab) => tab.kind === 'files'));
+
+watch(workspaces, (items) => {
+  const available = new Set(items.map(({ id }) => id));
+  const state = group.value;
+  state.tabs = state.tabs.filter((tab) => tab.kind !== 'file' || available.has(tab.workspaceId));
+  if (!state.tabs.length) state.tabs.push(createHomeTab());
+  if (!state.tabs.some((tab) => tab.id === state.activeId)) {
+    state.activeId = (state.tabs.find((tab) => tab.kind === 'files') ?? state.tabs[0])!.id;
+  }
+});
 
 watch([projectId, activeTab, visible], () => {
   strip.value?.querySelector('[aria-current="page"]')?.scrollIntoView({
@@ -76,8 +87,13 @@ function openLatestReview() {
   openTab({ id: 'review', kind: 'review' });
 }
 
-function openFile(entry: RuntimeWorkspaceDirectoryEntry) {
-  openTab({ id: `file:${entry.path.toLowerCase()}`, kind: 'file', name: entry.name, path: entry.path });
+function openFile(workspaceId: string, entry: RuntimeWorkspaceDirectoryEntry) {
+  openTab({ id: `file:${workspaceId}:${entry.path.toLowerCase()}`, kind: 'file', name: entry.name, path: entry.path, workspaceId });
+}
+
+function fileTitle(tab: Extract<Tab, { kind: 'file' }>) {
+  const directory = workspaces.value.find(({ id }) => id === tab.workspaceId)?.path;
+  return directory ? `${directory} · ${tab.path}` : tab.path;
 }
 
 function closeTab(index: number) {
@@ -103,7 +119,7 @@ function closeTab(index: number) {
             class="flex h-full min-w-0 items-center gap-1.5 pl-2 pr-1"
             type="button"
             :aria-current="tab.id === group.activeId ? 'page' : undefined"
-            :title="tab.kind === 'file' ? tab.path : undefined"
+            :title="tab.kind === 'file' ? fileTitle(tab) : undefined"
             @click="group.activeId = tab.id"
           >
             <File v-if="tab.kind === 'file'" :size="14" class="shrink-0" />
@@ -139,7 +155,8 @@ function closeTab(index: number) {
           v-show="activeTab?.kind === 'files'"
           :key="projectId"
           :project-id="projectId"
-          :project-label="projectLabel"
+          :workspaces="workspaces"
+          :primary-workspace-id="project?.primaryWorkspaceId ?? ''"
           @open-file="openFile"
         />
       </KeepAlive>
@@ -147,6 +164,7 @@ function closeTab(index: number) {
         v-if="visible && activeTab?.kind === 'file'"
         :key="`${projectId}:${activeTab.id}`"
         :project-id="projectId"
+        :workspace-id="activeTab.workspaceId"
         :path="activeTab.path"
       />
       <AgentSidebarReview v-if="visible && activeTab?.kind === 'review'" />

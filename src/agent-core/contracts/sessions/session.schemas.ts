@@ -28,6 +28,7 @@ const inputContentSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("input_workspace_file"),
     path: nonEmptyString,
+    workspaceId: nonEmptyString.optional(),
   }).strict(),
   z.object({
     type: z.literal("input_file"),

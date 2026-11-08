@@ -18,7 +18,7 @@ import type { AgentComposerDocument } from './types';
 import type { AgentRuntimeKind } from '../../services/runtimeClient';
 import type { RuntimeSkill } from '../../../../../shared/agent/skills';
 import type { RuntimeMcpCatalogServer } from '../../../../../shared/agent/mcp';
-import type { RuntimeWorkspaceFile } from '../../../../../shared/agent/workspace';
+import type { ProjectWorkspace, RuntimeProjectFile } from '../../../../../shared/agent/workspace';
 import ComposerReferenceMenu from './ComposerReferenceMenu.vue';
 import {
   ATTACHMENT_ACTION_KEY,
@@ -46,6 +46,7 @@ const props = withDefaults(
     skillsLoading?: boolean;
     skillsError?: string;
     projectId?: string;
+    workspaces?: ProjectWorkspace[] | undefined;
     runtimeKind: AgentRuntimeKind;
     placeholder?: string;
     disabled?: boolean;
@@ -81,7 +82,7 @@ const menuPanelRef = ref<InstanceType<typeof ComposerReferenceMenu>>();
 const menuLevel = ref<'root' | 'mcp'>('root');
 const mcpEntryQuery = ref('');
 const activeKey = ref('');
-const workspaceFiles = ref<RuntimeWorkspaceFile[]>([]);
+const workspaceFiles = ref<RuntimeProjectFile[]>([]);
 const mcpServers = ref<RuntimeMcpCatalogServer[]>([]);
 const mcpLoading = ref(false);
 const mcpError = ref('');
@@ -141,7 +142,7 @@ const candidates = computed<ComposerMenuCandidate[]>(() =>
           type: 'mcp_server' as const,
           item,
         }))
-    : workspaceFiles.value.map((item) => ({ key: item.path, type: 'file' as const, item })),
+    : workspaceFiles.value.map((item) => ({ key: `${item.workspaceId}:${item.path}`, type: 'file' as const, item })),
 );
 const disabledKeys = computed(
   () =>
@@ -276,7 +277,7 @@ function selectMcpServer(server: RuntimeMcpCatalogServer) {
   closeMenu();
 }
 
-function selectWorkspaceFile(file: RuntimeWorkspaceFile) {
+function selectWorkspaceFile(file: RuntimeProjectFile) {
   const currentMenu = menu.value;
   if (!currentMenu || currentMenu.type !== 'file' || !props.projectId) return;
   editor.value
@@ -286,7 +287,7 @@ function selectWorkspaceFile(file: RuntimeWorkspaceFile) {
     .insertContent([
       {
         type: 'workspaceFileReference',
-        attrs: { path: file.path, name: file.name },
+        attrs: { path: file.path, name: file.name, workspaceId: file.workspaceId },
       },
       { type: 'text', text: ' ' },
     ])
@@ -506,22 +507,21 @@ watch(
 );
 
 watch(
-  [() => menu.value?.type, () => menu.value?.query, () => props.projectId],
+  [() => menu.value?.type, () => menu.value?.query, () => props.projectId, () => props.workspaces],
   ([type, query, projectId]) => {
     if (fileSearchTimer) window.clearTimeout(fileSearchTimer);
-    if (type !== 'file') return;
-
+    const requestVersion = ++fileSearchVersion;
     workspaceFiles.value = [];
     filesError.value = '';
     filesTruncated.value = false;
-    if (!projectId) return;
+    filesLoading.value = false;
+    if (type !== 'file' || !projectId) return;
 
-    const requestVersion = ++fileSearchVersion;
     filesLoading.value = true;
     fileSearchTimer = window.setTimeout(async () => {
       try {
         const { client } = getAgentRuntimeContext(props.runtimeKind);
-        const result = await client.searchWorkspaceFiles(projectId, query || '');
+        const result = await client.searchProjectFiles(projectId, query || '');
         if (requestVersion !== fileSearchVersion) return;
         workspaceFiles.value = result.data;
         filesTruncated.value = result.truncated;

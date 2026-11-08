@@ -1,6 +1,6 @@
 import type { RuntimeMcpCatalogServer } from '../../../../../shared/agent/mcp';
 import type { RuntimeSkill } from '../../../../../shared/agent/skills';
-import type { RuntimeWorkspaceFile } from '../../../../../shared/agent/workspace';
+import type { RuntimeProjectFile } from '../../../../../shared/agent/workspace';
 
 export type ComposerMenuCandidate =
   | { key: string; type: 'attachment' }
@@ -9,7 +9,7 @@ export type ComposerMenuCandidate =
   | { key: string; type: 'mcp' }
   | { key: string; type: 'skill'; item: RuntimeSkill }
   | { key: string; type: 'mcp_server'; item: RuntimeMcpCatalogServer }
-  | { key: string; type: 'file'; item: RuntimeWorkspaceFile };
+  | { key: string; type: 'file'; item: RuntimeProjectFile };
 
 export const ATTACHMENT_ACTION_KEY = 'action:attachment';
 export const RECENT_CHATS_ACTION_KEY = 'action:recent-chats';

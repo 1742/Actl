@@ -3,8 +3,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { INITIAL_SCHEMA_SQL, SQLITE_SCHEMA_GENERATION, SQLITE_SCHEMA_VERSION } from '../../src/agent-core/repositories/sqlite/schema';
+import { INITIAL_SCHEMA_SQL, PROJECT_WORKSPACES_SQL, SQLITE_SCHEMA_GENERATION, SQLITE_SCHEMA_VERSION } from '../../src/agent-core/repositories/sqlite/schema';
 import { runSqliteMigrations } from '../../src/agent-core/repositories/sqlite/migrations';
+import { SqliteWorkspaceRepository } from '../../src/agent-core/repositories/sqlite-workspace-repository';
 import { createFileLogger } from '../../src/agent-core/observability/logger';
 import { runWithRequestContext } from '../../src/agent-core/observability/request-context';
 import { ProcessSupervisor } from '../../src/agent-core/runtime/process/process-supervisor';
@@ -43,8 +44,8 @@ export async function runCoreChecks(dataDirectory: string, fixturePath: string):
       database.exec(INITIAL_SCHEMA_SQL);
       database.prepare('INSERT INTO schema_metadata(id, generation, version, created_at) VALUES (1, ?, ?, ?)')
         .run(SQLITE_SCHEMA_GENERATION, SQLITE_SCHEMA_VERSION, startedAt);
-      database.prepare('INSERT INTO projects(id, owner_id, cwd, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
-        .run('project_probe', 'developer:local', options.dataDirectory, '中文验证项目', startedAt, startedAt);
+      database.prepare('INSERT INTO projects(id, owner_id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
+        .run('project_probe', 'developer:local', '中文验证项目', startedAt, startedAt);
       database.prepare('INSERT INTO sessions(id, owner_id, project_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
         .run('session_probe', 'developer:local', 'project_probe', 'Electron 验证', startedAt, startedAt);
       database.exec("BEGIN IMMEDIATE; UPDATE projects SET name = 'rollback' WHERE id = 'project_probe'; ROLLBACK;");
@@ -60,6 +61,65 @@ export async function runCoreChecks(dataDirectory: string, fixturePath: string):
     } finally {
       database.close();
     }
+  });
+
+  await check('SQLite v19 多工作区迁移、项目保存回滚与重开', async () => {
+    const databasePath = path.join(options.dataDirectory, 'database', 'v19.db');
+    const offline = path.join(options.dataDirectory, '旧工作区（离线）');
+    const otherDirectory = path.join(options.dataDirectory, '其他工作区');
+    const database = new DatabaseSync(databasePath);
+    try {
+      const legacySql = INITIAL_SCHEMA_SQL.replace(PROJECT_WORKSPACES_SQL,
+        'CREATE UNIQUE INDEX projects_owner_cwd_idx ON projects(owner_id, cwd);')
+        .replace('CREATE TABLE projects(id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, name TEXT,',
+          'CREATE TABLE projects(id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, cwd TEXT NOT NULL, name TEXT,');
+      database.exec(legacySql);
+      database.prepare('INSERT INTO schema_metadata VALUES (1, ?, 19, ?)').run(SQLITE_SCHEMA_GENERATION, startedAt);
+      const addProject = database.prepare('INSERT INTO projects VALUES (?, ?, ?, ?, ?, ?)');
+      addProject.run('old', 'owner', offline, '项目名称', startedAt, startedAt);
+      addProject.run('other', 'owner', otherDirectory, null, startedAt, startedAt);
+      database.prepare('INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?)').run('session', 'owner', 'old', '会话名称', startedAt, startedAt);
+      database.prepare(`INSERT INTO agent_runs(id, session_id, run_order, status, model_snapshot_json,
+        created_at, updated_at, completed_at, next_sequence_number) VALUES ('run', 'session', 0, 'completed', '{}', ?, ?, ?, 0)`)
+        .run(startedAt, startedAt, startedAt);
+      database.prepare("INSERT INTO run_messages VALUES ('run', 0, 'message', ?)").run(JSON.stringify({
+        type: 'message', id: 'message', role: 'user', content: [{ type: 'workspace_file', path: 'same.txt' }],
+      }));
+      database.prepare(`INSERT INTO file_changes(id, session_id, run_id, file_path, change_type, summary, created_at)
+        VALUES ('change', 'session', 'run', 'same.txt', 'modify', 'same.txt', ?)`)
+        .run(startedAt);
+    } finally {
+      database.close();
+    }
+
+    const repository = new SqliteWorkspaceRepository(databasePath);
+    try {
+      const index = await repository.initialize();
+      const old = index.projects.find(({ id }) => id === 'old')!;
+      const other = index.projects.find(({ id }) => id === 'other')!;
+      assert.equal(old.name, '项目名称');
+      assert.equal(old.cwd, offline);
+      assert.deepEqual(old.workspaces, [{ id: old.primaryWorkspaceId, path: offline }]);
+      assert.equal(index.sessions[0]?.projectId, old.id);
+      await assert.rejects(repository.updateProject({
+        ...old, name: 'must roll back', workspaces: [...old.workspaces, { id: 'duplicate', path: other.cwd }],
+      }), /UNIQUE constraint failed/);
+      repository.close();
+      const reopened = await repository.initialize();
+      assert.deepEqual(reopened.projects.find(({ id }) => id === old.id), old);
+      const read = new DatabaseSync(databasePath, { readOnly: true });
+      try {
+        const stored = read.prepare("SELECT payload_json FROM run_messages WHERE run_id = 'run'").get();
+        assert.equal(JSON.parse(String(stored?.payload_json)).content[0].path, path.join(offline, 'same.txt').split(path.sep).join('/'));
+        assert.equal(read.prepare("SELECT file_path FROM file_changes WHERE id = 'change'").get()?.file_path, path.join(offline, 'same.txt'));
+        assert.deepEqual(read.prepare('PRAGMA foreign_key_check').all(), []);
+      } finally {
+        read.close();
+      }
+    } finally {
+      repository.close();
+    }
+    return '离线路径、原项目和会话、历史引用、文件变更及保存回滚通过。';
   });
 
   await check('文件与凭据', async () => {

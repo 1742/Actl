@@ -7,7 +7,7 @@ export type AgentComposerNode =
   | { type: "text"; text: string }
   | { type: "skill"; id: string; name: string; scope: string }
   | { type: "mcp_server"; name: string }
-  | { type: "workspace_file"; path: string; name: string };
+  | { type: "workspace_file"; path: string; name: string; workspaceId?: string };
 
 export interface AgentComposerDocument {
   version: 1;

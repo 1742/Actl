@@ -1,5 +1,6 @@
 import type { AgentRunRecord, AgentTimelineItem } from "../runtime/agent-domain.js";
 import type { ModelUsage } from "../model/types.js";
+import type { AgentProject } from "../../shared/agent/sessions.js";
 
 export interface SessionContextStateRecord {
   sessionId: string;
@@ -22,13 +23,8 @@ export interface ContextCompressionRecord {
   createdAt: string;
 }
 
-export interface ProjectRecord {
-  id: string;
+export interface ProjectRecord extends AgentProject {
   ownerId: string;
-  cwd: string;
-  name?: string;
-  created_at: string;
-  updated_at: string;
 }
 
 export interface SessionMetadataRecord {

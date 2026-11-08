@@ -4,7 +4,7 @@ import type {
   ResponseInputPartDto, PermissionMode, AgentResponseDto, PermissionResolutionDto, AgentStreamEvent,
   CreateResponseRequest, ResolvePermissionsRequest,
 } from '../../../../shared/agent/responses';
-import type { AgentProject, AgentSession, SessionContext } from '../../../../shared/agent/sessions';
+import type { AgentProject, AgentSession, ProjectSettings, SessionContext } from '../../../../shared/agent/sessions';
 import type {
   CreateRuntimeProviderAccount, RuntimeModelCatalog, RuntimeModelConfig, RuntimeProviderAccount,
   ReasoningEffort,
@@ -14,7 +14,7 @@ import type { RuntimePromptSettings } from '../../../../shared/agent/prompts';
 import type { RuntimeSkillCatalog, RuntimeSkillContext, SkillDetail } from '../../../../shared/agent/skills';
 import type { RuntimeStoredFile } from '../../../../shared/agent/files';
 import type { RuntimeWebSearchResult, RuntimeWebSearchSettings } from '../../../../shared/agent/web-search';
-import type { RuntimeWorkspaceFileSearchResult, RuntimeWorkspaceTree, WorkspaceFilePreview } from '../../../../shared/agent/workspace';
+import type { RuntimeProjectFileSearchResult, RuntimeWorkspaceFileSearchResult, RuntimeWorkspaceTree, WorkspaceFilePreview } from '../../../../shared/agent/workspace';
 import type { AgentCommand } from '../../../../shared/agent-ipc';
 import type { SessionReview } from '../../../../shared/agent/review';
 
@@ -25,6 +25,10 @@ function stream(command: AgentCommand, onEvent: (event: AgentStreamEvent) => voi
   }, signal);
 }
 
+function workspaceParams(projectId: string, workspaceId: string | undefined): Record<string, string> {
+  return workspaceId === undefined ? { projectId } : { projectId, workspaceId };
+}
+
 export class LocalRuntimeClient implements AgentRuntimeClient {
   readonly kind = 'local' as const;
   readonly capabilities = {
@@ -33,7 +37,8 @@ export class LocalRuntimeClient implements AgentRuntimeClient {
   } as const;
 
   listProjects() { return request<AgentProject[]>({ operation: 'projects.list' }); }
-  createProject(cwd: string) { return request<AgentProject>({ operation: 'projects.create', body: { cwd } }); }
+  createProject(settings: ProjectSettings) { return request<AgentProject>({ operation: 'projects.create', body: settings }); }
+  updateProject(projectId: string, settings: ProjectSettings) { return request<AgentProject>({ operation: 'projects.update', params: { projectId }, body: settings }); }
   deleteProject(projectId: string) { return request<void>({ operation: 'projects.delete', params: { projectId } }); }
 
   listSessions() { return request<AgentSession[]>({ operation: 'sessions.list' }); }
@@ -82,9 +87,18 @@ export class LocalRuntimeClient implements AgentRuntimeClient {
  }
  async getSkillDetail(skillId: string): Promise<SkillDetail> { return await request({ operation: 'skills.detail', params: { skillId } }); }
 
-  searchWorkspaceFiles(projectId: string, q = '', limit = 20) { return request<RuntimeWorkspaceFileSearchResult>({ operation: 'workspace.search', params: { projectId }, query: { q, limit: String(limit) } }); }
-  listWorkspaceDirectory(projectId: string, path = '.', maxEntries = 200) { return request<RuntimeWorkspaceTree>({ operation: 'workspace.tree', params: { projectId }, query: { path, maxEntries: String(maxEntries) } }); }
-  previewWorkspaceFile(projectId: string, path: string) { return request<WorkspaceFilePreview>({ operation: 'workspace.preview', params: { projectId }, query: { path } }); }
+  searchWorkspaceFiles(projectId: string, q = '', limit = 20, workspaceId?: string) {
+    return request<RuntimeWorkspaceFileSearchResult>({ operation: 'workspace.search', params: workspaceParams(projectId, workspaceId), query: { q, limit: String(limit) } });
+  }
+  searchProjectFiles(projectId: string, q: string) {
+    return request<RuntimeProjectFileSearchResult>({ operation: 'workspace.searchProject', params: { projectId }, query: { q } });
+  }
+  listWorkspaceDirectory(projectId: string, path = '.', maxEntries = 200, workspaceId?: string) {
+    return request<RuntimeWorkspaceTree>({ operation: 'workspace.tree', params: workspaceParams(projectId, workspaceId), query: { path, maxEntries: String(maxEntries) } });
+  }
+  previewWorkspaceFile(projectId: string, path: string, workspaceId?: string) {
+    return request<WorkspaceFilePreview>({ operation: 'workspace.preview', params: workspaceParams(projectId, workspaceId), query: { path } });
+  }
   async uploadFile(sessionId: string, file: File, filename = file.name) {
     if (file.size > 25 * 1024 * 1024) throw new Error('File exceeds the 25 MiB limit.');
     return request<RuntimeStoredFile>({ operation: 'files.upload', params: { sessionId }, body: { filename, mediaType: file.type || 'application/octet-stream', bytes: new Uint8Array(await file.arrayBuffer()) } });

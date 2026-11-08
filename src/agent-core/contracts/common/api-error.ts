@@ -47,6 +47,7 @@ export class ApiError extends Error {
 const workspaceStoreStatuses = {
   project_already_exists: 409,
   project_cwd_invalid: 400,
+  project_workspaces_invalid: 400,
   project_not_found: 404,
   session_not_found: 404,
 } as const satisfies Record<WorkspaceStoreError["code"], number>;

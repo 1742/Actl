@@ -150,13 +150,14 @@ export function createDefaultPromptSettings(): RuntimePromptSettings {
   };
 }
 
-export function buildSessionContext(session: Pick<Session, "cwd">): string {
+export function buildSessionContext(session: Pick<Session, "cwd" | "additionalWorkspacePaths">): string {
   const platform = process.platform === "win32" ? "Windows" : process.platform;
   if (session.cwd) {
     return [
       "█ SESSION CONTEXT",
       "A project workspace is bound to this session.",
       `Workspace root: ${session.cwd}`,
+      ...((session.additionalWorkspacePaths ?? []).map((directory) => `Additional project workspace: ${directory}`)),
       `Host platform: ${platform}`,
       "Use paths relative to the workspace root unless an absolute path is required. Inspect the workspace before assuming it is a Git repository or contains a particular application.",
       "Project AGENTS.md and instructions.md, when present, are included below as project-scoped guidance.",

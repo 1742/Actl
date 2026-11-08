@@ -78,6 +78,11 @@ export const WorkspaceFileReference = Node.create({
     return {
       path: { default: '' },
       name: { default: '' },
+      workspaceId: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-workspace-id'),
+        renderHTML: (attributes) => attributes.workspaceId ? { 'data-workspace-id': attributes.workspaceId } : {},
+      },
     };
   },
 

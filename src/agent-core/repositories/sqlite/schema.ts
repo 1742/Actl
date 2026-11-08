@@ -1,10 +1,22 @@
 export const SQLITE_SCHEMA_GENERATION = "multi-user-multi-model";
-export const SQLITE_SCHEMA_VERSION = 19;
+export const SQLITE_SCHEMA_VERSION = 20;
+
+export const PROJECT_WORKSPACES_SQL = `
+CREATE UNIQUE INDEX projects_id_owner_idx ON projects(id, owner_id);
+CREATE TABLE project_workspaces(
+  id TEXT PRIMARY KEY, project_id TEXT NOT NULL, owner_id TEXT NOT NULL,
+  directory TEXT NOT NULL, directory_key TEXT NOT NULL,
+  sort_order INTEGER NOT NULL CHECK(sort_order >= 0), is_primary INTEGER NOT NULL CHECK(is_primary IN (0, 1)),
+  FOREIGN KEY(project_id, owner_id) REFERENCES projects(id, owner_id) ON DELETE CASCADE,
+  UNIQUE(owner_id, directory_key), UNIQUE(project_id, sort_order)
+) STRICT;
+CREATE UNIQUE INDEX project_workspaces_primary_idx ON project_workspaces(project_id) WHERE is_primary = 1;
+`;
 
 export const INITIAL_SCHEMA_SQL = `
 CREATE TABLE schema_metadata(id INTEGER PRIMARY KEY CHECK(id = 1), generation TEXT NOT NULL, version INTEGER NOT NULL CHECK(version > 0), created_at TEXT NOT NULL) STRICT;
-CREATE TABLE projects(id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, cwd TEXT NOT NULL, name TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL) STRICT;
-CREATE UNIQUE INDEX projects_owner_cwd_idx ON projects(owner_id, cwd);
+CREATE TABLE projects(id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, name TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL) STRICT;
+${PROJECT_WORKSPACES_SQL}
 CREATE TABLE sessions(id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, project_id TEXT REFERENCES projects(id) ON DELETE CASCADE, title TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL) STRICT;
 CREATE TABLE agent_runs(
   id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,

@@ -5,8 +5,10 @@ export const agentOperations = [
   'runtime.info',
   'projects.list',
   'projects.create',
+  'projects.update',
   'projects.delete',
   'workspace.search',
+  'workspace.searchProject',
   'workspace.tree',
   'workspace.preview',
   'workspace.revealTarget',
@@ -75,8 +77,8 @@ export interface DesktopApi {
   pickDirectory(): Promise<string | null>;
   openDirectory(kind: 'storage' | 'logs' | 'skills' | 'config'): Promise<void>;
   openExternal(url: string): Promise<void>;
-  revealWorkspaceFile(projectId: string, path: string): Promise<boolean>;
-  openProjectDirectory(projectId: string): Promise<void>;
+  revealWorkspaceFile(projectId: string, path: string, workspaceId?: string): Promise<boolean>;
+  openProjectDirectory(projectId: string, workspaceId?: string): Promise<void>;
   notify(kind: 'completed' | 'permission_requested', title: string, detail: string): Promise<void>;
 }
 

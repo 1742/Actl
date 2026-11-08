@@ -328,7 +328,7 @@ export function resolveAgentComposer(document: AgentComposerDocument): ResolvedA
     if (node.type === 'workspace_file') {
       const path = node.path.trim();
       if (!path) return { content: [], error: tr('ui.invalidWorkspaceFileReference') };
-      content.push({ type: 'input_workspace_file', path });
+      content.push({ type: 'input_workspace_file', path, ...(node.workspaceId ? { workspaceId: node.workspaceId } : {}) });
       continue;
     }
 

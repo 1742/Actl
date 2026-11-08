@@ -23,6 +23,7 @@ import {
   parseSqliteTimelineItem,
 } from "./sqlite-session-codec.js";
 import { nowIso } from "../utils.js";
+import { workspacePathKey } from "../tools/path-security.js";
 import type { ModelCatalogRepository, CreateProviderAccountRecord, ModelPreferenceRecord, ModelTargetRecord, ProviderAccountRecord } from "./model-catalog-repository.js";
 import type { EncryptedSecret } from "../security/encrypted-secret.js";
 import { SqliteModelCatalogStore } from "./sqlite/model-catalog-store.js";
@@ -84,7 +85,9 @@ export class SqliteWorkspaceRepository implements WorkspaceRepository, StoredFil
       throw new WorkspaceSchemaIncompatibleError();
     }
     return {
-      projects: this.all("SELECT id, owner_id, cwd, name, created_at, updated_at FROM projects ORDER BY created_at").map(toProject),
+      projects: this.all("SELECT id, owner_id, name, created_at, updated_at FROM projects ORDER BY created_at").map((row) =>
+        toProject(row, this.all("SELECT id, directory, is_primary FROM project_workspaces WHERE project_id = ? ORDER BY sort_order", stringColumn(row, "id"))),
+      ),
       sessions: this.all("SELECT id, owner_id, project_id, title, created_at, updated_at FROM sessions ORDER BY created_at").map(toSessionMetadata),
     };
   }
@@ -97,13 +100,31 @@ export class SqliteWorkspaceRepository implements WorkspaceRepository, StoredFil
   }
 
   async createProject(project: ProjectRecord): Promise<void> {
-    this.db.prepare("INSERT INTO projects(id, owner_id, cwd, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(project.id, project.ownerId, project.cwd, project.name ?? null, project.created_at, project.updated_at);
+    this.transaction(() => {
+      this.db.prepare("INSERT INTO projects(id, owner_id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)")
+        .run(project.id, project.ownerId, project.name ?? null, project.created_at, project.updated_at);
+      this.insertProjectWorkspaces(project);
+    });
   }
 
   async updateProject(project: ProjectRecord): Promise<void> {
-    assertChanged(this.db.prepare("UPDATE projects SET owner_id = ?, cwd = ?, name = ?, updated_at = ? WHERE id = ?")
-      .run(project.ownerId, project.cwd, project.name ?? null, project.updated_at, project.id), "Project", project.id);
+    this.transaction(() => {
+      assertChanged(this.db.prepare("UPDATE projects SET name = ?, updated_at = ? WHERE id = ? AND owner_id = ?")
+        .run(project.name ?? null, project.updated_at, project.id, project.ownerId), "Project", project.id);
+      this.db.prepare("DELETE FROM project_workspaces WHERE project_id = ?").run(project.id);
+      this.insertProjectWorkspaces(project);
+    });
+  }
+
+  private insertProjectWorkspaces(project: ProjectRecord): void {
+    if (!project.workspaces.some((workspace) => workspace.id === project.primaryWorkspaceId)) {
+      throw new Error("Project has no primary workspace.");
+    }
+    const insert = this.db.prepare("INSERT INTO project_workspaces(id, project_id, owner_id, directory, directory_key, sort_order, is_primary) VALUES (?, ?, ?, ?, ?, ?, ?)");
+    project.workspaces.forEach((workspace, index) => {
+      insert.run(workspace.id, project.id, project.ownerId, workspace.path, workspacePathKey(workspace.path),
+        index, Number(workspace.id === project.primaryWorkspaceId));
+    });
   }
 
   async deleteProject(projectId: string): Promise<void> {

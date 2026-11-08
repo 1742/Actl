@@ -5,10 +5,10 @@ import type {
   CreateRuntimeProviderAccount, RuntimeModelCatalog, RuntimeModelConfig, RuntimeProviderAccount,
   ReasoningEffort,
 } from '../../../../shared/agent/models';
-import type { AgentProject, AgentSession, SessionContext } from '../../../../shared/agent/sessions';
+import type { AgentProject, AgentSession, ProjectSettings, SessionContext } from '../../../../shared/agent/sessions';
 import type { RuntimeSkill, RuntimeSkillContext, SkillDetail } from '../../../../shared/agent/skills';
 import type { RuntimeStoredFile } from '../../../../shared/agent/files';
-import type { RuntimeWorkspaceFileSearchResult, RuntimeWorkspaceTree, WorkspaceFilePreview } from '../../../../shared/agent/workspace';
+import type { RuntimeProjectFileSearchResult, RuntimeWorkspaceFileSearchResult, RuntimeWorkspaceTree, WorkspaceFilePreview } from '../../../../shared/agent/workspace';
 import type { RuntimeWebSearchResult, RuntimeWebSearchSettings } from '../../../../shared/agent/web-search';
 import type { RuntimePromptSettings } from '../../../../shared/agent/prompts';
 import type { RuntimeMcpServer, RuntimeMcpServerConfig, RuntimeMcpCatalogServer } from '../../../../shared/agent/mcp';
@@ -35,7 +35,8 @@ export interface AgentRuntimeClient {
   //#region project
 
   listProjects(): Promise<AgentProject[]>;
-  createProject(value: string): Promise<AgentProject>;
+  createProject(settings: ProjectSettings): Promise<AgentProject>;
+  updateProject(projectId: string, settings: ProjectSettings): Promise<AgentProject>;
   deleteProject(projectId: string): Promise<void>;
   
   //#endregion
@@ -114,9 +115,10 @@ export interface AgentRuntimeClient {
 
   //#region workspace
   
-  searchWorkspaceFiles(projectId: string, query?: string, limit?: number): Promise<RuntimeWorkspaceFileSearchResult>;
-  listWorkspaceDirectory(projectId: string, path?: string, maxEntries?: number): Promise<RuntimeWorkspaceTree>;
-  previewWorkspaceFile(projectId: string, path: string): Promise<WorkspaceFilePreview>;
+  searchWorkspaceFiles(projectId: string, query?: string, limit?: number, workspaceId?: string): Promise<RuntimeWorkspaceFileSearchResult>;
+  searchProjectFiles(projectId: string, query: string): Promise<RuntimeProjectFileSearchResult>;
+  listWorkspaceDirectory(projectId: string, path?: string, maxEntries?: number, workspaceId?: string): Promise<RuntimeWorkspaceTree>;
+  previewWorkspaceFile(projectId: string, path: string, workspaceId?: string): Promise<WorkspaceFilePreview>;
   
   //#endregion
 

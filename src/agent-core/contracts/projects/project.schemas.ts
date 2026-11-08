@@ -2,18 +2,26 @@ import { z } from "zod";
 
 const nonEmptyString = z.string().trim().min(1);
 
-export const createProjectBodySchema = z.object({
-  cwd: nonEmptyString,
+export const updateProjectBodySchema = z.object({
   name: nonEmptyString.optional(),
+  workspacePaths: z.array(nonEmptyString).min(1),
+  primaryWorkspacePath: nonEmptyString,
 }).strict();
 
-export const updateProjectBodySchema = z.object({
-  name: nonEmptyString.nullable(),
-}).strict();
+export const createProjectBodySchema = z.union([
+  updateProjectBodySchema,
+  z.object({ cwd: nonEmptyString, name: nonEmptyString.optional() }).strict().transform(({ cwd, name }) => ({
+    name, workspacePaths: [cwd], primaryWorkspacePath: cwd,
+  })),
+]);
 
 export const projectParamsSchema = z.object({
   projectId: nonEmptyString,
 }).strict();
+
+export const workspaceParamsSchema = projectParamsSchema.extend({
+  workspaceId: nonEmptyString.optional(),
+});
 
 export const searchProjectFilesQuerySchema = z.object({
   q: z.string().trim().default(""),

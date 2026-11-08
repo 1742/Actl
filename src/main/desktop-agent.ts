@@ -68,10 +68,10 @@ export class DesktopAgent {
       if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('Only HTTP and HTTPS links can be opened.');
       return shell.openExternal(url.href);
     });
-    handle('desktop:reveal-workspace-file', async (projectId, relativePath) => {
+    handle('desktop:reveal-workspace-file', async (projectId, relativePath, workspaceId) => {
       const result = await (await this.ensureHost()).request({
         operation: 'workspace.revealTarget',
-        params: { projectId: z.string().parse(projectId) },
+        params: { projectId: z.string().parse(projectId), ...(workspaceId === undefined ? {} : { workspaceId: z.string().parse(workspaceId) }) },
         query: { path: z.string().parse(relativePath) },
       });
       if (!result.ok) throw new Error(result.error.message);
@@ -79,10 +79,11 @@ export class DesktopAgent {
       shell.showItemInFolder(z.string().parse(result.value));
       return true;
     });
-    handle('desktop:open-project-directory', async (value) => {
+    handle('desktop:open-project-directory', async (value, workspaceId) => {
       const projectId = z.string().parse(value);
       const result = await (await this.ensureHost()).request({
-        operation: 'workspace.projectDirectory', params: { projectId },
+        operation: 'workspace.projectDirectory',
+        params: { projectId, ...(workspaceId === undefined ? {} : { workspaceId: z.string().parse(workspaceId) }) },
       });
       if (!result.ok) throw new Error(result.error.message);
       const directory = z.string().parse(result.value);

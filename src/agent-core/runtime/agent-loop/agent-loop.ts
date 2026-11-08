@@ -94,15 +94,16 @@ export class AgentLoop {
 
   async run(
     session: Session,
-    input: TranscriptMessage[],
+    prepareInput: () => Promise<TranscriptMessage[]>,
     options: AgentRunOptions,
     onEvent?: AgentDomainEventHandler,
   ): Promise<AgentRunRecord> {
     const modelSnapshot = await this.modelClientRouter.resolveSnapshot(session.ownerId, options.model, options.reasoningEffort);
-    await this.assertModelCompatibility(session, input, modelSnapshot.capabilities);
     let execution: ActiveResponseExecution;
     try {
       execution = await this.executionLifecycle.create(session, async () => {
+        const input = await prepareInput();
+        await this.assertModelCompatibility(session, input, modelSnapshot.capabilities);
         await this.compactIfNeeded(session, modelSnapshot);
         const selectedSkills = await this.resolveSelectedSkills(skillIdsFromInput(input), session);
         this.validateSelectedMcpServers(mcpNamesFromInput(input));
@@ -114,7 +115,7 @@ export class AgentLoop {
       throw this.mapConcurrencyError(session, error);
     }
     const { run, context } = execution;
-    this.logger.info({ event: "agent.response.created", ...logFields(session, run), inputItemCount: input.length });
+    this.logger.info({ event: "agent.response.created", ...logFields(session, run), inputItemCount: run.input.length });
     try {
       await emit(onEvent, run, { type: "run_created", run });
     } catch (error) {
@@ -227,6 +228,18 @@ export class AgentLoop {
       }
       throw error;
     }
+  }
+
+  async withIdleProjectScopeMaintenance<T>(projectId: string, ownerId: string, operation: () => Promise<T>): Promise<T> {
+    return this.withProjectScopeMaintenance(projectId, async () => {
+      const active = await this.workspaceStore.findActiveResponseInProject(ownerId, projectId);
+      if (active) {
+        throw new AgentLoopError("project_active_response_exists", "Project already has an active response.", {
+          sessionId: active.sessionId, responseId: active.id,
+        });
+      }
+      return operation();
+    });
   }
 
   private async resumeAfterPermissions(

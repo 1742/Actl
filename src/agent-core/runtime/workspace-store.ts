@@ -1,5 +1,7 @@
-import { mkdir, rmdir, stat } from "node:fs/promises";
+import { mkdir, realpath, rmdir, stat } from "node:fs/promises";
 import path from "node:path";
+import type { ProjectSettings } from "../../shared/agent/sessions.js";
+import { workspaceDirectoryName, workspacePathKey } from "../tools/path-security.js";
 import type {
   ProjectRecord,
   FileChangeRecord,
@@ -22,6 +24,7 @@ type SessionMetadata = SessionMetadataRecord;
 
 export interface Session extends SessionMetadata {
   cwd: string | null;
+  additionalWorkspacePaths?: string[];
   runs: AgentRunRecord[];
   fileChanges: FileChange[];
   contextState?: SessionContextStateRecord;
@@ -31,6 +34,7 @@ export interface Session extends SessionMetadata {
 export type WorkspaceStoreErrorCode =
   | "project_already_exists"
   | "project_cwd_invalid"
+  | "project_workspaces_invalid"
   | "project_not_found"
   | "session_not_found";
 
@@ -80,20 +84,16 @@ export class WorkspaceStore {
   }
 
   //创建project
-  async createProject(ownerId: string, cwd: string, name?: string): Promise<Project> {
-    const normalizedCwd = path.resolve(cwd);
-    await assertProjectDirectory(normalizedCwd);
+  async createProject(ownerId: string, settings: ProjectSettings): Promise<Project> {
     let created!: Project;
     await this.enqueue(async () => {
-      if (this.projects.some((item) => item.ownerId === ownerId && cwdKey(item.cwd) === cwdKey(normalizedCwd))) {
-        throw new WorkspaceStoreError("project_already_exists", "A project already exists for this cwd.");
-      }
+      const workspaceSettings = await this.resolveProjectWorkspaces(ownerId, settings);
       const now = nowIso();
       created = {
         id: createRandomId("project"),
         ownerId,
-        cwd: normalizedCwd,
-        ...(name === undefined ? {} : { name }),
+        ...workspaceSettings,
+        name: settings.name ?? workspaceDirectoryName(workspaceSettings.cwd),
         created_at: now,
         updated_at: now,
       };
@@ -104,7 +104,7 @@ export class WorkspaceStore {
   }
 
   //更新project
-  async updateProject(ownerId: string, id: string, name: string | undefined): Promise<Project> {
+  async updateProject(ownerId: string, id: string, settings: ProjectSettings): Promise<Project> {
     let updated!: Project;
     await this.enqueue(async () => {
       const index = this.projects.findIndex((item) => item.id === id && item.ownerId === ownerId);
@@ -112,14 +112,70 @@ export class WorkspaceStore {
       if (!project) throw new WorkspaceStoreError("project_not_found", "Project not found.");
       updated = {
         ...project,
-        ...(name === undefined ? {} : { name }),
+        ...await this.resolveProjectWorkspaces(ownerId, settings, project),
+        name: settings.name ?? project.name ?? workspaceDirectoryName(project.cwd),
         updated_at: nowIso(),
       };
-      if (name === undefined) delete updated.name;
       await this.repository.updateProject(updated);
       this.projects[index] = updated;
+      for (const session of this.sessions.values()) {
+        if (session.ownerId === ownerId && session.projectId === id) {
+          Object.assign(session, projectSessionDirectories(updated));
+        }
+      }
     });
     return structuredClone(updated);
+  }
+
+  private async resolveProjectWorkspaces(ownerId: string, settings: ProjectSettings, previous?: Project) {
+    const existing = new Map((previous?.workspaces ?? []).map((workspace) => [workspacePathKey(workspace.path), workspace]));
+    const attached = new Map<string, { projectId: string; workspace: Project["workspaces"][number] }>();
+    const lookupAttached = async () => {
+      const bindings = this.projects.filter((project) => project.ownerId === ownerId)
+        .flatMap((project) => project.workspaces.map((workspace) => ({ projectId: project.id, workspace })));
+      for (const binding of bindings) attached.set(workspacePathKey(binding.workspace.path), binding);
+      for (const binding of bindings) {
+        const canonical = await realpath(binding.workspace.path).catch(() => binding.workspace.path);
+        const key = workspacePathKey(canonical);
+        if (!attached.has(key)) attached.set(key, binding);
+      }
+    };
+    let lookedUpAttached = false;
+    const primaryKey = workspacePathKey(path.resolve(settings.primaryWorkspacePath));
+    const selected = new Set<string>();
+    const workspaces: Project["workspaces"] = [];
+    let primary: Project["workspaces"][number] | undefined;
+    for (const directory of settings.workspacePaths) {
+      const resolved = path.resolve(directory);
+      const inputKey = workspacePathKey(resolved);
+      const previousBinding = existing.get(inputKey);
+      const canonical = previousBinding ? await realpath(previousBinding.path).catch(() => previousBinding.path) : await projectDirectory(resolved);
+      let retained = previousBinding;
+      const key = workspacePathKey(canonical);
+      if (selected.has(key)) {
+        throw new WorkspaceStoreError("project_workspaces_invalid", "A workspace cannot be added to the same project twice.");
+      }
+      if (!retained) {
+        if (!lookedUpAttached) {
+          await lookupAttached();
+          lookedUpAttached = true;
+        }
+        const canonicalBinding = attached.get(key);
+        if ([attached.get(inputKey), canonicalBinding].some((bound) => bound && bound.projectId !== previous?.id)) {
+          throw new WorkspaceStoreError("project_already_exists", "This workspace already belongs to another project.");
+        }
+        retained = canonicalBinding?.workspace;
+      }
+      const workspace = retained ?? { id: createRandomId("workspace"), path: canonical };
+      selected.add(key);
+      workspaces.push(workspace);
+      if (inputKey === primaryKey) primary = workspace;
+    }
+    if (!primary) {
+      throw new WorkspaceStoreError("project_workspaces_invalid", "Select a primary workspace from the project's directories.");
+    }
+    if (previous && primary.id !== previous.primaryWorkspaceId) await projectDirectory(primary.path);
+    return { workspaces, primaryWorkspaceId: primary.id, cwd: primary.path };
   }
 
   //删除project
@@ -310,7 +366,7 @@ export class WorkspaceStore {
     };
     await this.enqueue(async () => {
       const index = change.runId === undefined ? -1 : session.fileChanges.findIndex(
-        (previous) => previous.runId === change.runId && cwdKey(previous.filePath) === cwdKey(fileChange.filePath),
+        (previous) => previous.runId === change.runId && workspacePathKey(previous.filePath) === workspacePathKey(fileChange.filePath),
       );
       const previous = session.fileChanges[index];
       if (previous) {
@@ -399,9 +455,16 @@ export class WorkspaceStore {
   }
 
   async findActiveResponseInScope(session: Session): Promise<AgentRunRecord | undefined> {
-    const sessionIds = session.projectId === null
-      ? [session.id]
-      : this.sessionMetadata.filter((metadata) => metadata.ownerId === session.ownerId && metadata.projectId === session.projectId).map((metadata) => metadata.id);
+    return session.projectId === null ? this.findActiveResponse([session.id])
+      : this.findActiveResponseInProject(session.ownerId, session.projectId);
+  }
+
+  findActiveResponseInProject(ownerId: string, projectId: string): Promise<AgentRunRecord | undefined> {
+    return this.findActiveResponse(this.sessionMetadata.filter((metadata) => metadata.ownerId === ownerId && metadata.projectId === projectId)
+      .map((metadata) => metadata.id));
+  }
+
+  private async findActiveResponse(sessionIds: string[]): Promise<AgentRunRecord | undefined> {
     for (const sessionId of sessionIds) {
       const scopedSession = await this.getSession(sessionId);
       const active = scopedSession?.runs.find((run) => run.status === "in_progress" || run.status === "waiting_permission");
@@ -506,10 +569,10 @@ export class WorkspaceStore {
   }
 
   private toSession(metadata: SessionMetadata): Session {
-    const cwd = metadata.projectId === null
-      ? this.standaloneWorkspacePath(metadata.id)
-      : this.projects.find((project) => project.id === metadata.projectId)?.cwd ?? null;
-    return { ...metadata, cwd, runs: [], fileChanges: [], compressionRecords: [] };
+    const project = this.projects.find((item) => item.id === metadata.projectId && item.ownerId === metadata.ownerId);
+    const directories = project ? projectSessionDirectories(project)
+      : { cwd: metadata.projectId === null ? this.standaloneWorkspacePath(metadata.id) : null };
+    return { ...metadata, ...directories, runs: [], fileChanges: [], compressionRecords: [] };
   }
 
   private standaloneWorkspacePath(sessionId: string): string {
@@ -547,20 +610,25 @@ function timelineUpdateSnapshot(
 function normalizeFilePath(session: Session, filePath: string): string {
   if (!session.cwd) return path.normalize(filePath);
   const absolute = path.resolve(session.cwd, filePath);
+  if (session.projectId !== null) return absolute;
   const relative = path.relative(session.cwd, absolute);
   return relative && !relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative)
     ? relative
     : absolute;
 }
 
-function cwdKey(cwd: string): string {
-  const normalized = path.normalize(cwd).replace(/[\\/]+$/, "");
-  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+function projectSessionDirectories(project: Project) {
+  return {
+    cwd: project.cwd,
+    additionalWorkspacePaths: project.workspaces.filter((workspace) => workspace.id !== project.primaryWorkspaceId)
+      .map((workspace) => workspace.path),
+  };
 }
 
-async function assertProjectDirectory(cwd: string): Promise<void> {
+async function projectDirectory(cwd: string): Promise<string> {
   try {
-    if ((await stat(cwd)).isDirectory()) return;
+    const canonical = await realpath(cwd);
+    if ((await stat(canonical)).isDirectory()) return canonical;
   } catch {
     // The public error below deliberately does not expose filesystem details.
   }

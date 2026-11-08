@@ -7,6 +7,7 @@ export function toProjectJson(project: Project): AgentProject {
 }
 
 export function toSessionJson(session: Session): AgentSession {
-  const { ownerId: _ownerId, runs: _runs, cwd: _cwd, fileChanges: _fileChanges, ...metadata } = session;
+  const { id, projectId, title, created_at, updated_at } = session;
+  const metadata = { id, projectId, ...(title === undefined ? {} : { title }), created_at, updated_at };
   return metadata;
 }

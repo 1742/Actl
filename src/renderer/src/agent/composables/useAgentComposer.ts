@@ -42,6 +42,7 @@ export function composerDocumentFromJson(json: JSONContent): AgentComposerDocume
           type: 'workspace_file',
           path: String(child.attrs?.path || ''),
           name: String(child.attrs?.name || tr('ui.files')),
+          ...(child.attrs?.workspaceId ? { workspaceId: String(child.attrs.workspaceId) } : {}),
         });
       }
     }
@@ -68,7 +69,7 @@ export function composerDocumentToJson(document: AgentComposerDocument): JSONCon
     if (node.type === 'workspace_file') {
       content.push({
         type: 'workspaceFileReference',
-        attrs: { path: node.path, name: node.name },
+        attrs: { path: node.path, name: node.name, workspaceId: node.workspaceId },
       });
       continue;
     }

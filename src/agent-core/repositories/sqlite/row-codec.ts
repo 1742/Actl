@@ -14,10 +14,17 @@ import { runPermissionSnapshotSchema } from "../../permissions/engine.js";
 
 export type SqliteRow = Record<string, unknown>;
 
-export function toProject(row: SqliteRow): ProjectRecord {
+export function toProject(row: SqliteRow, workspaceRows: SqliteRow[]): ProjectRecord {
   const name = nullableStringColumn(row, "name");
+  const workspaces = workspaceRows.map((workspace) => ({
+    id: stringColumn(workspace, "id"),
+    path: stringColumn(workspace, "directory"),
+  }));
+  const primary = workspaces[workspaceRows.findIndex((workspace) => numberColumn(workspace, "is_primary") === 1)];
+  if (!primary) throw new Error("Project has no primary workspace.");
   return {
-    id: stringColumn(row, "id"), ownerId: stringColumn(row, "owner_id"), cwd: stringColumn(row, "cwd"),
+    id: stringColumn(row, "id"), ownerId: stringColumn(row, "owner_id"),
+    cwd: primary.path, primaryWorkspaceId: primary.id, workspaces,
     ...(name ? { name } : {}), created_at: stringColumn(row, "created_at"), updated_at: stringColumn(row, "updated_at"),
   };
 }

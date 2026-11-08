@@ -12,6 +12,7 @@ import {
   Plug,
 } from '@lucide/vue';
 import type { ComposerMenuCandidate } from './composerReferenceMenu';
+import type { RuntimeProjectFile } from '../../../../../shared/agent/workspace';
 
 type ActionCandidate = Extract<
   ComposerMenuCandidate,
@@ -87,6 +88,11 @@ async function scrollToCandidate(key: string) {
   element?.scrollIntoView({ block: 'nearest' });
 }
 
+function fileLocation(file: RuntimeProjectFile) {
+  const parent = file.path.lastIndexOf('/');
+  return parent < 0 ? file.workspaceName : `${file.workspaceName}/${file.path.slice(0, parent)}`;
+}
+
 defineExpose({ scrollToCandidate });
 </script>
 
@@ -94,9 +100,8 @@ defineExpose({ scrollToCandidate });
   <div>
     <div ref="listRef" class="min-h-0 overflow-y-auto px-1.5 py-1.5">
       <template v-if="type === 'file'">
-        <div class="flex items-center justify-between gap-2 px-2 py-2 text-xs text-gray-500">
-          <span class="font-medium">{{ $t('ui.workspaceFiles') }}</span>
-          <span v-if="filesTruncated">{{ $t('ui.onlySomeResultsAreShown') }}</span>
+        <div v-if="filesTruncated" class="px-2 py-1 text-right text-xs text-gray-500">
+          {{ $t('ui.onlySomeResultsAreShown') }}
         </div>
         <div v-if="!projectId" class="menu-status text-amber-700">
           <CircleAlert :size="15" /><span>{{ $t('ui.thisConversationHasNoWorkspace') }}</span>
@@ -255,10 +260,8 @@ defineExpose({ scrollToCandidate });
           }}</span>
         </template>
         <template v-else>
-          <span class="shrink-0 text-sm font-medium">{{ candidate.item.name }}</span>
-          <span class="min-w-0 flex-1 truncate text-xs text-gray-400">{{
-            candidate.item.path
-          }}</span>
+          <span class="max-w-[55%] shrink-0 truncate text-sm" :title="candidate.item.name">{{ candidate.item.name }}</span>
+          <span class="min-w-0 truncate text-xs text-gray-400" :title="fileLocation(candidate.item)">{{ fileLocation(candidate.item) }}</span>
         </template>
       </button>
     </div>

@@ -1,3 +1,8 @@
+export interface ProjectWorkspace {
+  id: string;
+  path: string;
+}
+
 export interface RuntimeWorkspaceFile {
   type: "workspace_file";
   path: string;
@@ -7,6 +12,15 @@ export interface RuntimeWorkspaceFile {
 export interface RuntimeWorkspaceFileSearchResult {
   data: RuntimeWorkspaceFile[];
   truncated: boolean;
+}
+
+export interface RuntimeProjectFile extends RuntimeWorkspaceFile {
+  workspaceId: string;
+  workspaceName: string;
+}
+
+export interface RuntimeProjectFileSearchResult extends RuntimeWorkspaceFileSearchResult {
+  data: RuntimeProjectFile[];
 }
 
 export interface RuntimeWorkspaceDirectoryEntry {

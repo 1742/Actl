@@ -1,8 +1,17 @@
 import type { AgentResponseDto } from "./responses.js";
+import type { ProjectWorkspace } from "./workspace.js";
+
+export interface ProjectSettings {
+  name?: string | undefined;
+  workspacePaths: string[];
+  primaryWorkspacePath: string;
+}
 
 export interface AgentProject {
   id: string;
   cwd: string;
+  workspaces: ProjectWorkspace[];
+  primaryWorkspaceId: string;
   name?: string;
   created_at: string;
   updated_at: string;

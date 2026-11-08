@@ -33,6 +33,15 @@ export function pathsEqual(left: string, right: string): boolean {
     : normalizedLeft === normalizedRight;
 }
 
+export function workspacePathKey(directory: string): string {
+  const normalized = path.normalize(directory).replace(/[\\/]+$/, "");
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+export function workspaceDirectoryName(directory: string): string {
+  return path.basename(directory) || directory;
+}
+
 export function toolBaseDirectory(cwd: string | null): string {
   return path.resolve(cwd ?? process.cwd());
 }

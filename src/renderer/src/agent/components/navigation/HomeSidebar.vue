@@ -7,6 +7,7 @@ import {
   FolderOpen,
   LoaderCircle,
   MessageSquarePlus,
+  Pencil,
   Plus,
   Search,
   Trash2,
@@ -16,13 +17,12 @@ import { useRouter } from 'vue-router';
 import { useNotifyStore } from '../../../composables/notify';
 import FloatingMenu from '../../../components/FloatingMenu.vue';
 import { enterAgentConversation } from '../../router';
-import { pickDirectory } from '../../composables/useFileBridge';
+import type { ProjectSettings } from '../../../../../shared/agent/sessions';
 import AgentManageDialog, { type DialogMode } from '../dialogs/AgentManageDialog.vue';
 import AgentSessionMenu from '../dialogs/AgentSessionMenu.vue';
 import SearchChatDialog from '../dialogs/SearchChatDialog.vue';
 import { useAgentStore } from '../../stores/agent.ts';
 import type { RuntimeProject, RuntimeSession } from './types';
-import type { AgentRuntimeKind } from '../../services/runtimeClient';
 import {
   createAgentProject,
   deleteAgentProject,
@@ -30,6 +30,7 @@ import {
   renameAgentSession,
   selectAgentSession,
   startNewAgentDraft,
+  updateAgentProject,
 } from '../../composables/useAgent';
 import { conversationName, projectName } from '../../utils';
 
@@ -51,8 +52,6 @@ const dialog = ref<{
   mode: 'create-project',
 });
 const dialogLoading = ref(false);
-const createProjectRuntime = ref<AgentRuntimeKind>('local');
-const selectingProjectDirectory = ref(false);
 
 function sessionStatus(sessionId: string) {
   return store.runtimeBySessionId[sessionId]?.status || 'idle';
@@ -80,25 +79,6 @@ async function startDraft(projectId?: string) {
   if (result.status === 'success') {
     await enterAgentConversation(router);
     emit('close');
-  }
-}
-
-async function addProjectFromDirectory() {
-  if (selectingProjectDirectory.value) return;
-  selectingProjectDirectory.value = true;
-  try {
-    const directory = await pickDirectory();
-    if (!directory) return;
-    const result = await createAgentProject(directory, 'local');
-    notify.display(result.status, result.message);
-    if (result.status === 'success') {
-      await enterAgentConversation(router);
-      emit('close');
-    }
-  } catch (error) {
-    notify.error(error instanceof Error ? error.message : tr('ui.failedToSelectProjectFolder'));
-  } finally {
-    selectingProjectDirectory.value = false;
   }
 }
 
@@ -133,7 +113,6 @@ function closeSearch() {
 }
 
 function showDialog(mode: DialogMode, target?: RuntimeProject | RuntimeSession) {
-  if (mode === 'create-project') createProjectRuntime.value = 'local';
   dialog.value = {
     open: true,
     mode,
@@ -146,13 +125,12 @@ function closeDialog() {
   if (!dialogLoading.value) dialog.value.open = false;
 }
 
-async function submitDialog(value: string, runtimeKind: AgentRuntimeKind) {
+async function submitDialog(value: string) {
   dialogLoading.value = true;
   const current = dialog.value;
   let result;
 
-  if (current.mode === 'create-project') result = await createAgentProject(value, runtimeKind);
-  else if (current.mode === 'delete-project' && current.project)
+  if (current.mode === 'delete-project' && current.project)
     result = await deleteAgentProject(current.project.id);
   else if (current.mode === 'rename-session' && current.session)
     result = await renameAgentSession(current.session.id, value);
@@ -163,6 +141,22 @@ async function submitDialog(value: string, runtimeKind: AgentRuntimeKind) {
   if (!result) return;
   notify.display(result.status, result.message);
   if (result.status === 'success') dialog.value.open = false;
+}
+
+async function submitProject(settings: ProjectSettings) {
+  const current = dialog.value;
+  const isCreate = current.mode === 'create-project';
+  if (!isCreate && !current.project) return;
+  dialogLoading.value = true;
+  const result = isCreate ? await createAgentProject(settings) : await updateAgentProject(current.project!.id, settings);
+  dialogLoading.value = false;
+  notify.display(result.status, result.message);
+  if (result.status !== 'success') return;
+  dialog.value.open = false;
+  if (isCreate) {
+    await enterAgentConversation(router);
+    emit('close');
+  }
 }
 
 const dialogInitialValue = computed(() =>
@@ -200,8 +194,7 @@ const dialogTargetName = computed(() =>
       <button
         class="nav-action"
         type="button"
-        :disabled="selectingProjectDirectory"
-        @click="addProjectFromDirectory"
+        @click="showDialog('create-project')"
       >
         <FolderOpen :size="17" />
         <span>{{ $t('ui.addProject') }}</span>
@@ -293,6 +286,10 @@ const dialogTargetName = computed(() =>
                   <button class="project-menu-item hover:bg-gray-100" type="button" @click="openProjectDirectory(project)">
                     <FolderOpen :size="16" class="shrink-0" />
                     <span>{{ $t('ui.openProjectDirectory') }}</span>
+                  </button>
+                  <button class="project-menu-item hover:bg-gray-100" type="button" @click="showDialog('edit-project', project)">
+                    <Pencil :size="16" class="shrink-0" />
+                    <span>{{ $t('ui.editProject') }}</span>
                   </button>
                   <button class="project-menu-item text-red-600 hover:bg-red-50" type="button" @click="showDialog('delete-project', project)">
                     <Trash2 :size="16" class="shrink-0" />
@@ -396,11 +393,11 @@ const dialogTargetName = computed(() =>
       :initial-value="dialogInitialValue"
       :target-name="dialogTargetName"
       :loading="dialogLoading"
-      :local-project-paths="true"
-      :runtime-kind="createProjectRuntime"
-      :allow-runtime-selection="false"
+      :project="dialog.project"
       @close="closeDialog"
       @submit="submitDialog"
+      @submit-project="submitProject"
+      @delete-project="showDialog('delete-project', dialog.project)"
     />
 
     <SearchChatDialog :open="searchOpen" @close="closeSearch" />

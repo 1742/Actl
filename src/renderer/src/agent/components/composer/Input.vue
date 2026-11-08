@@ -93,6 +93,8 @@ const permissionMode = computed({
   set: (value) => agentStore.selectPermissionMode(value),
 });
 const projectId = computed(() => agentStore.session?.projectId || agentStore.draftProjectId || '');
+const composerProject = computed(() => agentStore.runtimeCapabilities.workspace
+  ? agentStore.projects.find(({ id }) => id === projectId.value) : undefined);
 const projectActivityOwner = computed(() =>
   projectId.value ? agentStore.projectActivityOwner(projectId.value) : undefined,
 );
@@ -440,8 +442,8 @@ watch(
 onBeforeUnmount(() => attachmentPanelObserver?.disconnect());
 
 watch(
-  () => (agentStore.initialized ? skillContextKey.value : ''),
-  (contextKey) => {
+  [() => (agentStore.initialized ? skillContextKey.value : ''), () => composerProject.value?.primaryWorkspaceId],
+  ([contextKey]) => {
     if (!contextKey) return;
     void loadAgentSkills();
   },
@@ -607,11 +609,8 @@ watch(
             :skills="agentStore.runtimeCapabilities.skills ? agentStore.skills : []"
             :skills-loading="agentStore.skillsLoading"
             :skills-error="agentStore.skillsError"
-            :project-id="
-              agentStore.runtimeCapabilities.workspace
-                ? agentStore.draftProject?.runtimeId || agentStore.session?.runtimeProjectId || ''
-                : ''
-            "
+            :project-id="composerProject?.runtimeId ?? ''"
+            :workspaces="composerProject?.workspaces"
             :runtime-kind="agentStore.runtimeKind"
             :placeholder="placeholder"
             :disabled="disabled"

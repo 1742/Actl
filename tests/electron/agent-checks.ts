@@ -9,18 +9,22 @@ import { AgentProcessHost } from '../../src/main/agent-process-host';
 import type { AgentCommand, AgentResult } from '../../src/shared/agent-ipc';
 import { runCoreChecks } from './core-checks';
 import type { VerificationCheck } from './types';
-import type { AgentResponseDto, AgentStreamEvent } from '../../src/shared/agent/responses';
+import type { AgentResponseDto, AgentStreamEvent, ResponseInputPartDto } from '../../src/shared/agent/responses';
+import type { AgentProject } from '../../src/shared/agent/sessions';
 import type { SessionReview } from '../../src/shared/agent/review';
-import type { WorkspaceFilePreview } from '../../src/shared/agent/workspace';
+import type { RuntimeProjectFileSearchResult, RuntimeWorkspaceFileSearchResult, RuntimeWorkspaceTree, WorkspaceFilePreview } from '../../src/shared/agent/workspace';
+
+type FixtureMessage = { role: string; content: unknown };
 
 // This loopback provider exists only behind --verify-agent. It never forwards requests.
-async function startFixture(processCommands: Map<string, string>) {
+async function startFixture(processCommands: Map<string, string>, explicitWorkspace: string) {
+  let workspaceMessages: FixtureMessage[] = [];
   const server = createServer(async (request, response) => {
     try {
       assert.equal(request.url, '/v1/chat/completions');
       const chunks: Buffer[] = [];
       for await (const chunk of request) chunks.push(Buffer.from(chunk));
-      const payload = JSON.parse(Buffer.concat(chunks).toString()) as { messages: Array<{ role: string; content: unknown }> };
+      const payload = JSON.parse(Buffer.concat(chunks).toString()) as { messages: FixtureMessage[] };
       const user = payload.messages.filter((message) => message.role === 'user').at(-1);
       const text = typeof user?.content === 'string' ? user.content : JSON.stringify(user?.content);
       response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
@@ -31,7 +35,13 @@ async function startFixture(processCommands: Map<string, string>) {
       })}\n\n`);
       const done = () => { response.write('data: [DONE]\n\n'); response.end(); };
       emit({ role: 'assistant' });
-      if (text.includes('slow-fixture')) {
+      if (text.includes('workspace-shell-') && payload.messages.at(-1)?.role !== 'tool') {
+        workspaceMessages = payload.messages;
+        emit({ tool_calls: [{ index: 0, id: `call-${randomUUID()}`, type: 'function', function: {
+          name: 'shell', arguments: JSON.stringify({ command: 'cd', ...(text.includes('workspace-shell-explicit') ? { cwd: explicitWorkspace } : {}) }),
+        } }] }, 'tool_calls');
+        done();
+      } else if (text.includes('slow-fixture')) {
         emit({ content: 'Waiting' });
         const timer = setTimeout(() => { emit({ content: ' complete' }, 'stop'); done(); }, 8_000);
         response.once('close', () => clearTimeout(timer));
@@ -73,7 +83,7 @@ async function startFixture(processCommands: Map<string, string>) {
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address(); assert.ok(address && typeof address !== 'string');
-  return { baseURL: `http://127.0.0.1:${address.port}/v1`, close: async () => {
+  return { baseURL: `http://127.0.0.1:${address.port}/v1`, workspaceMessages: () => workspaceMessages, close: async () => {
     server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve()));
   } };
 }
@@ -81,9 +91,10 @@ async function startFixture(processCommands: Map<string, string>) {
 export async function verifyAgent(root: string, packaged: boolean, forcedExitProbe = false) {
   const homeDirectory = path.join(root, 'agent-home');
   const workspace = path.join(root, '中文 workspace');
+  const secondaryWorkspace = path.join(root, 'secondary workspace');
   await mkdir(workspace, { recursive: true });
   const processCommands = new Map<string, string>();
-  const fixture = await startFixture(processCommands);
+  const fixture = await startFixture(processCommands, workspace);
   const fixturePids = new Set<number>();
   const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
   const waitFor = async (condition: () => Promise<boolean> | boolean, message: string) => {
@@ -355,6 +366,10 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
         model, input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'conflict-fixture' }] }],
       } });
       assert.equal(conflict.ok, false); if (!conflict.ok) assert.equal(conflict.error.code, 'project_active_response_exists');
+      const edit = await host.request({ operation: 'projects.update', params: { projectId }, body: {
+        workspacePaths: [workspace], primaryWorkspacePath: workspace,
+      } });
+      assert.equal(edit.ok, false); if (!edit.ok) assert.equal(edit.error.code, 'project_active_response_exists');
       const cancelled = await request<AgentResponseDto>({ operation: 'responses.cancel', params: { sessionId, responseId: slow.id } });
       assert.equal(cancelled.status, 'cancelled'); assert.equal(success(await slow.running).status, 'cancelled');
     });
@@ -378,6 +393,129 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
       fixturePids.delete(orphanPid);
       host = new AgentProcessHost(options); await host.ready();
       assert.equal(success(await run('text-fixture-after-process-cleanup')).status, 'completed');
+    });
+    await step('Project workspaces isolate browsing and pin file references across primary changes', async () => {
+      await mkdir(secondaryWorkspace);
+      await Promise.all([
+        writeFile(path.join(workspace, 'same.txt'), 'primary'),
+        writeFile(path.join(secondaryWorkspace, 'same.txt'), 'secondary'),
+        writeFile(path.join(secondaryWorkspace, 'secondary-only.txt'), 'secondary'),
+        writeFile(path.join(workspace, 'prefix-secondary-only.txt'), 'primary partial match'),
+        writeFile(path.join(workspace, 'AGENTS.md'), 'fixture-primary-agents'),
+        writeFile(path.join(workspace, 'instructions.md'), 'fixture-primary-instructions'),
+        writeFile(path.join(secondaryWorkspace, 'AGENTS.md'), 'fixture-secondary-agents'),
+        writeFile(path.join(secondaryWorkspace, 'instructions.md'), 'fixture-secondary-instructions'),
+      ]);
+      const setWorkspaces = (primaryWorkspacePath: string, workspacePaths = [workspace, secondaryWorkspace]): AgentCommand => ({
+        operation: 'projects.update', params: { projectId }, body: { name: 'Multi workspace', workspacePaths, primaryWorkspacePath },
+      });
+      const current = await request<AgentProject[]>({ operation: 'projects.list' });
+      const originalId = current.find(({ id }) => id === projectId)!.primaryWorkspaceId;
+      const updated = await request<AgentProject>(setWorkspaces(workspace));
+      assert.equal(updated.primaryWorkspaceId, originalId);
+      const primaryParams = { projectId, workspaceId: originalId };
+      const secondaryParams = { projectId, workspaceId: updated.workspaces[1]!.id };
+      const reference = (params: { workspaceId: string }, file = 'same.txt'): ResponseInputPartDto => ({
+        type: 'input_workspace_file', workspaceId: params.workspaceId, path: file,
+      });
+      const runWithRefs = (text: string, ...refs: ResponseInputPartDto[]): Promise<AgentResult> => host.request({
+        operation: 'responses.create', params: { sessionId }, body: {
+          model, permissionMode: 'ask', input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text }, ...refs] }],
+        },
+      });
+      const expectError = async (response: Promise<AgentResult>, code: string) => {
+        const failure = await response;
+        assert.equal(failure.ok, false);
+        if (!failure.ok) assert.equal(failure.error.code, code);
+      };
+      const preview = (params: { projectId: string; workspaceId?: string }) => request<WorkspaceFilePreview>({
+        operation: 'workspace.preview', params, query: { path: 'same.txt' },
+      });
+      assert.deepEqual(await preview({ projectId }), { kind: 'text', text: 'primary' });
+      assert.deepEqual(await preview(secondaryParams), { kind: 'text', text: 'secondary' });
+      assert.equal(await request({ operation: 'workspace.projectDirectory', params: secondaryParams }), secondaryWorkspace);
+      assert.equal(await request({ operation: 'workspace.revealTarget', params: secondaryParams, query: { path: 'same.txt' } }), path.join(secondaryWorkspace, 'same.txt'));
+      assert.ok((await request<RuntimeWorkspaceTree>({ operation: 'workspace.tree', params: secondaryParams })).entries.some(({ name }) => name === 'secondary-only.txt'));
+      const search = (params: typeof secondaryParams) => request<RuntimeWorkspaceFileSearchResult>({
+        operation: 'workspace.search', params, query: { q: 'secondary-only' },
+      });
+      assert.equal((await search(primaryParams)).data[0]?.path, 'prefix-secondary-only.txt');
+      assert.equal((await search(secondaryParams)).data[0]?.path, 'secondary-only.txt');
+      const searchProject = (q: string, limit = '20') => request<RuntimeProjectFileSearchResult>({
+        operation: 'workspace.searchProject', params: { projectId }, query: { q, limit },
+      });
+      const sameName = await searchProject('same.txt');
+      assert.deepEqual(sameName.data.map(({ path: file, workspaceId, workspaceName }) => [file, workspaceId, workspaceName]), [
+        ['same.txt', originalId, path.basename(workspace)],
+        ['same.txt', secondaryParams.workspaceId, path.basename(secondaryWorkspace)],
+      ]);
+      const bestMatch = await searchProject('secondary-only.txt', '1');
+      assert.equal(bestMatch.data[0]?.workspaceId, secondaryParams.workspaceId);
+      assert.equal(bestMatch.truncated, true);
+      const parkedWorkspace = secondaryWorkspace + '-offline';
+      await rename(secondaryWorkspace, parkedWorkspace);
+      try {
+        const partial = await searchProject('same.txt');
+        assert.deepEqual(partial.data.map(({ workspaceId }) => workspaceId), [originalId]);
+        assert.equal(partial.truncated, true);
+      } finally {
+        await rename(parkedWorkspace, secondaryWorkspace);
+      }
+
+      const foreignDirectory = path.join(root, 'foreign workspace');
+      await mkdir(foreignDirectory);
+      const foreign = await request<AgentProject>({ operation: 'projects.create', body: { cwd: foreignDirectory } });
+      await expectError(host.request(setWorkspaces(workspace, [workspace, workspace.toUpperCase()])), 'project_workspaces_invalid');
+      await expectError(host.request(setWorkspaces(workspace, [workspace, foreignDirectory])), 'project_already_exists');
+      await expectError(host.request(setWorkspaces(workspace, [secondaryWorkspace])), 'project_workspaces_invalid');
+      await expectError(host.request({ operation: 'workspace.tree', params: { projectId, workspaceId: foreign.primaryWorkspaceId } }), 'workspace_not_found');
+      await expectError(runWithRefs('wrong workspace', reference({ workspaceId: foreign.primaryWorkspaceId })), 'workspace_not_found');
+      await expectError(runWithRefs('traversal', reference(secondaryParams, '../outside.txt')), 'invalid_workspace_file');
+
+      const originalRun = success(await runWithRefs('workspace-shell-default', reference(primaryParams), reference(secondaryParams)));
+      assert.equal(originalRun.status, 'waiting_permission');
+      const originalInstructions = String(fixture.workspaceMessages()[0]?.content);
+      assert.match(originalInstructions, /fixture-primary-agents[\s\S]*fixture-primary-instructions/);
+      assert.doesNotMatch(originalInstructions, /fixture-secondary-(agents|instructions)/);
+      assert.ok(originalInstructions.includes(secondaryWorkspace));
+      await expectError(host.request(setWorkspaces(secondaryWorkspace)), 'project_active_response_exists');
+      const shellCwd = (response: AgentResponseDto) => {
+        const item = response.output.find(({ type }) => type === 'function_call_output');
+        assert.ok(item && item.type === 'function_call_output');
+        const result = JSON.parse(item.output) as { ok: boolean; output: { cwd: string; exitCode: number } };
+        assert.ok(result.ok);
+        assert.equal(result.output.exitCode, 0);
+        return result.output.cwd;
+      };
+      assert.equal(shellCwd(await resume(originalRun, 'approve')), workspace);
+      const switched = await request<AgentProject>(setWorkspaces(secondaryWorkspace));
+      assert.equal(switched.primaryWorkspaceId, secondaryParams.workspaceId);
+      assert.equal(switched.workspaces[0]?.id, originalId);
+      assert.deepEqual(await preview({ projectId }), { kind: 'text', text: 'secondary' });
+      assert.deepEqual(await preview(primaryParams), { kind: 'text', text: 'primary' });
+      const explicit = success(await run('workspace-shell-explicit'));
+      assert.equal(shellCwd(await resume(explicit, 'approve')), workspace);
+      const next = success(await run('workspace-shell-default'));
+      assert.equal(shellCwd(await resume(next, 'approve')), secondaryWorkspace);
+      const messages = fixture.workspaceMessages();
+      const nextInstructions = String(messages[0]?.content);
+      assert.match(nextInstructions, /fixture-secondary-agents[\s\S]*fixture-secondary-instructions/);
+      assert.doesNotMatch(nextInstructions, /fixture-primary-(agents|instructions)/);
+      const absolutePaths = [workspace, secondaryWorkspace].map((directory) => path.join(directory, 'same.txt').split(path.sep).join('/'));
+      const oldMessage = messages.find((message) => message.role === 'user' && Array.isArray(message.content) && message.content.length === 3);
+      assert.deepEqual((oldMessage?.content as Array<{ text: string }>).slice(1).map(({ text }) => text), absolutePaths);
+
+      await request(setWorkspaces(secondaryWorkspace, [secondaryWorkspace]));
+      await expectError(host.request({ operation: 'workspace.tree', params: primaryParams }), 'workspace_not_found');
+      await expectError(runWithRefs('removed workspace', reference(primaryParams)), 'workspace_not_found');
+      await host.close(); host = new AgentProcessHost(options); await host.ready();
+      const persisted = (await request<AgentProject[]>({ operation: 'projects.list' })).find(({ id }) => id === projectId)!;
+      assert.deepEqual(persisted.workspaces, [switched.workspaces[1]]);
+      assert.equal(persisted.cwd, secondaryWorkspace);
+      const history = await request<{ responses: AgentResponseDto[] }>({ operation: 'sessions.context', params: { sessionId } });
+      const historicalPaths = history.responses.find(({ id }) => id === originalRun.id)?.input[0]?.content
+        .flatMap((part) => part.type === 'input_workspace_file' ? [part.path] : []);
+      assert.deepEqual(historicalPaths, absolutePaths);
     });
     await step('Graceful shutdown', () => host.close());
     passed = true;

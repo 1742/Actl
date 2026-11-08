@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { tr } from '../../../i18n';
 import { computed, nextTick, ref, watch } from 'vue';
-import { FolderOpen, X } from '@lucide/vue';
+import { Folder, FolderPlus, X } from '@lucide/vue';
 import { pickDirectory } from '../../composables/useFileBridge';
-import type { AgentRuntimeKind } from '../../services/runtimeClient';
+import { projectName } from '../../utils';
+import type { AgentProject, ProjectSettings } from '../../../../../shared/agent/sessions';
 
-export type DialogMode = 'create-project' | 'rename-session' | 'delete-project' | 'delete-session';
+export type DialogMode = 'create-project' | 'edit-project' | 'rename-session' | 'delete-project' | 'delete-session';
 
 const props = defineProps<{
   open: boolean;
@@ -13,43 +14,52 @@ const props = defineProps<{
   initialValue?: string;
   targetName?: string;
   loading?: boolean;
-  localProjectPaths?: boolean;
-  runtimeKind?: AgentRuntimeKind;
-  allowRuntimeSelection?: boolean;
+  project?: AgentProject;
 }>();
 
 const emit = defineEmits<{
   close: [];
-  submit: [value: string, runtimeKind: AgentRuntimeKind];
+  submit: [value: string];
+  submitProject: [settings: ProjectSettings];
+  deleteProject: [];
 }>();
 
 const inputRef = ref<HTMLInputElement>();
 const value = ref('');
 const selectingDirectory = ref(false);
 const directoryError = ref('');
-const selectedRuntime = ref<AgentRuntimeKind>('local');
-const isCreate = computed(() => props.mode === 'create-project');
+const workspacePaths = ref<string[]>([]);
+const primaryWorkspacePath = ref('');
+let dialogVersion = 0;
+let defaultFirstWorkspace = true;
+const isProjectForm = computed(() => props.mode === 'create-project' || props.mode === 'edit-project');
 const isDelete = computed(() => props.mode.startsWith('delete-'));
-const isLocalProject = computed(() => isCreate.value && selectedRuntime.value === 'local');
-const canPickDirectory = computed(() => isLocalProject.value && props.localProjectPaths !== false);
 const title = computed(
   () =>
     ({
       'create-project': tr('ui.addProject'),
+      'edit-project': tr('ui.editProject'),
       'rename-session': tr('ui.renameConversation'),
       'delete-project': tr('ui.deleteProject'),
       'delete-session': tr('ui.deleteConversation'),
     })[props.mode],
 );
 
-const canSubmit = computed(() => isDelete.value || Boolean(value.value.trim()));
+const canSubmit = computed(() => isDelete.value || (isProjectForm.value
+  ? workspacePaths.value.includes(primaryWorkspacePath.value) && !selectingDirectory.value
+  : Boolean(value.value.trim())));
 
 watch(
-  () => props.open,
-  async (open) => {
+  [() => props.open, () => props.mode],
+  async ([open]) => {
+    dialogVersion++;
     if (!open) return;
     value.value = props.initialValue || '';
-    selectedRuntime.value = props.runtimeKind || 'local';
+    workspacePaths.value = props.project?.workspaces.map(({ path }) => path) ?? [];
+    primaryWorkspacePath.value = props.project?.workspaces.find(({ id }) => id === props.project?.primaryWorkspaceId)?.path ?? '';
+    directoryError.value = '';
+    selectingDirectory.value = false;
+    defaultFirstWorkspace = props.mode === 'create-project';
     await nextTick();
     inputRef.value?.focus();
   },
@@ -57,19 +67,47 @@ watch(
 
 function submit() {
   if (!canSubmit.value || props.loading) return;
-  emit('submit', value.value.trim(), selectedRuntime.value);
+  if (isProjectForm.value) {
+    emit('submitProject', {
+      name: value.value.trim() || undefined,
+      workspacePaths: [...workspacePaths.value],
+      primaryWorkspacePath: primaryWorkspacePath.value,
+    });
+  } else {
+    emit('submit', value.value.trim());
+  }
+}
+
+function addDirectory(directory: string) {
+  if (props.loading) return;
+  if (workspacePaths.value.includes(directory)) {
+    directoryError.value = tr('ui.workspaceAlreadyAdded');
+    return;
+  }
+  workspacePaths.value.push(directory);
+  if (defaultFirstWorkspace) {
+    primaryWorkspacePath.value = directory;
+    defaultFirstWorkspace = false;
+  }
+  directoryError.value = '';
+}
+
+function removeDirectory(directory: string) {
+  workspacePaths.value = workspacePaths.value.filter((item) => item !== directory);
+  if (primaryWorkspacePath.value === directory) primaryWorkspacePath.value = '';
 }
 
 async function selectDirectory() {
+  const version = dialogVersion;
   selectingDirectory.value = true;
   directoryError.value = '';
   try {
     const path = await pickDirectory();
-    if (path) value.value = path;
+    if (path && version === dialogVersion) addDirectory(path);
   } catch (error) {
-    directoryError.value = error instanceof Error ? error.message : tr('ui.failedToSelectFolder');
+    if (version === dialogVersion) directoryError.value = error instanceof Error ? error.message : tr('ui.failedToSelectFolder');
   } finally {
-    selectingDirectory.value = false;
+    if (version === dialogVersion) selectingDirectory.value = false;
   }
 }
 </script>
@@ -83,10 +121,11 @@ async function selectDirectory() {
         @mousedown.self="emit('close')"
       >
         <section
-          class="w-full max-w-md rounded-xl border border-gray-200 bg-white p-5 shadow-2xl"
+          class="max-h-[calc(100vh-2rem)] w-full max-w-lg overflow-y-auto rounded-2xl border border-gray-200 bg-white p-5 shadow-2xl"
           role="dialog"
           aria-modal="true"
           :aria-label="title"
+          @keydown.esc.stop="emit('close')"
         >
           <header class="flex items-center justify-between gap-3">
             <h2 class="text-base font-semibold text-gray-950">{{ title }}</h2>
@@ -110,43 +149,57 @@ async function selectDirectory() {
 
           <form v-else class="mt-4 space-y-4" @submit.prevent="submit">
             <label class="block">
-              <span class="mb-1.5 block text-sm font-medium text-gray-700">{{
-                isCreate
-                  ? isLocalProject
-                    ? $t('ui.projectPath')
-                    : $t('ui.projectName')
-                  : $t('ui.name')
-              }}</span>
+              <span class="mb-1.5 block text-sm font-medium text-gray-700">{{ $t(isProjectForm ? 'ui.projectName' : 'ui.name') }}</span>
               <div class="flex gap-2">
                 <input
                   ref="inputRef"
                   v-model="value"
                   class="min-w-0 flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none transition focus:border-gray-500 focus:ring-2 focus:ring-gray-100"
-                  :placeholder="
-                    isCreate
-                      ? isLocalProject
-                        ? $t('ui.forExampleDWorkspaceDemo')
-                        : $t('ui.forExampleProductDocs')
-                      : $t('ui.enterANewName')
-                  "
-                  @keydown.esc="emit('close')"
+                  :placeholder="isProjectForm && primaryWorkspacePath ? projectName(primaryWorkspacePath) : $t('ui.enterANewName')"
+                  :disabled="loading"
                 />
-                <button
-                  v-if="canPickDirectory"
-                  class="client-theme-text inline-flex shrink-0 items-center gap-1 rounded-lg border border-gray-300 px-3 text-sm disabled:cursor-not-allowed"
-                  type="button"
-                  :disabled="selectingDirectory"
-                  @click="selectDirectory"
-                >
-                  <FolderOpen :size="16" />
-                  {{ selectingDirectory ? $t('ui.selecting') : $t('ui.selectFolder') }}
+              </div>
+            </label>
+            <fieldset v-if="isProjectForm" class="min-w-0" :disabled="loading">
+              <legend class="mb-1.5 text-sm font-medium text-gray-700">{{ $t('ui.sourceFolders') }}</legend>
+              <div class="divide-y divide-gray-200 rounded-xl border border-gray-200">
+                <div v-for="directory in workspacePaths" :key="directory" class="group/workspace flex items-center gap-2 px-3 py-2 text-sm">
+                  <Folder :size="16" class="shrink-0 text-gray-500" />
+                  <span class="min-w-0 flex-1" :title="directory">
+                    <span class="block truncate">{{ projectName(directory) }}</span>
+                    <span class="block truncate text-xs text-gray-500">{{ directory }}</span>
+                  </span>
+                  <span
+                    v-if="directory === primaryWorkspacePath"
+                    class="shrink-0 rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs text-gray-600"
+                  >
+                    {{ $t('ui.primaryWorkspaceBadge') }}
+                  </span>
+                  <button
+                    v-else
+                    type="button"
+                    class="pointer-events-none shrink-0 rounded-lg bg-gray-100 px-2.5 py-1.5 text-xs text-gray-700 opacity-0 group-hover/workspace:pointer-events-auto group-hover/workspace:opacity-100 hover:bg-gray-200 focus-visible:opacity-100"
+                    @click="primaryWorkspacePath = directory"
+                  >
+                    {{ $t('ui.setPrimaryWorkspace') }}
+                  </button>
+                  <button type="button" class="rounded p-1 text-gray-500 hover:bg-gray-100" :title="$t('ui.removeWorkspace')" :aria-label="$t('ui.removeWorkspace')" @click="removeDirectory(directory)">
+                    <X :size="14" />
+                  </button>
+                </div>
+                <button type="button" class="flex w-full items-center gap-2 px-3 py-4 text-left text-sm hover:bg-gray-50" :disabled="selectingDirectory" @click="selectDirectory">
+                  <FolderPlus :size="16" />
+                  {{ selectingDirectory ? $t('ui.selecting') : $t('ui.addSourceFolder') }}
                 </button>
               </div>
-              <p v-if="directoryError" class="mt-1.5 text-xs text-red-600">{{ directoryError }}</p>
-            </label>
+              <p v-if="directoryError" class="mt-1.5 text-xs text-red-600" role="alert">{{ directoryError }}</p>
+            </fieldset>
           </form>
 
           <footer class="mt-6 flex justify-end gap-2">
+            <button v-if="mode === 'edit-project'" type="button" class="mr-auto rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600 hover:bg-red-100" :disabled="loading" @click="emit('deleteProject')">
+              {{ $t('ui.deleteProject') }}
+            </button>
             <button
               class="rounded-lg px-3 py-2 text-sm text-gray-600 hover:bg-gray-100"
               type="button"
@@ -167,7 +220,7 @@ async function selectDirectory() {
                   ? $t('ui.processing')
                   : isDelete
                     ? $t('ui.confirmDeletion')
-                    : $t('ui.confirm')
+                    : $t(isProjectForm ? 'ui.save' : 'ui.confirm')
               }}
             </button>
           </footer>
@@ -178,9 +231,6 @@ async function selectDirectory() {
 </template>
 
 <style scoped>
-.client-theme-text {
-  color: var(--color-primary);
-}
 .client-primary-button {
   background-color: var(--color-primary);
   color: var(--color-primary-fg);

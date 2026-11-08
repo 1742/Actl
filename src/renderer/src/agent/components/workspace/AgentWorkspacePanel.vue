@@ -11,11 +11,15 @@ import {
 } from '@lucide/vue';
 
 import { getAgentRuntimeContext } from '../../services/runtimeClient';
-import type { RuntimeWorkspaceDirectoryEntry, RuntimeWorkspaceTree } from '../../../../../shared/agent/workspace';
+import type { ProjectWorkspace, RuntimeWorkspaceDirectoryEntry, RuntimeWorkspaceTree } from '../../../../../shared/agent/workspace';
 import { useNotifyStore } from '../../../composables/notify';
+import WorkspaceSelector from './WorkspaceSelector.vue';
 
-const props = defineProps<{ projectId: string; projectLabel: string }>();
-const emit = defineEmits<{ openFile: [entry: RuntimeWorkspaceDirectoryEntry] }>();
+const props = defineProps<{ projectId: string; workspaces: ProjectWorkspace[]; primaryWorkspaceId: string }>();
+const emit = defineEmits<{ openFile: [workspaceId: string, entry: RuntimeWorkspaceDirectoryEntry] }>();
+const selectedWorkspaceId = ref('');
+const workspace = computed(() => props.workspaces.find(({ id }) => id === selectedWorkspaceId.value)
+  ?? props.workspaces.find(({ id }) => id === props.primaryWorkspaceId));
 const trees = ref(new Map<string, RuntimeWorkspaceTree>());
 const expanded = ref(new Set<string>());
 const loading = ref(new Set<string>());
@@ -53,13 +57,14 @@ function isLoading(path: string) {
 }
 
 async function loadDirectory(path: string, force = false) {
-  if (!props.projectId || (trees.value.has(path) && !force) || loading.value.has(path)) return;
+  const workspaceId = workspace.value?.id;
+  if (!props.projectId || !workspaceId || (trees.value.has(path) && !force) || loading.value.has(path)) return;
   const version = requestVersion.value;
   loading.value = new Set(loading.value).add(path);
   error.value = '';
   try {
     const { client } = getAgentRuntimeContext('local');
-    const tree = await client.listWorkspaceDirectory(props.projectId, path);
+    const tree = await client.listWorkspaceDirectory(props.projectId, path, undefined, workspaceId);
     if (version !== requestVersion.value) return;
     const next = new Map(trees.value);
     next.set(path, tree);
@@ -84,7 +89,6 @@ async function toggleDirectory(path: string) {
 }
 
 async function refresh() {
-  if (!props.projectId) return;
   trees.value = new Map();
   expanded.value = new Set();
   loading.value = new Set();
@@ -94,10 +98,11 @@ async function refresh() {
 }
 
 async function openProjectDirectory() {
-  if (!props.projectId) return;
+  const workspaceId = workspace.value?.id;
+  if (!props.projectId || !workspaceId) return;
   openingProjectDirectory.value = true;
   try {
-    await window.actlAgent.openProjectDirectory(props.projectId);
+    await window.actlAgent.openProjectDirectory(props.projectId, workspaceId);
   } catch {
     notify.error(tr('ui.couldNotOpenFolder'));
   } finally {
@@ -105,57 +110,49 @@ async function openProjectDirectory() {
   }
 }
 
-watch(
-  () => props.projectId,
-  (current, previous) => {
-    if (current === previous) return;
-    requestVersion.value += 1;
-    trees.value = new Map();
-    expanded.value = new Set();
-    loading.value = new Set();
-    error.value = '';
-    if (current) void loadDirectory('.');
-  },
-  { immediate: true },
-);
+watch(() => workspace.value?.id, () => void refresh(), { immediate: true });
+
+function openFile(entry: RuntimeWorkspaceDirectoryEntry) {
+  if (workspace.value) emit('openFile', workspace.value.id, entry);
+}
 </script>
 
 <template>
   <aside class="flex h-full min-h-0 w-full flex-col bg-white" :aria-label="$t('ui.workspaceFiles')">
-    <div class="flex h-14 shrink-0 items-center justify-between border-b border-gray-200 px-3">
-      <div class="flex min-w-0 items-center gap-1">
-        <div class="min-w-0">
-          <h2 class="truncate text-sm font-semibold text-gray-800">{{ $t('ui.files') }}</h2>
-          <p class="truncate text-[11px] text-gray-400" :title="projectLabel">
-            {{ projectLabel || $t('ui.noProjectSelected') }}
-          </p>
-        </div>
-      </div>
-      <div class="flex items-center gap-1">
+    <header class="flex shrink-0 items-center justify-between gap-2 px-3 py-2 text-xs text-gray-600">
+      <WorkspaceSelector
+        v-if="workspace"
+        :workspaces="workspaces"
+        :selected="workspace"
+        @select="selectedWorkspaceId = $event"
+      />
+      <span v-else>{{ $t('ui.files') }}</span>
+      <div class="flex shrink-0 items-center gap-2">
         <button
-          class="flex size-8 items-center justify-center rounded-lg text-gray-500 enabled:hover:bg-gray-100 disabled:opacity-50"
+          class="flex size-8 items-center justify-center rounded-full border border-gray-200 bg-white shadow-sm transition-colors enabled:hover:bg-gray-100 disabled:opacity-50"
           type="button"
-          :aria-label="$t('ui.openProjectDirectory')"
-          :title="$t('ui.openProjectDirectory')"
-          :disabled="!projectId || openingProjectDirectory"
+          :aria-label="$t('ui.openWorkspaceDirectory')"
+          :title="$t('ui.openWorkspaceDirectory')"
+          :disabled="!workspace || openingProjectDirectory"
           @click="openProjectDirectory"
         >
-          <FolderOpen :size="15" />
+          <FolderOpen :size="14" />
         </button>
         <button
-          class="flex h-8 w-8 items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100"
+          class="flex size-8 items-center justify-center rounded-full border border-gray-200 bg-white shadow-sm transition-colors enabled:hover:bg-gray-100 disabled:opacity-50"
           type="button"
           :aria-label="$t('ui.refreshFileTree')"
           :title="$t('ui.refresh')"
+          :disabled="!workspace"
           @click="refresh"
         >
-          <RefreshCw :size="15" />
+          <RefreshCw :size="14" />
         </button>
       </div>
-    </div>
+    </header>
 
     <div class="min-h-0 flex-1 overflow-y-auto p-2 text-sm">
-      <div v-if="!projectId" class="px-3 py-8 text-center text-xs text-gray-400">
+      <div v-if="!workspace" class="px-3 py-8 text-center text-xs text-gray-400">
         {{ $t('ui.thisConversationHasNoLocalProject') }}
       </div>
       <div
@@ -191,7 +188,7 @@ watch(
           type="button"
           :style="{ paddingLeft: `${item.depth * 16 + 8}px` }"
           :title="item.entry.path"
-          @click="item.entry.type === 'directory' ? toggleDirectory(item.entry.path) : emit('openFile', item.entry)"
+          @click="item.entry.type === 'directory' ? toggleDirectory(item.entry.path) : openFile(item.entry)"
         >
           <ChevronRight
             v-if="item.entry.type === 'directory'"

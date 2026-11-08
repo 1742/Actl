@@ -33,7 +33,7 @@ interface ToolResultDto {
 
 export type ResponseInputPartDto =
   | { type: "input_text"; text: string }
-  | { type: "input_workspace_file"; path: string }
+  | { type: "input_workspace_file"; path: string; workspaceId?: string | undefined }
   | { type: "input_file"; file_id: string; filename?: string; media_type?: string; size?: number }
   | { type: "input_skill"; id: string; name?: string }
   | { type: "input_mcp_server"; name: string };

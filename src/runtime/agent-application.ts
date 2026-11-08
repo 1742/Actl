@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 import { z } from 'zod';
 import type { AgentCommand } from '../shared/agent-ipc';
 import type { SessionReview } from '../shared/agent/review';
@@ -24,6 +25,7 @@ import { storedFileParamsSchema } from '../agent-core/contracts/stored-files/sto
 import { findModelCompatibilityIssues } from '../agent-core/model/compatibility';
 import { TEXT_TOOL_CAPABILITIES } from '../agent-core/runtime/model-store';
 import { createDefaultPromptSettings } from '../agent-core/runtime/prompt-compiler';
+import { isPathInside } from '../agent-core/tools/path-security';
 import { serverNameSchema, serverSchema } from '../agent-core/mcp/mcp-config';
 import { MAX_STORED_FILE_BYTES } from '../agent-core/stored-files/stored-file-service';
 import { toCatalogDto, listSkillFiles, inferLanguages } from '../agent-core/contracts/skills/presenter';
@@ -58,6 +60,10 @@ export class AgentApplication {
     const body = command.body;
     const sessionId = () => sessions.sessionParamsSchema.parse(params).sessionId;
     const projectId = () => projects.projectParamsSchema.parse(params).projectId;
+    const workspaceDirectory = () => {
+      const input = projects.workspaceParamsSchema.parse(params);
+      return this.workspaceDirectory(input.projectId, input.workspaceId);
+    };
     const accountId = () => accounts.providerAccountParamsSchema.parse(params).accountId;
     const modelId = () => models.modelParamsSchema.parse(params).modelTargetId;
     switch (command.operation) {
@@ -65,7 +71,13 @@ export class AgentApplication {
       case 'projects.list': return d.workspaceStore.listProjects(ownerId).map(toProjectJson);
       case 'projects.create': {
         const input = projects.createProjectBodySchema.parse(body);
-        return toProjectJson(await d.workspaceStore.createProject(ownerId, input.cwd, input.name));
+        return toProjectJson(await d.workspaceStore.createProject(ownerId, input));
+      }
+      case 'projects.update': {
+        const id = projectId(); this.project(id);
+        const input = projects.updateProjectBodySchema.parse(body);
+        return toProjectJson(await d.agentLoop.withIdleProjectScopeMaintenance(id, ownerId,
+          () => d.workspaceStore.updateProject(ownerId, id, input)));
       }
       case 'projects.delete': {
         const id = projectId(); this.project(id);
@@ -79,24 +91,31 @@ export class AgentApplication {
         return;
       }
       case 'workspace.search': {
-        const project = this.project(projectId()); const input = projects.searchProjectFilesQuerySchema.parse(query);
-        return d.workspaceFiles.searchQuery(project.cwd, input.q, input.limit);
+        const directory = workspaceDirectory();
+        const input = projects.searchProjectFilesQuerySchema.parse(query);
+        return d.workspaceFiles.searchQuery(directory, input.q, input.limit);
+      }
+      case 'workspace.searchProject': {
+        const project = this.project(projectId());
+        const { q, limit } = projects.searchProjectFilesQuerySchema.parse(query);
+        return d.workspaceFiles.searchProject(project.workspaces, q, limit);
       }
       case 'workspace.tree': {
-        const project = this.project(projectId()); const input = projects.listProjectDirectoryQuerySchema.parse(query);
-        return d.workspaceFiles.listDirectory(project.cwd, input);
+        const directory = workspaceDirectory();
+        const input = projects.listProjectDirectoryQuerySchema.parse(query);
+        return d.workspaceFiles.listDirectory(directory, input);
       }
       case 'workspace.preview': {
-        const project = this.project(projectId());
+        const directory = workspaceDirectory();
         const input = projects.previewProjectFileQuerySchema.parse(query);
-        return d.workspaceFiles.previewFile(project.cwd, input.path);
+        return d.workspaceFiles.previewFile(directory, input.path);
       }
       case 'workspace.revealTarget': {
-        const project = this.project(projectId());
+        const directory = workspaceDirectory();
         const input = projects.previewProjectFileQuerySchema.parse(query);
-        return d.workspaceFiles.resolveFileForReveal(project.cwd, input.path);
+        return d.workspaceFiles.resolveFileForReveal(directory, input.path);
       }
-      case 'workspace.projectDirectory': return this.project(projectId()).cwd;
+      case 'workspace.projectDirectory': return workspaceDirectory();
       case 'sessions.list': {
         const input = sessions.listSessionsQuerySchema.parse(query);
         return d.workspaceStore.listSessions(ownerId, input.scope === 'standalone' ? null : input.projectId).map(toSessionJson);
@@ -140,8 +159,10 @@ export class AgentApplication {
           const unavailable = before === undefined || after === undefined;
           if (!unavailable && before === after && change.changeType !== 'create') continue;
           const diff = unavailable ? undefined : reviewDiff(before, after, change.id === fileId);
+          const reviewPath = session.cwd && path.isAbsolute(change.filePath) && isPathInside(session.cwd, change.filePath)
+            ? path.relative(session.cwd, change.filePath) : change.filePath;
           review.files.push({
-            id: change.id, path: change.filePath.replaceAll('\\', '/'), unavailable,
+            id: change.id, path: reviewPath.replaceAll('\\', '/'), unavailable,
             additions: diff?.additions ?? 0, deletions: diff?.deletions ?? 0,
           });
           if (change.id === fileId && diff) review.lines = diff.lines;
@@ -166,9 +187,12 @@ export class AgentApplication {
       }
       case 'responses.create': {
         const session = await this.session(sessionId()); const input = sessions.createResponseBodySchema.parse(body);
-        const normalized = await this.normalizeReferences(session, input.input);
-        d.storedFiles.validateResponseFiles(session.id, normalized.flatMap((message) => message.content.flatMap((part) => part.type === 'input_file' ? [part.file_id] : [])));
-        return this.responseDto(await d.agentLoop.run(session, inputFromDto(normalized), {
+        const prepareInput = async () => {
+          const normalized = await this.normalizeReferences(session, input.input);
+          d.storedFiles.validateResponseFiles(session.id, normalized.flatMap((message) => message.content.flatMap((part) => part.type === 'input_file' ? [part.file_id] : [])));
+          return inputFromDto(normalized);
+        };
+        return this.responseDto(await d.agentLoop.run(session, prepareInput, {
           model: input.model, permissionMode: input.permissionMode, ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
         }, this.projectEvents(onEvent)));
       }
@@ -313,6 +337,13 @@ export class AgentApplication {
     if (!project) throw new ApiError(404, 'project_not_found', 'Project not found.');
     return project;
   }
+  private workspaceDirectory(projectId: string, workspaceId?: string) {
+    const project = this.project(projectId);
+    if (workspaceId === undefined) return project.cwd;
+    const workspace = project.workspaces.find((item) => item.id === workspaceId);
+    if (!workspace) throw new ApiError(404, 'workspace_not_found', 'Workspace does not belong to this project.');
+    return workspace.path;
+  }
   private async session(id: string) {
     const session = await this.dependencies.workspaceStore.getSession(id, ownerId);
     if (!session) throw new ApiError(404, 'session_not_found', 'Session not found.');
@@ -349,7 +380,11 @@ export class AgentApplication {
     for (const message of normalized) for (const part of message.content) {
       if (part.type !== 'input_workspace_file') continue;
       if (!session.projectId || !session.cwd) throw new ApiError(400, 'workspace_file_requires_project', 'Workspace file references require a Project-bound Session.');
-      try { part.path = await this.dependencies.workspaceFiles.validateReference(session.cwd, part.path); }
+      const directory = this.workspaceDirectory(session.projectId, part.workspaceId);
+      try {
+        const file = await this.dependencies.workspaceFiles.validateReference(directory, part.path);
+        part.path = file.split(path.sep).join('/');
+      }
       catch { throw new ApiError(400, 'invalid_workspace_file', 'Workspace file reference is invalid.'); }
     }
     return normalized;

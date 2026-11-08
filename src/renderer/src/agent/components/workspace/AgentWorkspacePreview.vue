@@ -8,7 +8,7 @@ import { useNotifyStore } from '../../../composables/notify';
 import { tr } from '../../../i18n';
 import { getAgentRuntimeContext } from '../../services/runtimeClient';
 
-const props = defineProps<{ projectId: string; path: string }>();
+const props = defineProps<{ projectId: string; workspaceId: string; path: string }>();
 const revision = ref(0);
 const preview = shallowRef<WorkspaceFilePreview>();
 const imageUrl = ref('');
@@ -20,7 +20,7 @@ const notify = useNotifyStore();
 async function revealFile() {
   revealing.value = true;
   try {
-    const found = await window.actlAgent.revealWorkspaceFile(props.projectId, props.path);
+    const found = await window.actlAgent.revealWorkspaceFile(props.projectId, props.path, props.workspaceId);
     if (!found) notify.error(tr('ui.missingWorkspacePreview'));
   } catch {
     notify.error(tr('ui.failedToRevealWorkspaceFile'));
@@ -29,7 +29,7 @@ async function revealFile() {
   }
 }
 
-watch(() => [props.projectId, props.path, revision.value] as const, async ([projectId, path], _, onCleanup) => {
+watch(() => [props.projectId, props.workspaceId, props.path, revision.value] as const, async ([projectId, workspaceId, path], _, onCleanup) => {
   let current = true;
   let url = '';
   onCleanup(() => {
@@ -42,7 +42,7 @@ watch(() => [props.projectId, props.path, revision.value] as const, async ([proj
   loading.value = true;
   try {
     const { client } = getAgentRuntimeContext('local');
-    const result = await client.previewWorkspaceFile(projectId, path);
+    const result = await client.previewWorkspaceFile(projectId, path, workspaceId);
     if (!current) return;
     if (result.kind === 'image') {
       url = URL.createObjectURL(new Blob([new Uint8Array(result.bytes)], { type: result.mediaType }));
