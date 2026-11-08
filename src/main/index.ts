@@ -1,4 +1,4 @@
-import { app, BrowserWindow, type IpcMainInvokeEvent } from 'electron';
+import { app, BrowserWindow, Menu, type IpcMainInvokeEvent, type MenuItemConstructorOptions } from 'electron';
 import { writeFile } from 'node:fs/promises';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
@@ -37,7 +37,7 @@ function validateSender(event: IpcMainInvokeEvent): void {
 }
 
 async function createWindow(): Promise<void> {
-  window = new BrowserWindow({
+  const mainWindow = new BrowserWindow({
     title: 'Actl',
     width: 1280, height: 800, minWidth: 860, minHeight: 650,
     show: false, backgroundColor: '#111316', autoHideMenuBar: true,
@@ -46,7 +46,33 @@ async function createWindow(): Promise<void> {
       contextIsolation: true, nodeIntegration: false, sandbox: true,
     },
   });
+  window = mainWindow;
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  window.webContents.on('context-menu', (_event, params) => {
+    const { editFlags, isEditable, selectionText } = params;
+    const items: MenuItemConstructorOptions[] = [];
+
+    if (isEditable) {
+      items.push(
+        { role: 'cut', enabled: editFlags.canCut },
+        { role: 'copy', enabled: editFlags.canCopy },
+        { role: 'paste', enabled: editFlags.canPaste },
+        { type: 'separator' },
+        { role: 'selectAll', enabled: editFlags.canSelectAll },
+      );
+    } else if (selectionText && editFlags.canCopy) {
+      items.push({ role: 'copy' });
+    }
+
+    if (items.length === 0) return;
+    Menu.buildFromTemplate(items).popup({
+      window: mainWindow,
+      ...(params.frame && { frame: params.frame }),
+      x: params.x,
+      y: params.y,
+      sourceType: params.menuSourceType,
+    });
+  });
   window.webContents.on('did-fail-load', (_event, code, description, url) => {
     console.error('Renderer load failed:', { code, description, url });
   });
