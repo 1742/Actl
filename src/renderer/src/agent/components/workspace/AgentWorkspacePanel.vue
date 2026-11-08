@@ -12,6 +12,7 @@ import {
 
 import { getAgentRuntimeContext } from '../../services/runtimeClient';
 import type { RuntimeWorkspaceDirectoryEntry, RuntimeWorkspaceTree } from '../../../../../shared/agent/workspace';
+import { useNotifyStore } from '../../../composables/notify';
 
 const props = defineProps<{ projectId: string; projectLabel: string }>();
 const emit = defineEmits<{ openFile: [entry: RuntimeWorkspaceDirectoryEntry] }>();
@@ -20,6 +21,8 @@ const expanded = ref(new Set<string>());
 const loading = ref(new Set<string>());
 const error = ref('');
 const requestVersion = ref(0);
+const openingProjectDirectory = ref(false);
+const notify = useNotifyStore();
 
 interface VisibleEntry {
   entry: RuntimeWorkspaceDirectoryEntry;
@@ -90,6 +93,18 @@ async function refresh() {
   await loadDirectory('.', true);
 }
 
+async function openProjectDirectory() {
+  if (!props.projectId) return;
+  openingProjectDirectory.value = true;
+  try {
+    await window.actlAgent.openProjectDirectory(props.projectId);
+  } catch {
+    notify.error(tr('ui.couldNotOpenFolder'));
+  } finally {
+    openingProjectDirectory.value = false;
+  }
+}
+
 watch(
   () => props.projectId,
   (current, previous) => {
@@ -117,6 +132,16 @@ watch(
         </div>
       </div>
       <div class="flex items-center gap-1">
+        <button
+          class="flex size-8 items-center justify-center rounded-lg text-gray-500 enabled:hover:bg-gray-100 disabled:opacity-50"
+          type="button"
+          :aria-label="$t('ui.openProjectDirectory')"
+          :title="$t('ui.openProjectDirectory')"
+          :disabled="!projectId || openingProjectDirectory"
+          @click="openProjectDirectory"
+        >
+          <FolderOpen :size="15" />
+        </button>
         <button
           class="flex h-8 w-8 items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100"
           type="button"

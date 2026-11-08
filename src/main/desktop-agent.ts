@@ -1,5 +1,5 @@
 import { app, clipboard, dialog, ipcMain, Notification, shell, type BrowserWindow, type IpcMainInvokeEvent } from 'electron';
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { AgentProcessHost } from './agent-process-host';
@@ -67,6 +67,28 @@ export class DesktopAgent {
       const url = new URL(z.string().parse(value));
       if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('Only HTTP and HTTPS links can be opened.');
       return shell.openExternal(url.href);
+    });
+    handle('desktop:reveal-workspace-file', async (projectId, relativePath) => {
+      const result = await (await this.ensureHost()).request({
+        operation: 'workspace.revealTarget',
+        params: { projectId: z.string().parse(projectId) },
+        query: { path: z.string().parse(relativePath) },
+      });
+      if (!result.ok) throw new Error(result.error.message);
+      if (result.value === null) return false;
+      shell.showItemInFolder(z.string().parse(result.value));
+      return true;
+    });
+    handle('desktop:open-project-directory', async (value) => {
+      const projectId = z.string().parse(value);
+      const result = await (await this.ensureHost()).request({
+        operation: 'workspace.projectDirectory', params: { projectId },
+      });
+      if (!result.ok) throw new Error(result.error.message);
+      const directory = z.string().parse(result.value);
+      if (!(await stat(directory)).isDirectory()) throw new Error('Project path is not a directory.');
+      const error = await shell.openPath(directory);
+      if (error) throw new Error(error);
     });
     handle('desktop:pick-directory', async () => {
       const window = this.getWindow();

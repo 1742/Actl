@@ -43,6 +43,17 @@ const PREVIEW_IMAGE_TYPES = new Map([
 ]);
 
 export class WorkspaceFileService {
+  async resolveFileForReveal(workspaceRootInput: string, relativePath: string): Promise<string | null> {
+    if (relativePath.includes(":")) throw new Error("Invalid workspace file path.");
+    const root = await canonicalizePotentialPath(workspaceRootInput);
+    try {
+      return path.resolve(root, await this.validateReference(root, relativePath));
+    } catch (error) {
+      if (isMissingPathError(error) || (error as NodeJS.ErrnoException).code === "ENOTDIR") return null;
+      throw error;
+    }
+  }
+
   async previewFile(workspaceRootInput: string, relativePath: string): Promise<WorkspaceFilePreview> {
     if (relativePath.includes(":")) throw new Error("Invalid workspace file path.");
     const root = await canonicalizePotentialPath(workspaceRootInput);

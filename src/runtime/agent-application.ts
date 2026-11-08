@@ -91,6 +91,12 @@ export class AgentApplication {
         const input = projects.previewProjectFileQuerySchema.parse(query);
         return d.workspaceFiles.previewFile(project.cwd, input.path);
       }
+      case 'workspace.revealTarget': {
+        const project = this.project(projectId());
+        const input = projects.previewProjectFileQuerySchema.parse(query);
+        return d.workspaceFiles.resolveFileForReveal(project.cwd, input.path);
+      }
+      case 'workspace.projectDirectory': return this.project(projectId()).cwd;
       case 'sessions.list': {
         const input = sessions.listSessionsQuerySchema.parse(query);
         return d.workspaceStore.listSessions(ownerId, input.scope === 'standalone' ? null : input.projectId).map(toSessionJson);

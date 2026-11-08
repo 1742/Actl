@@ -18,6 +18,8 @@ const desktop: DesktopApi = {
   pickDirectory: () => ipcRenderer.invoke('desktop:pick-directory'),
   openDirectory: (kind) => ipcRenderer.invoke('desktop:open-directory', kind),
   openExternal: (url) => ipcRenderer.invoke('desktop:open-external', url),
+  revealWorkspaceFile: (projectId, path) => ipcRenderer.invoke('desktop:reveal-workspace-file', projectId, path),
+  openProjectDirectory: (projectId) => ipcRenderer.invoke('desktop:open-project-directory', projectId),
   notify: (kind, title, detail) => ipcRenderer.invoke('desktop:notify', kind, title, detail),
 };
 contextBridge.exposeInMainWorld('actlAgent', Object.freeze(desktop));

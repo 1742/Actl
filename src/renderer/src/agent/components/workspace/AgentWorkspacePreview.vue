@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, ref, shallowRef, watch } from 'vue';
-import { RefreshCw } from '@lucide/vue';
+import { FolderOpen, RefreshCw } from '@lucide/vue';
 import hljs from 'highlight.js';
 import 'highlight.js/styles/github.css';
 import type { WorkspaceFilePreview } from '../../../../../shared/agent/workspace';
+import { useNotifyStore } from '../../../composables/notify';
+import { tr } from '../../../i18n';
 import { getAgentRuntimeContext } from '../../services/runtimeClient';
 
 const props = defineProps<{ projectId: string; path: string }>();
@@ -12,6 +14,20 @@ const preview = shallowRef<WorkspaceFilePreview>();
 const imageUrl = ref('');
 const failed = ref(false);
 const loading = ref(true);
+const revealing = ref(false);
+const notify = useNotifyStore();
+
+async function revealFile() {
+  revealing.value = true;
+  try {
+    const found = await window.actlAgent.revealWorkspaceFile(props.projectId, props.path);
+    if (!found) notify.error(tr('ui.missingWorkspacePreview'));
+  } catch {
+    notify.error(tr('ui.failedToRevealWorkspaceFile'));
+  } finally {
+    revealing.value = false;
+  }
+}
 
 watch(() => [props.projectId, props.path, revision.value] as const, async ([projectId, path], _, onCleanup) => {
   let current = true;
@@ -67,16 +83,28 @@ const statusKey = computed(() => {
         class="min-w-0 truncate rounded-full border border-gray-200 bg-white px-3 py-1.5 shadow-sm"
         :title="path"
       >{{ path }}</span>
-      <button
-        class="flex size-8 shrink-0 items-center justify-center rounded-full border border-gray-200 bg-white shadow-sm transition-colors enabled:hover:bg-gray-100 disabled:opacity-50"
-        type="button"
-        :aria-label="$t('ui.refresh')"
-        :title="$t('ui.refresh')"
-        :disabled="loading"
-        @click="revision++"
-      >
-        <RefreshCw :size="14" />
-      </button>
+      <div class="flex shrink-0 items-center gap-2">
+        <button
+          class="flex size-8 items-center justify-center rounded-full border border-gray-200 bg-white shadow-sm transition-colors enabled:hover:bg-gray-100 disabled:opacity-50"
+          type="button"
+          :aria-label="$t('ui.revealWorkspaceFile')"
+          :title="$t('ui.revealWorkspaceFile')"
+          :disabled="revealing"
+          @click="revealFile"
+        >
+          <FolderOpen :size="14" />
+        </button>
+        <button
+          class="flex size-8 items-center justify-center rounded-full border border-gray-200 bg-white shadow-sm transition-colors enabled:hover:bg-gray-100 disabled:opacity-50"
+          type="button"
+          :aria-label="$t('ui.refresh')"
+          :title="$t('ui.refresh')"
+          :disabled="loading"
+          @click="revision++"
+        >
+          <RefreshCw :size="14" />
+        </button>
+      </div>
     </header>
     <p v-if="statusKey" role="status" class="px-4 py-8 text-center text-sm text-gray-500">{{ $t(statusKey) }}</p>
     <div v-else-if="preview?.kind === 'text'" class="preview-scroll mr-1 mb-1 min-h-0 flex-1 overflow-auto">
