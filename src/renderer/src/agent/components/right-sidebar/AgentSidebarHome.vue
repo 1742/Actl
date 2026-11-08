@@ -6,7 +6,7 @@ defineEmits<{ openFiles: []; openReview: [] }>();
 </script>
 
 <template>
-  <section class="@container h-full overflow-y-auto bg-gray-50 px-4 py-6" :aria-label="$t('ui.sidebarFeatures')">
+  <section class="@container h-full overflow-y-auto px-4 py-6" :aria-label="$t('ui.sidebarFeatures')">
     <h2 class="mb-3 text-sm font-medium text-gray-800">{{ $t('ui.tools') }}</h2>
     <div class="grid grid-cols-1 gap-2 @min-[22rem]:grid-cols-2">
       <button

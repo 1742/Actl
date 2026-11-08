@@ -98,7 +98,15 @@ export class LocalRuntimeClient implements AgentRuntimeClient {
     return stream({ operation: 'responses.create', params: { sessionId }, body: { model, ...(reasoningEffort ? { reasoningEffort } : {}), permissionMode, input: [{ type: 'message', role: 'user', content: input }] } satisfies CreateResponseRequest }, onEvent, signal);
   }
   streamPermission(sessionId: string, responseId: string, batchId: string, decisions: PermissionResolutionDto[], onEvent: (event: AgentStreamEvent) => void, signal?: AbortSignal) {
-    return stream({ operation: 'responses.permissions', params: { sessionId, responseId }, body: { batchId, decisions } satisfies ResolvePermissionsRequest }, onEvent, signal);
+    const body: ResolvePermissionsRequest = {
+      batchId,
+      decisions: decisions.map(({ permission_id, decision, reason }) => ({
+        permission_id,
+        decision,
+        ...(decision === 'deny' && reason !== undefined ? { reason } : {}),
+      })),
+    };
+    return stream({ operation: 'responses.permissions', params: { sessionId, responseId }, body }, onEvent, signal);
   }
   cancelResponse(sessionId: string, responseId: string) { return request<AgentResponseDto>({ operation: 'responses.cancel', params: { sessionId, responseId } }); }
 }

@@ -45,7 +45,7 @@ export function webSourcesFromSearchCall(item: AIWebSearchCallItem): AgentWebSou
 export function collectWebSources(blocks: AgentActivityBlock[]): AgentWebSource[] {
   return dedupeWebSources(blocks.flatMap((block) => {
     if (block.type === "web_search") return webSourcesFromSearchCall(block.item);
-    if (block.type === "tool" && block.presentation === "web") return webSourcesFromOutput(block.result?.output);
+    if (block.type === "tool" && block.presentation === "web_search") return webSourcesFromOutput(block.result?.output);
     return [];
   }));
 }
@@ -54,7 +54,7 @@ export function collectWebSources(blocks: AgentActivityBlock[]): AgentWebSource[
 export function collectWebQueries(blocks: AgentActivityBlock[]): string {
   const queries = blocks.flatMap((block) => {
     if (block.type === "web_search") return block.item.action.type === "search" ? block.item.action.queries ?? [] : [];
-    if (block.type === "tool" && block.presentation === "web") return [stringAt(block.arguments, "query")];
+    if (block.type === "tool" && block.presentation === "web_search") return [stringAt(block.arguments, "query")];
     return [];
   }).filter(Boolean);
   return [...new Set(queries)].join("、");

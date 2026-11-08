@@ -16,7 +16,8 @@ export type AgentToolPresentation =
   | "delete"
   | "process"
   | "skill"
-  | "web"
+  | "web_search"
+  | "web_fetch"
   | "generic";
 
 export type AgentToolStatus = "preparing" | "waiting_permission" | "running" | "success" | "error" | "incomplete";

@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { reactive } from 'vue';
+import { resolvePermissionsBodySchema } from '../../../src/agent-core/contracts/sessions/session.schemas';
 import type { AgentCommand, AgentEventBatch, AgentResult } from '../../../src/shared/agent-ipc';
-import type { AgentStreamEvent } from '../../../src/shared/agent/responses';
+import type { AgentStreamEvent, PermissionResolutionDto } from '../../../src/shared/agent/responses';
 import { desktopStream, RuntimeRequestError } from '../../../src/renderer/src/agent/services/desktopTransport';
 import { LocalRuntimeClient } from '../../../src/renderer/src/agent/services/localClient';
 
@@ -10,6 +12,24 @@ function deferred<T>() {
   const promise = new Promise<T>((done) => { resolve = done; });
   return { promise, resolve };
 }
+
+test('permission submissions clone reactive decisions and satisfy the Agent schema', async () => {
+  const approve = { permission_id: 'first', decision: 'approve' } as const;
+  const deny = { permission_id: 'second', decision: 'deny', reason: 'Wrong directory' } as const;
+  const commands: AgentCommand[] = [];
+  Object.assign(globalThis, { window: { actlAgent: {
+    onEvents: () => () => {},
+    stream: async (_id: string, command: AgentCommand) => {
+      commands.push(structuredClone(command));
+      return { ok: true, value: {} };
+    },
+  } } });
+  const client = new LocalRuntimeClient();
+  for (const decisions of [[approve], [approve, deny]] satisfies PermissionResolutionDto[][]) {
+    await client.streamPermission('session', 'response', 'batch', reactive(decisions), () => {});
+    assert.deepEqual(resolvePermissionsBodySchema.parse(commands.at(-1)?.body), { batchId: 'batch', decisions });
+  }
+});
 
 test('concurrent IPC streams isolate event subscriptions and remove listeners on completion', async () => {
   const listeners = new Set<(batch: AgentEventBatch) => void>();

@@ -19,7 +19,8 @@ const labels: Record<AgentToolTimelineBlock['presentation'], string> = {
   delete: 'Delete',
   process: 'Process',
   skill: 'Skill',
-  web: 'Search',
+  web_search: 'Search',
+  web_fetch: 'Web Fetch',
   generic: 'Tool',
 };
 
@@ -64,7 +65,8 @@ const summary = computed(() => {
     return stringAt(args.value, 'processId') || command.value;
   if (props.block.presentation === 'skill')
     return stringAt(args.value, 'path') || stringAt(args.value, 'skillId');
-  if (props.block.presentation === 'web') return stringAt(args.value, 'query');
+  if (props.block.presentation === 'web_search') return stringAt(args.value, 'query');
+  if (props.block.presentation === 'web_fetch') return stringAt(args.value, 'url');
   return props.block.call.name || 'tool';
 });
 
@@ -185,7 +187,7 @@ function formatUnknown(value: unknown) {
 
 <template>
   <AgentWebSearchBlock
-    v-if="block.presentation === 'web'"
+    v-if="block.presentation === 'web_search'"
     :query="summary"
     :output="output"
     :status="block.status"
@@ -225,6 +227,13 @@ function formatUnknown(value: unknown) {
         class="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-red-700"
       >
         {{ block.result.error }}
+      </div>
+
+      <div
+        v-else-if="block.presentation === 'web_fetch' && block.status === 'success' && readContent"
+        class="tool-output min-w-0 overflow-auto rounded-md border border-gray-200 bg-gray-50 px-3 py-2"
+      >
+        <pre class="whitespace-pre-wrap wrap-anywhere text-sm">{{ readContent }}</pre>
       </div>
 
       <template v-else-if="block.presentation === 'shell'">

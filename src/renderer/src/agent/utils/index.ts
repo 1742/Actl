@@ -21,7 +21,8 @@ const toolPresentations: Readonly<Record<string, AgentToolPresentation>> = {
   move_path: 'move',
   delete_path: 'delete',
   run_skill_script: 'skill',
-  web_search: 'web',
+  web_search: 'web_search',
+  web_fetch: 'web_fetch',
 };
 
 const asRecord = (value: unknown): Record<string, unknown> | null =>
@@ -193,7 +194,8 @@ export function agentOutputHint(block: Exclude<AgentOutputBlock, { type: 'messag
     delete: 'Delete',
     process: 'Process',
     skill: 'Skill',
-    web: 'Search',
+    web_search: 'Web Search',
+    web_fetch: 'Web Fetch',
     generic: 'Tool',
   };
   let detail: string;
@@ -222,8 +224,11 @@ export function agentOutputHint(block: Exclude<AgentOutputBlock, { type: 'messag
     case 'skill':
       detail = stringArg('path') || stringArg('skillId');
       break;
-    case 'web':
+    case 'web_search':
       detail = stringArg('query');
+      break;
+    case 'web_fetch':
+      detail = stringArg('url');
       break;
     case 'edit': {
       const patches = args?.patches;

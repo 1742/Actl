@@ -22,6 +22,7 @@ import type { AppConfig } from "./config.js";
 import type { Logger } from "../observability/logger.js";
 import { WebSearchService } from "../web-search/search-service.js";
 import { WebSearchToolProvider } from "../tools/builtin/web-search.js";
+import { WebFetchToolProvider } from "../tools/builtin/web-fetch.js";
 import { McpServerManager } from "../mcp/mcp-server-manager.js";
 import { PromptCompiler } from "../runtime/prompt-compiler.js";
 
@@ -77,6 +78,7 @@ export async function createAppDependencies(
   toolRegistry.registerProvider(new SkillDiscoveryToolProvider(skillCatalog));
   const webSearchService = new WebSearchService(workspaceRepository, secretProtector);
   toolRegistry.registerProvider(new WebSearchToolProvider(webSearchService, workspaceStore));
+  toolRegistry.registerProvider(new WebFetchToolProvider());
   const mcpManager = new McpServerManager(config.homeDirectory, workspaceRepository, secretProtector, logger);
   await mcpManager.initialize();
   toolRegistry.registerProvider(mcpManager);
