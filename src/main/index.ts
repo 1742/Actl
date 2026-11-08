@@ -45,6 +45,7 @@ async function createWindow(): Promise<void> {
       preload: path.join(__dirname, '../preload/index.cjs'),
       contextIsolation: true, nodeIntegration: false, sandbox: true,
     },
+    ...(!app.isPackaged && { icon: path.join(app.getAppPath(), 'build', 'icon.ico') }),
   });
   window = mainWindow;
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
