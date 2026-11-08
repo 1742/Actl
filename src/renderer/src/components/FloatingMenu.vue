@@ -1,13 +1,14 @@
 <script lang="ts" setup>
-import { autoUpdate, flip, offset, shift, useFloating } from '@floating-ui/vue';
-import { onClickOutside } from '@vueuse/core';
-import { onUnmounted, ref, watch } from 'vue';
+import { autoUpdate, flip, offset, shift, useFloating, type VirtualElement } from '@floating-ui/vue';
+import { onClickOutside, useEventListener } from '@vueuse/core';
+import { computed, onUnmounted, ref, shallowRef, watch } from 'vue';
 
 const props = withDefaults(defineProps<{
   placement?: 'top-start' | 'top-end' | 'bottom-start' | 'bottom-end' | 'right-start' | 'right-end'
   closeOnMenuClick?: boolean;
   triggerClass?: string;
   menuClass?: string;
+  contextAnchor?: DOMRect | null;
 }>(), {
   placement: 'top-start',
   closeOnMenuClick: true,
@@ -22,9 +23,11 @@ const emit = defineEmits<{
 }>();
 const triggerRef = ref<HTMLElement | null>(null);
 const menuRef = ref<HTMLElement | null>(null);
+const virtualAnchor = shallowRef<VirtualElement | null>(null);
+const reference = computed(() => virtualAnchor.value ?? triggerRef.value);
 
-const { floatingStyles, isPositioned } = useFloating(triggerRef, menuRef, {
-  placement: props.placement,
+const { floatingStyles, isPositioned } = useFloating(reference, menuRef, {
+  placement: computed(() => virtualAnchor.value ? 'bottom-start' : props.placement),
   open: open,
   middleware: [offset(8), flip(), shift()],
   whileElementsMounted(reference, floating, update) {
@@ -32,14 +35,29 @@ const { floatingStyles, isPositioned } = useFloating(triggerRef, menuRef, {
       const rect = reference.getBoundingClientRect();
       // 锚点可能因父级 hover 结束而临时 display:none。
       // 此时保留最后一次有效坐标，避免菜单跳到屏幕左上角。
-      if (rect.width || rect.height) update();
+      if (!(reference instanceof Element) || rect.width || rect.height) update();
     });
   },
 });
 
 const close = () => {
   open.value = false;
+  virtualAnchor.value = null;
 };
+
+watch(() => props.contextAnchor, (anchor) => {
+  if (anchor) {
+    virtualAnchor.value = { getBoundingClientRect: () => anchor };
+    open.value = true;
+  } else if (virtualAnchor.value) {
+    close();
+  }
+});
+
+function toggle() {
+  if (open.value) close();
+  else open.value = true;
+}
 
 watch(open, (value) => emit('update:open', value));
 
@@ -48,6 +66,13 @@ watch(open, (value) => emit('update:open', value));
 onClickOutside(menuRef, close, {
   ignore: [triggerRef],
 });
+
+useEventListener('contextmenu', (event) => {
+  const menu = menuRef.value;
+  if (props.contextAnchor !== undefined && menu && !event.composedPath().includes(menu)) {
+    close();
+  }
+}, { capture: true });
 
 // 组件销毁时强制关闭，防止 Teleport 遗留
 onUnmounted(() => close());
@@ -61,7 +86,7 @@ defineExpose({ close });
     ref="triggerRef"
     class="inline-flex items-center justify-center"
     :class="props.triggerClass"
-    @click.stop="open = !open"
+    @click.stop="toggle"
   >
     <slot name="trigger" :open="open" />
   </span>

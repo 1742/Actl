@@ -217,7 +217,7 @@ export default {
     failedWorkspacePreview: '无法预览文件，请刷新重试。',
     missingWorkspacePreview: '文件已删除或移动。',
     revealWorkspaceFile: '在资源管理器中打开',
-    openProjectDirectory: '在资源管理器中打开项目文件夹',
+    openProjectDirectory: '在资源管理器中打开',
     failedToRevealWorkspaceFile: '无法在资源管理器中定位文件。',
     largeWorkspacePreview: '文件过大。文本上限为 1 MiB，图片上限为 10 MiB。',
     unsupportedWorkspacePreview: '暂不支持此文件格式或文本编码。',

@@ -222,7 +222,7 @@ export default {
     failedWorkspacePreview: 'Could not preview the file. Refresh to try again.',
     missingWorkspacePreview: 'The file was deleted or moved.',
     revealWorkspaceFile: 'Show in File Explorer',
-    openProjectDirectory: 'Open project folder in File Explorer',
+    openProjectDirectory: 'Show in File Explorer',
     failedToRevealWorkspaceFile: 'Could not locate the file in File Explorer.',
     largeWorkspacePreview: 'File too large. The limit is 1 MiB for text and 10 MiB for images.',
     unsupportedWorkspacePreview: 'This file format or text encoding is not supported.',

@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { tr } from '../../../i18n';
-import { computed, ref } from 'vue';
+import { computed, ref, shallowRef } from 'vue';
 import {
+  Ellipsis,
   Folder,
   FolderOpen,
   LoaderCircle,
@@ -13,6 +14,7 @@ import {
 import { useRouter } from 'vue-router';
 
 import { useNotifyStore } from '../../../composables/notify';
+import FloatingMenu from '../../../components/FloatingMenu.vue';
 import { enterAgentConversation } from '../../router';
 import { pickDirectory } from '../../composables/useFileBridge';
 import AgentManageDialog, { type DialogMode } from '../dialogs/AgentManageDialog.vue';
@@ -37,6 +39,7 @@ const notify = useNotifyStore();
 const store = useAgentStore();
 
 const collapsedProjects = ref(new Set<string>());
+const projectContext = shallowRef<{ id: string; anchor: DOMRect }>();
 const searchOpen = ref(false);
 const dialog = ref<{
   open: boolean;
@@ -107,6 +110,18 @@ function toggleProject(projectId: string) {
     next.add(projectId);
   }
   collapsedProjects.value = next;
+}
+
+function openProjectContextMenu(id: string, event: MouseEvent) {
+  projectContext.value = { id, anchor: new DOMRect(event.clientX, event.clientY) };
+}
+
+async function openProjectDirectory(project: RuntimeProject) {
+  try {
+    await window.actlAgent.openProjectDirectory(project.runtimeId);
+  } catch {
+    notify.error(tr('ui.couldNotOpenFolder'));
+  }
 }
 
 function openSearch() {
@@ -211,6 +226,7 @@ const dialogTargetName = computed(() =>
         <div
           class="sidebar-row group"
           :class="{ 'sidebar-row-selected': project.id === store.draftProjectId }"
+          @contextmenu.prevent="openProjectContextMenu(project.id, $event)"
         >
           <button
             class="flex h-9 min-w-0 flex-1 items-center pl-1 text-left"
@@ -257,13 +273,34 @@ const dialogTargetName = computed(() =>
             <button :title="$t('ui.createConversation')" @click="startDraft(project.id)">
               <Plus :size="14" />
             </button>
-            <button
-              :title="$t('ui.deleteProject')"
-              class="hover:text-red-600!"
-              @click="showDialog('delete-project', project)"
+            <FloatingMenu
+              placement="bottom-end"
+              :context-anchor="projectContext?.id === project.id ? projectContext.anchor : null"
             >
-              <Trash2 :size="13" />
-            </button>
+              <template #trigger="{ open }">
+                <button
+                  class="project-menu-trigger"
+                  type="button"
+                  :title="$t('ui.moreActions')"
+                  :aria-label="$t('ui.moreActions')"
+                  :aria-expanded="open"
+                >
+                  <Ellipsis :size="16" />
+                </button>
+              </template>
+              <template #menu>
+                <div class="w-max max-w-64 text-sm text-gray-800">
+                  <button class="project-menu-item hover:bg-gray-100" type="button" @click="openProjectDirectory(project)">
+                    <FolderOpen :size="16" class="shrink-0" />
+                    <span>{{ $t('ui.openProjectDirectory') }}</span>
+                  </button>
+                  <button class="project-menu-item text-red-600 hover:bg-red-50" type="button" @click="showDialog('delete-project', project)">
+                    <Trash2 :size="16" class="shrink-0" />
+                    <span>{{ $t('ui.deleteProject') }}</span>
+                  </button>
+                </div>
+              </template>
+            </FloatingMenu>
           </div>
         </div>
 
@@ -475,13 +512,24 @@ const dialogTargetName = computed(() =>
   @apply z-20 hidden pl-3 group-hover:flex;
 }
 
-.row-actions button {
+.sidebar-row:focus-within .row-actions,
+.row-actions:has(.project-menu-trigger[aria-expanded='true']) {
+  display: flex;
+}
+
+.row-actions > button,
+.project-menu-trigger {
   @apply flex h-7 w-7 items-center justify-center rounded transition-colors duration-300 ease-out;
   color: var(--color-sidebar-muted);
 }
 
-.row-actions button:hover {
+.row-actions > button:hover,
+.project-menu-trigger:hover {
   color: var(--color-sidebar-fg);
   background-color: var(--color-sidebar-hover);
+}
+
+.project-menu-item {
+  @apply flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left;
 }
 </style>
