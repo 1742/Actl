@@ -62,4 +62,4 @@ flowchart TD
 
 树订阅独立于创建 Run 的请求：初始快照加持续事件，detach 只解除显示订阅，后台任务继续。AgentEventHub 对同一领域事件只投影一次序号，前端同时收到旧请求流和树事件时去重。重新进入会话通过最新 response 快照及序号恢复。
 
-主要实现：[协调器](../../src/agent-core/runtime/agents/agent-coordinator.ts)、[协调持久化](../../src/agent-core/repositories/sqlite/agent-coordination-store.ts)、[工具](../../src/agent-core/tools/builtin/subagent.ts)、[界面](../../src/renderer/src/agent/components/conversation/AgentTeamPanel.vue)。
+主要实现：[协调器](../../src/agent-core/runtime/multi-agents/agent-coordinator.ts)、[协调持久化](../../src/agent-core/repositories/sqlite/agent-coordination-repository.ts)、[工具](../../src/agent-core/tools/builtin/subagent.ts)、[界面](../../src/renderer/src/agent/components/conversation/AgentTeamPanel.vue)。

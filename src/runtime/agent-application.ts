@@ -279,10 +279,10 @@ export class AgentApplication {
         const input = models.modelPreferenceBodySchema.parse(body);
         return d.modelStore.setPreference(ownerId, input.modelTargetId ?? undefined, input.reasoningEffort ?? undefined);
       }
-      case 'prompts.get': return d.workspaceRepository.getPromptSettings(ownerId) ?? createDefaultPromptSettings();
+      case 'prompts.get': return d.promptSettingsRepository.getPromptSettings(ownerId) ?? createDefaultPromptSettings();
       case 'prompts.defaults': return createDefaultPromptSettings();
       case 'prompts.save': {
-        const input = promptSchema.parse(body); const saved = d.workspaceRepository.savePromptSettings(ownerId, input.revision, input.blocks);
+        const input = promptSchema.parse(body); const saved = d.promptSettingsRepository.savePromptSettings(ownerId, input.revision, input.blocks);
         if (!saved) throw new ApiError(409, 'prompt_settings_conflict', 'Prompt settings changed. Reload and try again.');
         return saved;
       }
@@ -347,7 +347,7 @@ export class AgentApplication {
     await drain?.();
     const cleanup = await Promise.allSettled([d.processSupervisor.dispose(), d.mcpManager.close()]);
     try { await d.storedFiles.cleanupOrphans(); }
-    finally { d.workspaceRepository.close(); }
+    finally { d.closeDatabase(); }
     const failed = cleanup.find((result) => result.status === 'rejected');
     if (failed?.status === 'rejected') throw failed.reason;
   }

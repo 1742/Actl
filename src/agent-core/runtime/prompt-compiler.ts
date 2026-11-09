@@ -1,5 +1,5 @@
 import type { RuntimePromptSettings } from "../../shared/agent/prompts.js";
-import type { AgentCoordinationStore } from '../repositories/sqlite/agent-coordination-store.js';
+import type { AgentCoordinationRepository } from '../repositories/agent-coordination-repository.js';
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { TranscriptItem } from "../model/types.js";
@@ -33,7 +33,7 @@ export interface CompiledPrompt {
 export class PromptCompiler {
   constructor(
     private readonly repository?: Pick<PromptSettingsRepository, "getPromptSettings">,
-    private readonly coordination?: AgentCoordinationStore,
+    private readonly coordination?: AgentCoordinationRepository,
   ) {}
 
   async compile(

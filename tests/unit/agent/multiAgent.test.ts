@@ -6,14 +6,19 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { DatabaseSync } from 'node:sqlite';
-import { SqliteWorkspaceRepository } from '../../../src/agent-core/repositories/sqlite-workspace-repository';
-import { INITIAL_SCHEMA_SQL, AGENT_COORDINATION_SQL, SQLITE_SCHEMA_GENERATION } from '../../../src/agent-core/repositories/sqlite/schema';
+import { openWorkspaceDatabase } from '../../../src/agent-core/repositories/sqlite/database';
+import { SqliteAgentCoordinationRepository } from '../../../src/agent-core/repositories/sqlite/agent-coordination-repository';
+import { SqliteModelCatalogRepository } from '../../../src/agent-core/repositories/sqlite/model-catalog-repository';
+import { SqliteProjectRepository } from '../../../src/agent-core/repositories/sqlite/project-repository';
+import { SqlitePromptSettingsRepository } from '../../../src/agent-core/repositories/sqlite/prompt-settings-repository';
+import { SqliteSessionRepository } from '../../../src/agent-core/repositories/sqlite/session-repository';
+import { SqliteStoredFileRepository } from '../../../src/agent-core/repositories/sqlite/stored-file-repository';
 import { WorkspaceStore } from '../../../src/agent-core/runtime/workspace-store';
 import { StoredFileService } from '../../../src/agent-core/stored-files/stored-file-service';
 import { ModelStore } from '../../../src/agent-core/runtime/model-store';
 import { SecretProtector } from '../../../src/agent-core/security/secret-protector';
 import { AgentLoop } from '../../../src/agent-core/runtime/agent-loop/agent-loop';
-import { AgentCoordinator } from '../../../src/agent-core/runtime/agents/agent-coordinator';
+import { AgentCoordinator } from '../../../src/agent-core/runtime/multi-agents/agent-coordinator';
 import { ProcessSupervisor } from '../../../src/agent-core/runtime/process/process-supervisor';
 import { ToolRegistry } from '../../../src/agent-core/tools/registry';
 import { SubagentToolProvider } from '../../../src/agent-core/tools/builtin/subagent';
@@ -39,10 +44,14 @@ const options = { model: 'fake', permissionMode: 'ask' as const };
 async function fixture(handler: (request: ModelTurnRequest, signal?: AbortSignal) => Promise<TranscriptItem[]>) {
   const directory = await mkdtemp(path.join(tmpdir(), 'actl-multi-'));
   const projectPath = path.join(directory, 'project'); await mkdir(projectPath);
-  const repository = new SqliteWorkspaceRepository(path.join(directory, 'workspace.db'));
-  const workspace = new WorkspaceStore(repository, path.join(directory, 'workspaces')); await workspace.initialize();
-  const files = new StoredFileService(directory, repository); await files.initialize();
-  const models = new ModelStore(repository, new SecretProtector(path.join(directory, 'unused-key')), 'development');
+  const database = await openWorkspaceDatabase(path.join(directory, 'workspace.db'));
+  const storedFileRepository = new SqliteStoredFileRepository(database);
+  const coordination = new SqliteAgentCoordinationRepository(database);
+  const workspace = new WorkspaceStore(new SqliteProjectRepository(database),
+    new SqliteSessionRepository(database, storedFileRepository), path.join(directory, 'workspaces'));
+  await workspace.initialize();
+  const files = new StoredFileService(directory, storedFileRepository); await files.initialize();
+  const models = new ModelStore(new SqliteModelCatalogRepository(database), new SecretProtector(path.join(directory, 'unused-key')), 'development');
   const client: ModelClient = { protocol: 'chat_completions', runTurn: async (request, _onEvent, opts) => ({
     output: await handler(request, opts?.signal), finishReason: 'stop',
   }) };
@@ -50,40 +59,51 @@ async function fixture(handler: (request: ModelTurnRequest, signal?: AbortSignal
   models.getClientForSnapshot = async () => client;
   const registry = new ToolRegistry(); registry.registerProvider(new FilesystemToolProvider());
   const processes = new ProcessSupervisor();
-  const compiler = new PromptCompiler(repository, repository.coordination);
+  const compiler = new PromptCompiler(new SqlitePromptSettingsRepository(database), coordination);
   const loop = new AgentLoop(models, registry, new RunPermissionEngine(), new InMemoryHookEventBus(), workspace, files, compiler);
-  const coordinator = new AgentCoordinator(workspace, repository.coordination, loop, files, processes);
+  const coordinator = new AgentCoordinator(workspace, coordination, loop, files, processes);
   loop.support = coordinator;
   registry.registerProvider(new SubagentToolProvider(coordinator, workspace));
   const project = await workspace.createProject(owner, { workspacePaths: [projectPath], primaryWorkspacePath: projectPath });
   const root = await workspace.createSession(owner, { projectId: project.id });
-  return { directory, projectPath, repository, workspace, files, loop, coordinator, root, project, compiler,
-    close: async () => { await coordinator.close(); await processes.dispose(); repository.close(); await rm(directory, { recursive: true, force: true }); } };
+  return { directory, projectPath, coordination, workspace, files, loop, coordinator, root, project, compiler,
+    close: async () => { await coordinator.close(); await processes.dispose(); database.close(); await rm(directory, { recursive: true, force: true }); } };
 }
 
 test('migrates v20 without losing sessions, persists plans/messages, and rejects stale plan revisions', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'actl-migration-'));
   const dbPath = path.join(directory, 'workspace.db');
   const db = new DatabaseSync(dbPath);
-  db.exec(INITIAL_SCHEMA_SQL.replace(AGENT_COORDINATION_SQL, ''));
-  db.prepare('INSERT INTO schema_metadata VALUES (1, ?, 20, ?)').run(SQLITE_SCHEMA_GENERATION, 'now');
+  // The v20 tables used by the migration, before sessions gained coordination columns.
+  db.exec(`
+    CREATE TABLE schema_metadata(id INTEGER PRIMARY KEY CHECK(id = 1), generation TEXT NOT NULL, version INTEGER NOT NULL CHECK(version > 0), created_at TEXT NOT NULL) STRICT;
+    CREATE TABLE projects(id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, name TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL) STRICT;
+    CREATE TABLE sessions(
+      id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+      title TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+    ) STRICT;
+  `);
+  db.prepare('INSERT INTO schema_metadata VALUES (1, ?, 20, ?)').run('multi-user-multi-model', 'now');
   db.prepare('INSERT INTO sessions VALUES (?, ?, NULL, ?, ?, ?)').run('root', owner, 'retained', 'now', 'now');
   db.close();
-  let repo = new SqliteWorkspaceRepository(dbPath);
+  let database = await openWorkspaceDatabase(dbPath);
   try {
-    const index = await repo.initialize();
-    assert.equal(index.sessions[0]?.rootSessionId, 'root');
-    assert.equal(index.sessions[0]?.title, 'retained');
-    repo.coordination.updatePlan('root', 0, [{ id: 'a', text: 'Inspect', status: 'pending' }]);
-    assert.throws(() => repo.coordination.updatePlan('root', 0, []), /revision/);
-    assert.equal(repo.coordination.updatePlan('root', 1, [{ id: 'a', text: 'Inspect', status: 'completed' }]).revision, 2);
+    const sessions = await new SqliteSessionRepository(database, new SqliteStoredFileRepository(database)).listSessions();
+    assert.equal(sessions[0]?.rootSessionId, 'root');
+    assert.equal(sessions[0]?.title, 'retained');
+    const coordination = new SqliteAgentCoordinationRepository(database);
+    coordination.updatePlan('root', 0, [{ id: 'a', text: 'Inspect', status: 'pending' }]);
+    assert.throws(() => coordination.updatePlan('root', 0, []), /revision/);
+    assert.equal(coordination.updatePlan('root', 1, [{ id: 'a', text: 'Inspect', status: 'completed' }]).revision, 2);
     const message = { id: 'message', fromSessionId: 'root', toSessionId: 'root', sourceRunId: 'run', kind: 'message' as const, text: 'retained message', wake: false };
-    assert.equal(repo.coordination.enqueue(message, 'key'), true);
-    assert.equal(repo.coordination.enqueue({ ...message, id: 'duplicate' }, 'key'), false);
-    repo.close(); repo = new SqliteWorkspaceRepository(dbPath); await repo.initialize();
-    assert.equal(repo.coordination.plan('root').revision, 2);
-    assert.equal(repo.coordination.pending('root')[0]?.text, 'retained message');
-  } finally { repo.close(); await rm(directory, { recursive: true, force: true }); }
+    assert.equal(coordination.enqueue(message, 'key'), true);
+    assert.equal(coordination.enqueue({ ...message, id: 'duplicate' }, 'key'), false);
+    database.close();
+    database = await openWorkspaceDatabase(dbPath);
+    const reopened = new SqliteAgentCoordinationRepository(database);
+    assert.equal(reopened.plan('root').revision, 2);
+    assert.equal(reopened.pending('root')[0]?.text, 'retained message');
+  } finally { if (database.isOpen) database.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
 test('parallel fresh-context children deliver results; attempted edits are blocked at execution', async () => {
@@ -122,7 +142,7 @@ test('parallel fresh-context children deliver results; attempted edits are block
     assert.equal(children.length, 2);
     assert.ok(children.every((member) => member.cwd === f.root.cwd && member.runs[0]?.permissionSnapshot.permissionMode === 'plan'));
     await assert.rejects(access(path.join(f.projectPath, 'forbidden.txt')));
-    assert.equal(f.repository.coordination.pending(f.root.id).length, 0);
+    assert.equal(f.coordination.pending(f.root.id).length, 0);
     for (const values of sequence.values()) assert.deepEqual(values, values.map((_, index) => index));
     off();
   } finally { await f.close(); }
@@ -141,14 +161,14 @@ test('child completion does not resume a parent through pending approval; plan r
     assert.equal(run.status, 'waiting_permission');
     await delay(150);
     assert.equal(f.root.runs.length, 1); assert.equal(run.status, 'waiting_permission');
-    assert.ok(f.repository.coordination.pending(f.root.id).some((message) => message.kind === 'result'));
+    assert.ok(f.coordination.pending(f.root.id).some((message) => message.kind === 'result'));
     const batch = run.pendingToolBatch!;
     const completed = await f.loop.resolvePermissions(f.root, run, batch.id, batch.permissions.map((permission) => ({ permissionId: permission.id, decision: 'approve' })));
     assert.equal(completed.status, 'completed');
-    assert.equal(f.repository.coordination.pending(f.root.id).length, 0);
+    assert.equal(f.coordination.pending(f.root.id).length, 0);
     const compiled = await f.compiler.compile(f.root, []);
     assert.match(compiled.instructions, /Review and verify/);
-    assert.equal(f.repository.coordination.plan(f.root.id).items[0]?.status, 'in_progress');
+    assert.equal(f.coordination.plan(f.root.id).items[0]?.status, 'in_progress');
   } finally { await f.close(); }
 });
 
@@ -184,16 +204,16 @@ test('inbox delivery survives transcript/ack interruption and tree deletion remo
     const child = await f.workspace.createSession(owner, { projectId: f.project.id, parentSessionId: f.root.id });
     const run = await f.workspace.createResponse(f.root, await input('start')(), snapshot, { permissionMode: 'ask' });
     const message = { id: 'delivery', fromSessionId: child.id, toSessionId: f.root.id, sourceRunId: 'source', kind: 'message' as const, text: 'once', wake: false };
-    f.repository.coordination.enqueue(message, 'delivery');
+    f.coordination.enqueue(message, 'delivery');
     run.timeline.push({ id: 'delivery', type: 'message', role: 'user', content: [{ type: 'text', text: 'once' }] });
     await f.workspace.touch(f.root, run);
     await f.coordinator.beforeStep(f.root, run);
     assert.equal(run.timeline.filter((item) => item.id === 'delivery').length, 1);
-    assert.equal(f.repository.coordination.pending(f.root.id).length, 0);
+    assert.equal(f.coordination.pending(f.root.id).length, 0);
     run.status = 'completed'; await f.workspace.touch(f.root, run);
     await f.workspace.deleteSession(owner, f.root.id);
     assert.equal(await f.workspace.getSession(child.id), undefined);
-    assert.deepEqual(f.repository.coordination.pending(child.id), []);
+    assert.deepEqual(f.coordination.pending(child.id), []);
   } finally { await f.close(); }
 });
 

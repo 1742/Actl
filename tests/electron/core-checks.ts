@@ -3,9 +3,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { INITIAL_SCHEMA_SQL, PROJECT_WORKSPACES_SQL, AGENT_COORDINATION_SQL, SQLITE_SCHEMA_GENERATION, SQLITE_SCHEMA_VERSION } from '../../src/agent-core/repositories/sqlite/schema';
-import { runSqliteMigrations } from '../../src/agent-core/repositories/sqlite/migrations';
-import { SqliteWorkspaceRepository } from '../../src/agent-core/repositories/sqlite-workspace-repository';
+import { SQLITE_SCHEMA_GENERATION, SQLITE_SCHEMA_VERSION } from '../../src/agent-core/repositories/sqlite/initial-schema';
+import { openWorkspaceDatabase } from '../../src/agent-core/repositories/sqlite/database';
+import { SqliteProjectRepository } from '../../src/agent-core/repositories/sqlite/project-repository';
+import { SqliteSessionRepository } from '../../src/agent-core/repositories/sqlite/session-repository';
+import { SqliteStoredFileRepository } from '../../src/agent-core/repositories/sqlite/stored-file-repository';
 import { createFileLogger } from '../../src/agent-core/observability/logger';
 import { runWithRequestContext } from '../../src/agent-core/observability/request-context';
 import { ProcessSupervisor } from '../../src/agent-core/runtime/process/process-supervisor';
@@ -37,13 +39,11 @@ export async function runCoreChecks(dataDirectory: string, fixturePath: string):
   };
   await check('SQLite schema、事务与重开', async () => {
     const databasePath = path.join(options.dataDirectory, 'database', 'workspace.db');
-    await mkdir(path.dirname(databasePath), { recursive: true });
-    let database = new DatabaseSync(databasePath, { timeout: 5_000 });
+    let database = await openWorkspaceDatabase(databasePath);
     try {
-      database.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;');
-      database.exec(INITIAL_SCHEMA_SQL);
-      database.prepare('INSERT INTO schema_metadata(id, generation, version, created_at) VALUES (1, ?, ?, ?)')
-        .run(SQLITE_SCHEMA_GENERATION, SQLITE_SCHEMA_VERSION, startedAt);
+      const metadata = database.prepare("SELECT generation, version FROM schema_metadata WHERE id = 1").get();
+      assert.equal(metadata?.generation, SQLITE_SCHEMA_GENERATION);
+      assert.equal(metadata?.version, SQLITE_SCHEMA_VERSION);
       database.prepare('INSERT INTO projects(id, owner_id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)')
         .run('project_probe', 'developer:local', '中文验证项目', startedAt, startedAt);
       database.prepare('INSERT INTO sessions(id, owner_id, project_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
@@ -54,12 +54,11 @@ export async function runCoreChecks(dataDirectory: string, fixturePath: string):
         .run('invalid', 'developer:local', 'missing', startedAt, startedAt));
       assert.equal(database.prepare('PRAGMA journal_mode').get()?.journal_mode, 'wal');
       database.close();
-      database = new DatabaseSync(databasePath, { timeout: 5_000 });
-      runSqliteMigrations(database, SQLITE_SCHEMA_GENERATION, SQLITE_SCHEMA_VERSION, () => new Error('Schema rejected.'));
+      database = await openWorkspaceDatabase(databasePath);
       assert.equal(database.prepare("SELECT title FROM sessions WHERE id = 'session_probe'").get()?.title, 'Electron 验证');
       return `node:sqlite 可用；schema v${SQLITE_SCHEMA_VERSION} 建库、WAL、外键、事务回滚及关闭后重开通过。`;
     } finally {
-      database.close();
+      if (database.isOpen) database.close();
     }
   });
 
@@ -69,12 +68,38 @@ export async function runCoreChecks(dataDirectory: string, fixturePath: string):
     const otherDirectory = path.join(options.dataDirectory, '其他工作区');
     const database = new DatabaseSync(databasePath);
     try {
-      const legacySql = INITIAL_SCHEMA_SQL.replace(AGENT_COORDINATION_SQL, '').replace(PROJECT_WORKSPACES_SQL,
-        'CREATE UNIQUE INDEX projects_owner_cwd_idx ON projects(owner_id, cwd);')
-        .replace('CREATE TABLE projects(id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, name TEXT,',
-          'CREATE TABLE projects(id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, cwd TEXT NOT NULL, name TEXT,');
-      database.exec(legacySql);
-      database.prepare('INSERT INTO schema_metadata VALUES (1, ?, 19, ?)').run(SQLITE_SCHEMA_GENERATION, startedAt);
+      // The v19 tables used by the migration, frozen independently of the initial schema.
+      database.exec(`
+        CREATE TABLE schema_metadata(id INTEGER PRIMARY KEY CHECK(id = 1), generation TEXT NOT NULL, version INTEGER NOT NULL CHECK(version > 0), created_at TEXT NOT NULL) STRICT;
+        CREATE TABLE projects(
+          id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, cwd TEXT NOT NULL,
+          name TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        ) STRICT;
+        CREATE UNIQUE INDEX projects_owner_cwd_idx ON projects(owner_id, cwd);
+        CREATE TABLE sessions(
+          id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+          title TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+        ) STRICT;
+        CREATE TABLE agent_runs(
+          id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+          run_order INTEGER NOT NULL, status TEXT NOT NULL, model_snapshot_json TEXT NOT NULL,
+          permission_snapshot_json TEXT NOT NULL DEFAULT '{"permissionMode":"ask"}',
+          pending_tool_batch_json TEXT, error_code TEXT, error_message TEXT,
+          created_at TEXT NOT NULL, updated_at TEXT NOT NULL, completed_at TEXT,
+          next_sequence_number INTEGER NOT NULL, UNIQUE(session_id, run_order)
+        ) STRICT;
+        CREATE TABLE run_messages(
+          run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE, message_order INTEGER NOT NULL,
+          message_id TEXT NOT NULL, payload_json TEXT NOT NULL, PRIMARY KEY(run_id, message_order)
+        ) STRICT;
+        CREATE TABLE file_changes(
+          id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+          file_path TEXT NOT NULL, change_type TEXT NOT NULL, summary TEXT NOT NULL,
+          diff TEXT, new_content TEXT, old_content TEXT, created_at TEXT NOT NULL,
+          run_id TEXT REFERENCES agent_runs(id) ON DELETE CASCADE
+        ) STRICT;
+      `);
+      database.prepare('INSERT INTO schema_metadata VALUES (1, ?, 19, ?)').run('multi-user-multi-model', startedAt);
       const addProject = database.prepare('INSERT INTO projects VALUES (?, ?, ?, ?, ?, ?)');
       addProject.run('old', 'owner', offline, '项目名称', startedAt, startedAt);
       addProject.run('other', 'owner', otherDirectory, null, startedAt, startedAt);
@@ -92,21 +117,24 @@ export async function runCoreChecks(dataDirectory: string, fixturePath: string):
       database.close();
     }
 
-    const repository = new SqliteWorkspaceRepository(databasePath);
+    let migrated = await openWorkspaceDatabase(databasePath);
     try {
-      const index = await repository.initialize();
-      const old = index.projects.find(({ id }) => id === 'old')!;
-      const other = index.projects.find(({ id }) => id === 'other')!;
+      const repository = new SqliteProjectRepository(migrated);
+      const projects = await repository.listProjects();
+      const sessions = await new SqliteSessionRepository(migrated, new SqliteStoredFileRepository(migrated)).listSessions();
+      const old = projects.find(({ id }) => id === 'old')!;
+      const other = projects.find(({ id }) => id === 'other')!;
       assert.equal(old.name, '项目名称');
       assert.equal(old.cwd, offline);
       assert.deepEqual(old.workspaces, [{ id: old.primaryWorkspaceId, path: offline }]);
-      assert.equal(index.sessions[0]?.projectId, old.id);
+      assert.equal(sessions[0]?.projectId, old.id);
       await assert.rejects(repository.updateProject({
         ...old, name: 'must roll back', workspaces: [...old.workspaces, { id: 'duplicate', path: other.cwd }],
       }), /UNIQUE constraint failed/);
-      repository.close();
-      const reopened = await repository.initialize();
-      assert.deepEqual(reopened.projects.find(({ id }) => id === old.id), old);
+      migrated.close();
+      migrated = await openWorkspaceDatabase(databasePath);
+      const reopened = await new SqliteProjectRepository(migrated).listProjects();
+      assert.deepEqual(reopened.find(({ id }) => id === old.id), old);
       const read = new DatabaseSync(databasePath, { readOnly: true });
       try {
         const stored = read.prepare("SELECT payload_json FROM run_messages WHERE run_id = 'run'").get();
@@ -117,7 +145,7 @@ export async function runCoreChecks(dataDirectory: string, fixturePath: string):
         read.close();
       }
     } finally {
-      repository.close();
+      if (migrated.isOpen) migrated.close();
     }
     return '离线路径、原项目和会话、历史引用、文件变更及保存回滚通过。';
   });

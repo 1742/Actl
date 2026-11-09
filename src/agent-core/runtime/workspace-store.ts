@@ -3,15 +3,15 @@ import path from "node:path";
 import type { ProjectSettings } from "../../shared/agent/sessions.js";
 import { workspaceDirectoryName, workspacePathKey } from "../tools/path-security.js";
 import type {
-  ProjectRecord,
   FileChangeRecord,
   SessionContentRecord,
   SessionContextStateRecord,
   ContextCompressionRecord,
   SessionRecord,
   TimelineItemUpdate,
-  WorkspaceRepository,
-} from "../repositories/workspace-repository.js";
+  SessionRepository,
+} from "../repositories/session-repository.js";
+import type { ProjectRecord, ProjectRepository } from "../repositories/project-repository.js";
 import type { TranscriptItem, TranscriptMessage } from "../model/types.js";
 import { buildModelTranscript, findUnresolvedToolCalls, type AgentRunRecord } from "./agent-domain.js";
 import { createRandomId, nowIso } from "../utils.js";
@@ -53,15 +53,19 @@ export class WorkspaceStore {
   private mutationQueue: Promise<void> = Promise.resolve();
 
   constructor(
-    private readonly repository: WorkspaceRepository,
+    private readonly projectRepository: ProjectRepository,
+    private readonly sessionRepository: SessionRepository,
     private readonly standaloneWorkspaceRoot: string,
   ) {}
 
   //初始化
   async initialize(): Promise<void> {
-    const index = await this.repository.initialize();
-    this.projects = index.projects;
-    this.sessionsRecord = index.sessions;
+    const [projects, sessions] = await Promise.all([
+      this.projectRepository.listProjects(),
+      this.sessionRepository.listSessions(),
+    ]);
+    this.projects = projects;
+    this.sessionsRecord = sessions;
     this.sessions.clear();
     this.loadedSessionIds.clear();
     this.providerResponseIds.clear();
@@ -96,7 +100,7 @@ export class WorkspaceStore {
         created_at: now,
         updated_at: now,
       };
-      await this.repository.createProject(created);
+      await this.projectRepository.createProject(created);
       this.projects.push(created);
     });
     return structuredClone(created);
@@ -115,7 +119,7 @@ export class WorkspaceStore {
         name: settings.name ?? project.name ?? workspaceDirectoryName(project.cwd),
         updated_at: nowIso(),
       };
-      await this.repository.updateProject(updated);
+      await this.projectRepository.updateProject(updated);
       this.projects[index] = updated;
       for (const session of this.sessions.values()) {
         if (session.ownerId === ownerId && session.projectId === id) {
@@ -184,7 +188,7 @@ export class WorkspaceStore {
         throw new WorkspaceStoreError("project_not_found", "Project not found.");
       }
       const sessionIds = this.sessionsRecord.filter((item) => item.ownerId === ownerId && item.projectId === id).map((item) => item.id);
-      await this.repository.deleteProject(id);
+      await this.projectRepository.deleteProject(id);
       this.projects = this.projects.filter((item) => item.id !== id || item.ownerId !== ownerId);
       this.sessionsRecord = this.sessionsRecord.filter((item) => item.projectId !== id || item.ownerId !== ownerId);
       for (const sessionId of sessionIds) this.evictSession(sessionId);
@@ -240,7 +244,7 @@ export class WorkspaceStore {
         for (const run of session.runs) {
           if (!recoveredRunIds.has(run.id)) continue;
           const snapshot = timelineUpdateSnapshot(run, persistedTimelinePayloads.get(run.id) ?? []);
-          await this.repository.updateRun(run, snapshot.updates, run.timeline.length, updatedAt);
+          await this.sessionRepository.updateRun(run, snapshot.updates, run.timeline.length, updatedAt);
         }
       });
     }
@@ -284,7 +288,7 @@ export class WorkspaceStore {
         await mkdir(workspace);
       }
       try {
-        await this.repository.createSession(metadata);
+        await this.sessionRepository.createSession(metadata);
       } catch (error) {
         if (workspace) await rmdir(workspace).catch(() => undefined);
         throw error;
@@ -309,7 +313,7 @@ export class WorkspaceStore {
         updated_at: nowIso(),
       };
       if (title === undefined) delete replacement.title;
-      await this.repository.updateSession(replacement);
+      await this.sessionRepository.updateSession(replacement);
       this.sessionsRecord[index] = replacement;
       updated = this.applyMetadata(replacement);
     });
@@ -319,7 +323,7 @@ export class WorkspaceStore {
   async deleteSession(ownerId: string, id: string): Promise<void> {
     await this.enqueue(async () => {
       this.requireOwnedSessionRecord(id, ownerId);
-      await this.repository.deleteSession(id);
+      await this.sessionRepository.deleteSession(id);
       const ids = new Set(this.descendants(id).map((item) => item.id));
       this.sessionsRecord = this.sessionsRecord.filter((item) => !ids.has(item.id));
       for (const childId of ids) this.evictSession(childId);
@@ -393,7 +397,7 @@ export class WorkspaceStore {
         if (previous.oldContent === undefined) delete fileChange.oldContent;
         else fileChange.oldContent = previous.oldContent;
       }
-      await this.repository.appendFileChange(fileChange);
+      await this.sessionRepository.appendFileChange(fileChange);
       if (previous) session.fileChanges[index] = fileChange;
       else session.fileChanges.push(fileChange);
       const metadata = this.requireSessionMetadata(session.id);
@@ -425,7 +429,7 @@ export class WorkspaceStore {
     const retained = this.getRecentFileChanges(sessionId, keep);
     const updatedAt = nowIso();
     await this.enqueue(async () => {
-      await this.repository.trimFileChanges(sessionId, keep, updatedAt);
+      await this.sessionRepository.trimFileChanges(sessionId, keep, updatedAt);
       session.fileChanges = retained;
       const metadata = this.requireSessionMetadata(sessionId);
       metadata.updated_at = updatedAt;
@@ -453,7 +457,7 @@ export class WorkspaceStore {
       nextSequenceNumber: 0,
     };
     await this.enqueue(async () => {
-      await this.repository.createRun(response);
+      await this.sessionRepository.createRun(response);
       session.runs.push(response);
       session.updated_at = now;
       this.requireSessionMetadata(session.id).updated_at = now;
@@ -523,7 +527,7 @@ export class WorkspaceStore {
     this.requireSessionMetadata(session.id).updated_at = now;
     const snapshot = timelineUpdateSnapshot(response, this.persistedTimelinePayloads.get(response.id) ?? []);
     await this.enqueue(async () => {
-      await this.repository.updateRun(response, snapshot.updates, response.timeline.length, now);
+      await this.sessionRepository.updateRun(response, snapshot.updates, response.timeline.length, now);
       this.persistedTimelinePayloads.set(response.id, snapshot.payloads);
     });
   }
@@ -532,7 +536,7 @@ export class WorkspaceStore {
     const ids = this.providerResponseIds.get(responseId) ?? [];
     if (ids.includes(providerResponseId)) return;
     await this.enqueue(async () => {
-      await this.repository.appendProviderResponseId(responseId, providerResponseId);
+      await this.sessionRepository.appendProviderResponseId(responseId, providerResponseId);
       ids.push(providerResponseId);
       this.providerResponseIds.set(responseId, ids);
     });
@@ -541,14 +545,14 @@ export class WorkspaceStore {
   async recordModelUsage(session: Session, responseId: string, step: number, usage: import("../model/types.js").ModelUsage): Promise<void> {
     const now = nowIso();
     await this.enqueue(async () => {
-      await this.repository.appendModelInvocationUsage({ runId: responseId, step, ...usage, createdAt: now });
+      await this.sessionRepository.appendModelInvocationUsage({ runId: responseId, step, ...usage, createdAt: now });
       const prior = session.contextState;
       const next: SessionContextStateRecord = {
         sessionId: session.id, summary: prior?.summary ?? "", summarizedRunCount: prior?.summarizedRunCount ?? 0,
         ...(usage.inputTokens === undefined ? (prior?.lastInputTokens === undefined ? {} : { lastInputTokens: prior.lastInputTokens }) : { lastInputTokens: usage.inputTokens }),
         updatedAt: now,
       };
-      await this.repository.saveSessionContext(next);
+      await this.sessionRepository.saveSessionContext(next);
       session.contextState = next;
     });
   }
@@ -560,8 +564,8 @@ export class WorkspaceStore {
       ...(session.contextState?.lastInputTokens === undefined ? {} : { lastInputTokens: session.contextState.lastInputTokens }), updatedAt: now,
     };
     await this.enqueue(async () => {
-      await this.repository.saveSessionContext(state);
-      await this.repository.appendContextCompression({
+      await this.sessionRepository.saveSessionContext(state);
+      await this.sessionRepository.appendContextCompression({
         sessionId: session.id, summary, summarizedRunCount, createdAt: now,
       });
       session.contextState = state;
@@ -579,7 +583,7 @@ export class WorkspaceStore {
 
   private async loadSessionContent(id: string): Promise<SessionContentRecord> {
     this.requireSessionMetadata(id);
-    return this.repository.loadSessionContent(id);
+    return this.sessionRepository.loadSessionContent(id);
   }
 
   private requireSessionMetadata(id: string): SessionRecord {

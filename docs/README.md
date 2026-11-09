@@ -19,7 +19,7 @@
 | [前端](modules/frontend.md) | `src/renderer/src/agent/`、`src/renderer/src/services/` |
 | [Electron 桌面](modules/desktop.md) | `src/main/`、`src/preload/`、`src/shared/agent-ipc.ts` |
 | [Agent 执行与上下文](modules/agent-runtime.md) | `src/runtime/`、`src/agent-core/runtime/`、`src/agent-core/hooks/` |
-| [多 Agent 协作](modules/multi-agent.md) | `src/agent-core/runtime/agents/`、`src/agent-core/tools/builtin/subagent.ts` |
+| [多 Agent 协作](modules/multi-agent.md) | `src/agent-core/runtime/multi-agents/`、`src/agent-core/tools/builtin/subagent.ts` |
 | [模型与协议适配](modules/models.md) | `src/agent-core/model/`、`src/agent-core/runtime/model-store.ts` |
 | [工具、权限与命令进程](modules/tools-permissions.md) | `src/agent-core/tools/`、`src/agent-core/permissions/`、`src/agent-core/runtime/process/` |
 | [SQLite、文件和凭据](modules/storage.md) | `src/agent-core/repositories/`、`src/agent-core/stored-files/`、`src/agent-core/security/` |

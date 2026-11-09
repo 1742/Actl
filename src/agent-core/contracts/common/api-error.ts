@@ -7,7 +7,7 @@ import { StoredFileServiceError } from "../../stored-files/stored-file-service.j
 
 import { WorkspaceDirectoryError } from "../../runtime/workspace-files.js";
 import { WebSearchServiceError } from "../../web-search/search-service.js";
-import { WorkspaceSchemaIncompatibleError } from "../../repositories/sqlite-workspace-repository.js";
+import { WorkspaceSchemaIncompatibleError } from "../../repositories/sqlite/database.js";
 
 export interface ValidationApiErrorDetails {
   source: "body" | "params" | "query";

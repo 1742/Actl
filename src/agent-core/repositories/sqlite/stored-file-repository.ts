@@ -1,8 +1,8 @@
 import type { DatabaseSync } from "node:sqlite";
-import type { StoredFileRecord, StoredFileRepository } from "../workspace-repository.js";
-import { stringColumn, type SqliteRow, toStoredFile } from "./row-codec.js";
+import type { StoredFileRecord, StoredFileRepository } from "../stored-file-repository.js";
+import { numberColumn, stringColumn, type SqliteRow } from "./row.js";
 
-export class SqliteStoredFileStore implements StoredFileRepository {
+export class SqliteStoredFileRepository implements StoredFileRepository {
   constructor(private readonly db: DatabaseSync) {}
 
   async createStoredFile(file: StoredFileRecord): Promise<void> {
@@ -30,4 +30,12 @@ export class SqliteStoredFileStore implements StoredFileRepository {
     return (this.db.prepare("SELECT DISTINCT storage_key FROM stored_files").all() as SqliteRow[])
       .map((row) => stringColumn(row, "storage_key"));
   }
+}
+
+function toStoredFile(row: SqliteRow): StoredFileRecord {
+  return {
+    id: stringColumn(row, "id"), sessionId: stringColumn(row, "session_id"), filename: stringColumn(row, "filename"),
+    mediaType: stringColumn(row, "media_type"), size: numberColumn(row, "byte_size"), sha256: stringColumn(row, "sha256"),
+    storageKey: stringColumn(row, "storage_key"), createdAt: stringColumn(row, "created_at"),
+  };
 }

@@ -1,6 +1,5 @@
 import type { AgentRunRecord, AgentTimelineItem } from "../runtime/agent-domain.js";
 import type { ModelUsage } from "../model/types.js";
-import type { AgentProject } from "../../shared/agent/sessions.js";
 
 export interface SessionContextStateRecord {
   sessionId: string;
@@ -23,10 +22,6 @@ export interface ContextCompressionRecord {
   createdAt: string;
 }
 
-export interface ProjectRecord extends AgentProject {
-  ownerId: string;
-}
-
 export interface SessionRecord {
   id: string;
   parentSessionId?: string;
@@ -38,11 +33,6 @@ export interface SessionRecord {
   title?: string;
   created_at: string;
   updated_at: string;
-}
-
-export interface WorkspaceIndex {
-  projects: ProjectRecord[];
-  sessions: SessionRecord[];
 }
 
 export interface SessionContentRecord {
@@ -67,35 +57,13 @@ export interface FileChangeRecord {
   created_at: string;
 }
 
-export interface StoredFileRecord {
-  id: string;
-  sessionId: string;
-  filename: string;
-  mediaType: string;
-  size: number;
-  sha256: string;
-  storageKey: string;
-  createdAt: string;
-}
-
-export interface StoredFileRepository {
-  createStoredFile(file: StoredFileRecord): Promise<void>;
-  getStoredFile(fileId: string): StoredFileRecord | undefined;
-  listStoredFiles(sessionId: string): StoredFileRecord[];
-  deleteExpiredUnboundFiles(olderThan: string): Promise<void>;
-  listReferencedStorageKeys(): string[];
-}
-
 export interface TimelineItemUpdate {
   order: number;
   item: AgentTimelineItem;
 }
 
-export interface WorkspaceRepository {
-  initialize(): Promise<WorkspaceIndex>;
-  createProject(project: ProjectRecord): Promise<void>;
-  updateProject(project: ProjectRecord): Promise<void>;
-  deleteProject(projectId: string): Promise<void>;
+export interface SessionRepository {
+  listSessions(): Promise<SessionRecord[]>;
   createSession(session: SessionRecord): Promise<void>;
   updateSession(session: SessionRecord): Promise<void>;
   deleteSession(sessionId: string): Promise<void>;

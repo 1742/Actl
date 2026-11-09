@@ -1,6 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import type { AgentInboxMessage, AgentTreeSnapshot, PlanItem } from '../../../shared/agent/coordination.js';
-import type { AgentCoordinationStore } from '../../repositories/sqlite/agent-coordination-store.js';
+import type { AgentCoordinationRepository } from '../../repositories/agent-coordination-repository.js';
 import type { StoredFileService } from '../../stored-files/stored-file-service.js';
 import { toSessionJson } from '../../contracts/common/presenters.js';
 import { toAgentResponseDto } from '../../contracts/agent-responses/presenter.js';
@@ -27,7 +27,7 @@ export class AgentCoordinator implements AgentRuntimeSupport {
 
   constructor(
     private readonly workspace: WorkspaceStore,
-    private readonly state: AgentCoordinationStore,
+    private readonly state: AgentCoordinationRepository,
     private readonly loop: AgentLoop,
     private readonly files: StoredFileService,
     private readonly processes: ProcessSupervisor,

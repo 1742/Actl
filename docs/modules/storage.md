@@ -28,7 +28,9 @@
 
 ## 2. 仓库层
 
-[SqliteWorkspaceRepository](../../src/agent-core/repositories/sqlite-workspace-repository.ts) 使用 Node 内置 DatabaseSync，同时实现 workspace、stored file、model catalog、web search、MCP 和 prompt settings repository。账号/模型细节分到 SqliteModelCatalogStore，附件元数据分到 SqliteStoredFileStore。
+[repositories/](../../src/agent-core/repositories/) 定义项目、会话、附件、模型目录、Web Search、MCP、Prompt 和 Agent 协作的持久化接口。各接口在 [repositories/sqlite/](../../src/agent-core/repositories/sqlite/) 下有对应的 SQLite 实现。
+
+[app/dependencies.ts](../../src/agent-core/app/dependencies.ts) 通过 [sqlite/database.ts](../../src/agent-core/repositories/sqlite/database.ts) 打开和迁移 workspace.db，给各 repository 注入同一个 DatabaseSync 连接，并在应用关闭时释放连接。
 
 数据库采用 STRICT 表、外键、WAL、synchronous=NORMAL、busy_timeout=5000。组合写入使用 BEGIN IMMEDIATE/COMMIT/ROLLBACK。API 虽常返回 Promise，SQL 操作实际同步执行，不代表后台数据库线程。
 
@@ -36,7 +38,7 @@ WorkspaceStore 的 mutationQueue 串行化状态修改，touch 只 upsert 变化
 
 ## 3. 表与关系
 
-当前 [schema.ts](../../src/agent-core/repositories/sqlite/schema.ts) generation 为 multi-user-multi-model，version 为 **21**。
+当前 [initial-schema.ts](../../src/agent-core/repositories/sqlite/initial-schema.ts) generation 为 multi-user-multi-model，version 为 **21**。
 
 | 表                                            | 用途                                                                 |
 | --------------------------------------------- | -------------------------------------------------------------------- |
@@ -80,7 +82,7 @@ erDiagram
 
 ## 4. Schema 迁移
 
-[migrations/index.ts](../../src/agent-core/repositories/sqlite/migrations/index.ts) 注册 4→21 的逐步迁移，每一步事务中升级 metadata version。新库直接创建当前 schema。不存在 metadata、generation 不同、版本高于当前或没有可用迁移链会拒绝启动；初始化 SQL 异常也可能转换成 workspace_schema_incompatible。
+[migrations/index.ts](../../src/agent-core/repositories/sqlite/migrations/index.ts) 注册 4→21 的逐步迁移，每一步事务中升级 metadata version。新库只执行 initial-schema.ts 中按业务分组的建库 SQL。已有库只通过 migrations/ 升级。不存在 metadata、generation 不同、版本高于当前或没有可用迁移链会拒绝启动；初始化 SQL 异常也可能转换成 workspace_schema_incompatible。
 
 20→21 为 sessions 增加 parent_session_id、root_session_id 与创建来源 run/call ID，保留原会话并把它们设为根会话，同时创建计划和消息表。父会话删除会级联删除子会话及协调数据。独立会话树共用根会话的工作目录，附件归属仍按各自 session 校验。详见[多 Agent 协作](multi-agent.md)。
 

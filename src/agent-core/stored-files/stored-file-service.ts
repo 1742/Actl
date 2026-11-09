@@ -4,7 +4,7 @@ import path from "node:path";
 import type { TranscriptItem } from "../model/types.js";
 import type { ModelCapabilities } from "../model/catalog-types.js";
 import { supportsMime } from "../model/compatibility.js";
-import type { StoredFileRecord, StoredFileRepository } from "../repositories/workspace-repository.js";
+import type { StoredFileRecord, StoredFileRepository } from "../repositories/stored-file-repository.js";
 import { createRandomId, nowIso } from "../utils.js";
 
 export const MAX_STORED_FILE_BYTES = 25 * 1024 * 1024;

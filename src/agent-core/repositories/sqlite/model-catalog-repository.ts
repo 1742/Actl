@@ -1,14 +1,14 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { EncryptedSecret } from "../../security/encrypted-secret.js";
-import { reasoningEffortSchema } from "../../model/catalog-types.js";
+import { modelCapabilitiesSchema, modelProtocolSchema, reasoningEffortSchema } from "../../model/catalog-types.js";
 import type { CreateProviderAccountRecord, ModelCatalogRepository, ModelPreferenceRecord, ModelTargetRecord, ProviderAccountRecord } from "../model-catalog-repository.js";
+import { withSqliteTransaction } from "./database.js";
 import {
-  assertChanged, bufferColumn, nullableStringColumn, numberColumn, type SqliteRow,
-  toProviderAccount, toModelTarget,
-} from "./row-codec.js";
+  assertChanged, bufferColumn, nullableNumberColumn, nullableStringColumn, numberColumn, stringColumn, type SqliteRow,
+} from "./row.js";
 
-export class SqliteModelCatalogStore implements ModelCatalogRepository {
-  constructor(private readonly db: DatabaseSync, private readonly transaction: <T>(operation: () => T) => T) {}
+export class SqliteModelCatalogRepository implements ModelCatalogRepository {
+  constructor(private readonly db: DatabaseSync) {}
 
   listProviderAccounts(ownerId: string): ProviderAccountRecord[] {
     return (this.db.prepare(`SELECT a.*, v.base_url, v.credential_version FROM provider_accounts a
@@ -31,7 +31,7 @@ export class SqliteModelCatalogStore implements ModelCatalogRepository {
   }
 
   async createProviderAccount({ account, credential }: CreateProviderAccountRecord): Promise<void> {
-    this.transaction(() => {
+    withSqliteTransaction(this.db, () => {
       this.db.prepare(`INSERT INTO provider_accounts(
         id, owner_id, display_name, enabled, current_version, deleted_at, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)`).run(account.id, account.ownerId, account.displayName,
@@ -42,7 +42,7 @@ export class SqliteModelCatalogStore implements ModelCatalogRepository {
   }
 
   async updateProviderAccount(account: ProviderAccountRecord): Promise<void> {
-    this.transaction(() => {
+    withSqliteTransaction(this.db, () => {
       this.insertAccountVersion(account);
       assertChanged(this.db.prepare(`UPDATE provider_accounts SET display_name = ?, enabled = ?,
         current_version = ?, updated_at = ? WHERE id = ? AND owner_id = ? AND deleted_at IS NULL`).run(
@@ -52,7 +52,7 @@ export class SqliteModelCatalogStore implements ModelCatalogRepository {
   }
 
   async replaceProviderCredential(account: ProviderAccountRecord, credential: EncryptedSecret): Promise<void> {
-    this.transaction(() => {
+    withSqliteTransaction(this.db, () => {
       this.insertCredential(account.id, account.credentialVersion ?? 1, credential, account.updatedAt);
       this.insertAccountVersion(account);
       assertChanged(this.db.prepare(`UPDATE provider_accounts SET current_version = ?, updated_at = ?
@@ -62,7 +62,7 @@ export class SqliteModelCatalogStore implements ModelCatalogRepository {
   }
 
   async clearProviderCredential(account: ProviderAccountRecord): Promise<void> {
-    this.transaction(() => {
+    withSqliteTransaction(this.db, () => {
       this.db.prepare("DELETE FROM provider_credentials WHERE account_id = ?").run(account.id);
       this.insertAccountVersion(account);
       assertChanged(this.db.prepare(`UPDATE provider_accounts SET current_version = ?, updated_at = ?
@@ -72,7 +72,7 @@ export class SqliteModelCatalogStore implements ModelCatalogRepository {
   }
 
   async deleteProviderAccount(ownerId: string, accountId: string, deletedAt: string): Promise<void> {
-    this.transaction(() => {
+    withSqliteTransaction(this.db, () => {
       assertChanged(this.db.prepare(`UPDATE provider_accounts SET enabled = 0, deleted_at = ?, updated_at = ?
         WHERE id = ? AND owner_id = ? AND deleted_at IS NULL`).run(deletedAt, deletedAt, accountId, ownerId), "Provider account", accountId);
       this.db.prepare("DELETE FROM provider_credentials WHERE account_id = ?").run(accountId);
@@ -140,4 +140,26 @@ export class SqliteModelCatalogStore implements ModelCatalogRepository {
     this.db.prepare(`INSERT INTO provider_credentials(account_id, version, ciphertext, nonce, auth_tag, key_version, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)`).run(accountId, version, credential.ciphertext, credential.nonce, credential.authTag, credential.keyVersion, createdAt);
   }
+}
+
+function toProviderAccount(row: SqliteRow): ProviderAccountRecord {
+  return {
+    id: stringColumn(row, "id"), ownerId: stringColumn(row, "owner_id"),
+    displayName: stringColumn(row, "display_name"), enabled: numberColumn(row, "enabled") === 1,
+    currentVersion: numberColumn(row, "current_version"), baseURL: nullableStringColumn(row, "base_url") ?? "",
+    credentialVersion: nullableNumberColumn(row, "credential_version"), deletedAt: nullableStringColumn(row, "deleted_at"),
+    createdAt: stringColumn(row, "created_at"), updatedAt: stringColumn(row, "updated_at"),
+  };
+}
+
+function toModelTarget(row: SqliteRow): ModelTargetRecord {
+  let decoded: unknown;
+  try { decoded = JSON.parse(stringColumn(row, "capabilities_json")); }
+  catch { throw new Error("Stored model capabilities contain invalid JSON."); }
+  return {
+    id: stringColumn(row, "id"), ownerId: stringColumn(row, "owner_id"), accountId: stringColumn(row, "account_id"),
+    providerModel: stringColumn(row, "provider_model"), displayName: stringColumn(row, "display_name"),
+    protocol: modelProtocolSchema.parse(stringColumn(row, "protocol")), capabilities: modelCapabilitiesSchema.parse(decoded),
+    enabled: numberColumn(row, "enabled") === 1, createdAt: stringColumn(row, "created_at"), updatedAt: stringColumn(row, "updated_at"),
+  };
 }

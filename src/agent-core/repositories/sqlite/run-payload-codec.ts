@@ -1,6 +1,8 @@
 import { z } from "zod";
-import type { TranscriptMessage } from "../model/types.js";
-import type { AgentTimelineItem, PendingToolBatch } from "../runtime/agent-domain.js";
+import { modelExecutionSnapshotSchema } from "../../model/catalog-types.js";
+import { runPermissionSnapshotSchema } from "../../permissions/engine.js";
+import type { TranscriptMessage } from "../../model/types.js";
+import type { AgentTimelineItem, PendingToolBatch } from "../../runtime/agent-domain.js";
 
 const mediaSourceSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("url"), url: z.string() }).strict(),
@@ -124,4 +126,18 @@ export function parseSqliteTimelineItem(value: string): AgentTimelineItem {
 
 export function parseSqlitePendingBatch(value: string): PendingToolBatch {
   return pendingToolBatchSchema.parse(JSON.parse(value)) as PendingToolBatch;
+}
+
+export function parseModelSnapshot(json: string) {
+  let decoded: unknown;
+  try { decoded = JSON.parse(json); }
+  catch { throw new Error("Stored model snapshot contains invalid JSON."); }
+  return modelExecutionSnapshotSchema.parse(decoded);
+}
+
+export function parsePermissionSnapshot(json: string) {
+  let decoded: unknown;
+  try { decoded = JSON.parse(json); }
+  catch { throw new Error("Stored permission snapshot contains invalid JSON."); }
+  return runPermissionSnapshotSchema.parse(decoded);
 }
