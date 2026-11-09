@@ -19,6 +19,8 @@ export interface AgentProject {
 
 export interface AgentSession {
   id: string;
+  parentSessionId?: string;
+  rootSessionId?: string;
   projectId: string | null;
   title?: string;
   created_at: string;

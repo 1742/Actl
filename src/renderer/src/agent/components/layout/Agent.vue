@@ -5,6 +5,7 @@ import { useRouter } from "vue-router";
 import AgentMessages from "../conversation/MessagesArea.vue";
 import AgentInput from "../composer/Input.vue";
 import AgentTopBar from "./AgentTopBar.vue";
+import AgentTeamPanel from '../conversation/AgentTeamPanel.vue';
 import RightSidebarContainer from "../right-sidebar/AgentSidebarContainer.vue";
 import { reviewTargetKey, type ReviewTarget } from '../review/reviewNavigation';
 
@@ -25,6 +26,7 @@ async function toggleRightSidebar() {
   <div class="relative flex h-full w-full max-w-full overflow-hidden bg-transparent">
     <section class="relative flex h-full min-w-0 max-w-full flex-1 flex-col overflow-hidden">
       <AgentTopBar @open-nav-sidebar="emit('openNavSidebar')" @toggle-right-sidebar="toggleRightSidebar" />
+      <AgentTeamPanel />
       <AgentMessages :bottom-inset="0" />
 
       <AgentInput />

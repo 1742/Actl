@@ -41,7 +41,7 @@ list 方法通常提供拷贝，getSession 提供运行时对象；AgentLoop 会
 | [tool-batch-executor.ts](../../src/agent-core/runtime/agent-loop/tool-batch-executor.ts)                           | 工具准备、权限批次、并行/串行执行、结果记录     |
 | [agent-run-finalizer.ts](../../src/agent-core/runtime/agent-loop/agent-run-finalizer.ts)                           | 终态、取消/失败补齐、持久化及事件               |
 
-项目会话使用 project 范围，独立会话使用 session 范围。创建前先预留，失败释放；waiting_permission 保持占用；终态释放。恢复占用时检查持久化历史，防止重启后待审批 Run 被绕过。
+项目会话使用 project 范围，独立会话使用根 session 范围。一个项目同时接纳一棵会话树，同树的不同会话可并发，每个会话仍只允许一个活动 Run。创建前先预留，失败释放；waiting_permission 保持占用；最后一个成员终态后释放整棵树的占用。恢复占用时检查持久化历史，防止重启后待审批 Run 被绕过。父子任务、消息、计划与独立事件订阅见[多 Agent 协作](multi-agent.md)。
 
 maintenance 用于删除和压缩等操作，阻止与新 Run 创建交错。idle maintenance 额外检查当前范围无活动 Run，删除操作在 maintenance 内取消执行、停止进程并删除会话数据。
 

@@ -1,7 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import path from "node:path";
 import { workspaceDirectoryName, workspacePathKey } from "../../../tools/path-security.js";
-import { PROJECT_WORKSPACES_SQL } from "../schema.js";
+import { PROJECT_WORKSPACES_SQL, AGENT_COORDINATION_SQL } from "../schema.js";
 import { parseSqliteMessage } from "../../sqlite-session-codec.js";
 export interface SqliteMigration {
   from: number;
@@ -183,6 +183,7 @@ export const SQLITE_MIGRATIONS: readonly SqliteMigration[] = [
     },
   },
   { from: 19, to: 20, up: migrateProjectWorkspaces },
+  { from: 20, to: 21, up: (database) => { database.exec(AGENT_COORDINATION_SQL); } },
 ];
 
 function migrateProjectWorkspaces(database: DatabaseSync): void {

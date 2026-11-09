@@ -5,10 +5,21 @@ import path from 'node:path';
 import type { AgentBootOptions, AgentCommand, AgentResult, AgentRuntimeInfo, AgentWorkerResponse } from '../shared/agent-ipc';
 import { WindowsProcessJob } from './windows-process-job';
 import type { AgentStreamEvent } from "../shared/agent/responses";
+import type { AgentTreeEvent } from '../shared/agent/coordination';
 
 interface Pending { resolve: (result: AgentResult) => void; onEvents?: ((events: AgentStreamEvent[]) => void) | undefined }
 
 export class AgentProcessHost {
+  private readonly treeListeners = new Map<string, (event: AgentTreeEvent) => void>();
+  async watchTree(id: string, sessionId: string, listener: (event: AgentTreeEvent) => void): Promise<AgentResult> {
+    if (this.treeListeners.size >= 32 || this.treeListeners.has(id)) throw new Error('Too many or duplicate tree subscriptions.');
+    this.treeListeners.set(id, listener);
+    try {
+      const result = await this.request({ operation: 'agents.watch', params: { sessionId } }, undefined, id);
+      if (!result.ok) this.treeListeners.delete(id);
+      return result;
+    } catch (error) { this.treeListeners.delete(id); throw error; }
+  }
   private child: UtilityProcess | undefined;
   private boot: Promise<AgentRuntimeInfo> | undefined;
   private pending = new Map<string, Pending>();
@@ -41,9 +52,10 @@ export class AgentProcessHost {
   }
 
   detach(id: string): void {
+    const watched = this.treeListeners.delete(id);
     const pending = this.pending.get(id);
-    if (!pending) return;
-    pending.onEvents = undefined;
+    if (!pending && !watched) return;
+    if (pending) pending.onEvents = undefined;
     this.child?.postMessage({ type: 'detach', id });
   }
 
@@ -91,7 +103,10 @@ export class AgentProcessHost {
         }
       });
       child.on('message', (message: AgentWorkerResponse) => {
-        if (message.type === 'ready') { workerReady = true; initialize(); }
+        if (message.type === 'tree_event') {
+          try { this.treeListeners.get(message.id)?.(message.event); } catch { this.detach(message.id); }
+        }
+        else if (message.type === 'ready') { workerReady = true; initialize(); }
         else if (message.type === 'initialized') {
           clearTimeout(deadline);
           if (message.result.ok) { initialized = true; resolve(message.result.value); }
@@ -117,6 +132,7 @@ export class AgentProcessHost {
         if (this.child === child) { this.child = undefined; this.boot = undefined; }
         for (const pending of this.pending.values()) pending.resolve({ ok: false, error: { code: 'runtime_interrupted', message: 'Agent process exited. Reload the conversation to recover persisted history.' } });
         this.pending.clear();
+        this.treeListeners.clear();
       });
     });
   }

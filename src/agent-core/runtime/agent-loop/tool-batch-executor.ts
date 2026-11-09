@@ -1,4 +1,5 @@
 import type { HookEventBus } from "../../hooks/event-bus.js";
+import { allowedAgentTool } from '../multi-agents/agent-tool-policy.js';
 import type { TranscriptItem } from "../../model/types.js";
 import type { Logger } from "../../observability/logger.js";
 import type { PermissionEngine } from "../../permissions/engine.js";
@@ -49,7 +50,8 @@ export class ToolBatchExecutor {
   ): Promise<boolean> {
     const preparedItems: PendingToolBatchItem[] = [];
     let hasPermissionRequests = false;
-    const availableTools = new Set((await this.toolRegistry.listTools(run.modelSnapshot.capabilities)).map((tool) => tool.name));
+    const availableTools = new Set((await this.toolRegistry.listTools(run.modelSnapshot.capabilities))
+      .filter((tool) => allowedAgentTool(tool.name, !!session.parentSessionId)).map((tool) => tool.name));
 
     for (const functionCall of functionCalls) {
       signal.throwIfAborted();
@@ -94,6 +96,8 @@ export class ToolBatchExecutor {
       try {
         requirement = await this.toolRegistry.getPermissionRequirement(toolCall, {
           cwd: session.cwd,
+          runId: run.id,
+          callId: toolCall.id,
           sessionId: session.id,
           signal,
         });
@@ -356,8 +360,13 @@ export class ToolBatchExecutor {
     approvedByUser: boolean,
     signal: AbortSignal,
   ): Promise<ToolResult> {
+    if (!allowedAgentTool(toolCall.name, !!session.parentSessionId)) {
+      return { toolCallId: toolCall.id, toolName: toolCall.name, ok: false, error: 'Tool is disabled for read-only subagents.' };
+    }
     const startedAt = performance.now();
     const context: ToolCallContext = {
+      runId: run.id,
+      callId: toolCall.id,
       cwd: session.cwd,
       sessionId: session.id,
       authorization: { requirement, approvedByUser },

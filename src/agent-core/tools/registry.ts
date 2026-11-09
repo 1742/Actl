@@ -45,7 +45,9 @@ export interface ToolExecutionAuthorization {
 
 export interface ToolCallContext {
   cwd: string | null;
-  sessionId?: string;
+  runId: string;
+  callId: string;
+  sessionId: string;
   authorization?: ToolExecutionAuthorization;
   signal?: AbortSignal;
   modelCapabilities?: ModelCapabilities;
@@ -147,7 +149,7 @@ export class ToolRegistry {
 
   async getPermissionRequirement(
     toolCall: ToolCall,
-    context: ToolCallContext = { cwd: null },
+    context: ToolCallContext,
   ): Promise<ToolPermissionRequirement | null> {
     context.signal?.throwIfAborted();
     const resolved = await this.resolveTool(toolCall.name);
@@ -169,7 +171,7 @@ export class ToolRegistry {
     return resolved?.definition.execution ?? { concurrency: "exclusive" };
   }
 
-  async callTool(toolCall: ToolCall, context: ToolCallContext = { cwd: null }): Promise<ToolResult> {
+  async callTool(toolCall: ToolCall, context: ToolCallContext): Promise<ToolResult> {
     try {
       context.signal?.throwIfAborted();
       const prepared = await this.prepareToolCall(toolCall);

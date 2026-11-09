@@ -60,6 +60,7 @@ pnpm start
 | --- | --- |
 | `pnpm typecheck` | main、preload、runtime、核心及 Vue 类型检查 |
 | `pnpm test:agent-ui` | 审批状态、IPC 订阅隔离/取消、直接命令及语言目录 |
+| `pnpm test:multi-agent` | SQLite 迁移、父子并发、只读限制、消息去重、审批暂停与树取消 |
 | `pnpm build` | 类型检查、fixture 和三端生产构建 |
 | `pnpm verify:agent` | 构建后验证当前核心及真实 Agent 业务闭环 |
 | `pnpm verify:agent:packaged` | 使用已有打包应用重跑 Agent 集成检查 |

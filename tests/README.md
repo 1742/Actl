@@ -18,11 +18,14 @@ tests/
 
 ```powershell
 pnpm test:agent-ui
+pnpm test:multi-agent
 ```
 
 通过 Node test runner 和 tsx 执行。测试直接导入产品模块，模拟 IPC 时序；不启动 Electron、不读取用户数据库，也不访问真实模型服务。
 
 语言引用检查扫描 `src/renderer/src/`，测试文件移动不改变其检查范围。
+
+multiAgent.test.ts 使用临时 SQLite、真实 AgentLoop/Coordinator 和本地内存模型替身，覆盖 v20→v21 迁移、计划 revision、并发子会话、只读执行防护、消息去重、审批暂停和整树取消。Electron 集成验证另覆盖持续树订阅、detach 后执行、follow-up 自动唤醒与重启恢复。
 
 ## Electron 集成验证
 

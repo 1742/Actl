@@ -1,4 +1,5 @@
 import type { HookEventBus } from "../../hooks/event-bus.js";
+import { allowedAgentTool } from '../multi-agents/agent-tool-policy.js';
 import type { ModelTurnEvent, TranscriptItem, TranscriptMessage } from "../../model/types.js";
 import { findModelCompatibilityIssues } from "../../model/compatibility.js";
 import type { McpServerManager } from "../../mcp/mcp-server-manager.js";
@@ -70,7 +71,20 @@ export interface AgentRunOptions {
   permissionMode: PermissionMode;
 }
 
+export interface AgentRuntimeSupport {
+  onEvent: AgentDomainEventHandler;
+  beforeStep(session: Session, run: AgentRunRecord, onEvent?: AgentDomainEventHandler): Promise<void>;
+  hasPending(session: Session): boolean;
+}
+
 export class AgentLoop {
+  support?: AgentRuntimeSupport;
+  private observe(handler?: AgentDomainEventHandler): AgentDomainEventHandler {
+    return async (run, event) => {
+      await this.support?.onEvent(run, event);
+      await handler?.(run, event);
+    };
+  }
   private readonly toolExecutor: ToolBatchExecutor;
   private readonly finalizer: AgentRunFinalizer;
 
@@ -98,6 +112,7 @@ export class AgentLoop {
     options: AgentRunOptions,
     onEvent?: AgentDomainEventHandler,
   ): Promise<AgentRunRecord> {
+    onEvent = this.observe(onEvent);
     const modelSnapshot = await this.modelClientRouter.resolveSnapshot(session.ownerId, options.model, options.reasoningEffort);
     let execution: ActiveResponseExecution;
     try {
@@ -108,7 +123,7 @@ export class AgentLoop {
         const selectedSkills = await this.resolveSelectedSkills(skillIdsFromInput(input), session);
         this.validateSelectedMcpServers(mcpNamesFromInput(input));
         return this.workspaceStore.createResponse(session, withSkillDisplayNames(input, selectedSkills), modelSnapshot, {
-          permissionMode: options.permissionMode,
+          permissionMode: session.parentSessionId ? 'plan' : options.permissionMode,
         });
       });
     } catch (error) {
@@ -137,6 +152,7 @@ export class AgentLoop {
     decisions: readonly PermissionResolution[],
     onEvent?: AgentDomainEventHandler,
   ): Promise<AgentRunRecord> {
+    onEvent = this.observe(onEvent);
     this.assertPermissionBatch(run, batchId, decisions);
     let execution: ActiveResponseExecution;
     try {
@@ -152,6 +168,7 @@ export class AgentLoop {
   }
 
   async cancel(session: Session, run: AgentRunRecord, onEvent?: AgentDomainEventHandler): Promise<AgentRunRecord> {
+    onEvent = this.observe(onEvent);
     if (run.status === "cancelled") return run;
     if (run.status !== "in_progress" && run.status !== "waiting_permission") {
       throw new AgentLoopError("response_not_cancellable", `Response cannot be cancelled from status: ${run.status}.`);
@@ -277,10 +294,13 @@ export class AgentLoop {
           continue;
         }
 
+        await this.support?.beforeStep(session, run, onEvent);
+        signal.throwIfAborted();
         const itemIndexes = new Map<string, number>();
         const searchStrategy = this.webSearchService?.resolveExecutionStrategy(session.ownerId, run.modelSnapshot)
           ?? { kind: "external" as const, provider: "brave" as const };
-        const registeredTools = await this.toolRegistry.listTools(run.modelSnapshot.capabilities);
+        const registeredTools = (await this.toolRegistry.listTools(run.modelSnapshot.capabilities))
+          .filter((tool) => allowedAgentTool(tool.name, !!session.parentSessionId));
         const tools = searchStrategy.kind === "native"
           ? registeredTools.filter((tool) => tool.name !== "web_search")
           : registeredTools;
@@ -364,6 +384,7 @@ export class AgentLoop {
           await this.addSyntheticMessage(session, run, stopDecision.reason ?? "Stop was blocked by a runtime hook.", onEvent);
           continue;
         }
+        if (this.support?.hasPending(session)) continue;
         return this.finalizer.completed(session, run, onEvent);
       }
       throw new Error("Agent loop exceeded maximum steps.");

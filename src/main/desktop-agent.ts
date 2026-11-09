@@ -40,6 +40,22 @@ export class DesktopAgent {
     };
     handle('agent:ready', () => this.ready());
     handle('agent:request', async (value) => (await this.ensureHost()).request(commandSchema.parse(value) as AgentCommand));
+    handle('agent:watch-tree', async (subscription, sessionId) => {
+      const id = subscriptionSchema.parse(subscription);
+      const target = z.string().min(1).max(200).parse(sessionId);
+      if (this.subscriptions.has(id)) throw new Error('Duplicate tree subscription.');
+      this.subscriptions.add(id);
+      try {
+        const host = await this.ensureHost();
+          if (!this.subscriptions.has(id)) return { ok: true, value: null };
+        const result = await host.watchTree(id, target, (event) => {
+          const window = this.getWindow();
+          if (this.subscriptions.has(id) && window && !window.webContents.isDestroyed()) window.webContents.send('agent:tree-events', { subscriptionId: id, event });
+        });
+        if (!result.ok) this.subscriptions.delete(id);
+        return result;
+      } catch (error) { this.subscriptions.delete(id); throw error; }
+    });
     handle('agent:stream', async (subscription, value) => {
       const id = subscriptionSchema.parse(subscription);
       const command = commandSchema.parse(value) as AgentCommand;

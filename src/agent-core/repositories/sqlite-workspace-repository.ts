@@ -1,4 +1,5 @@
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
+import { AgentCoordinationStore } from './sqlite/agent-coordination-store.js';
 import path from "node:path";
 import { mkdir } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -10,7 +11,7 @@ import type {
   ProjectRecord,
   SessionContentRecord,
   SessionContextStateRecord,
-  SessionMetadataRecord,
+  SessionRecord,
   StoredFileRecord,
   StoredFileRepository,
   TimelineItemUpdate,
@@ -63,6 +64,7 @@ export class WorkspaceSchemaIncompatibleError extends Error {
 }
 
 export class SqliteWorkspaceRepository implements WorkspaceRepository, StoredFileRepository, ModelCatalogRepository, WebSearchSettingsRepository, McpConfigRepository, PromptSettingsRepository {
+  readonly coordination = new AgentCoordinationStore(() => this.db);
   private database: DatabaseSync | undefined;
   private modelCatalog: SqliteModelCatalogStore | undefined;
   private storedFiles: SqliteStoredFileStore | undefined;
@@ -88,7 +90,7 @@ export class SqliteWorkspaceRepository implements WorkspaceRepository, StoredFil
       projects: this.all("SELECT id, owner_id, name, created_at, updated_at FROM projects ORDER BY created_at").map((row) =>
         toProject(row, this.all("SELECT id, directory, is_primary FROM project_workspaces WHERE project_id = ? ORDER BY sort_order", stringColumn(row, "id"))),
       ),
-      sessions: this.all("SELECT id, owner_id, project_id, title, created_at, updated_at FROM sessions ORDER BY created_at").map(toSessionMetadata),
+      sessions: this.all("SELECT * FROM sessions ORDER BY created_at").map(toSessionMetadata),
     };
   }
 
@@ -131,12 +133,13 @@ export class SqliteWorkspaceRepository implements WorkspaceRepository, StoredFil
     assertChanged(this.db.prepare("DELETE FROM projects WHERE id = ?").run(projectId), "Project", projectId);
   }
 
-  async createSession(session: SessionMetadataRecord): Promise<void> {
-    this.db.prepare("INSERT INTO sessions(id, owner_id, project_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(session.id, session.ownerId, session.projectId, session.title ?? null, session.created_at, session.updated_at);
+  async createSession(session: SessionRecord): Promise<void> {
+    this.db.prepare("INSERT INTO sessions(id, owner_id, project_id, title, created_at, updated_at, parent_session_id, root_session_id, origin_run_id, origin_call_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(session.id, session.ownerId, session.projectId, session.title ?? null, session.created_at, session.updated_at,
+        session.parentSessionId ?? null, session.rootSessionId ?? session.id, session.originRunId ?? null, session.originCallId ?? null);
   }
 
-  async updateSession(session: SessionMetadataRecord): Promise<void> {
+  async updateSession(session: SessionRecord): Promise<void> {
     assertChanged(this.db.prepare("UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?")
       .run(session.title ?? null, session.updated_at, session.id), "Session", session.id);
   }

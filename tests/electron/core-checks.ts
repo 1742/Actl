@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { INITIAL_SCHEMA_SQL, PROJECT_WORKSPACES_SQL, SQLITE_SCHEMA_GENERATION, SQLITE_SCHEMA_VERSION } from '../../src/agent-core/repositories/sqlite/schema';
+import { INITIAL_SCHEMA_SQL, PROJECT_WORKSPACES_SQL, AGENT_COORDINATION_SQL, SQLITE_SCHEMA_GENERATION, SQLITE_SCHEMA_VERSION } from '../../src/agent-core/repositories/sqlite/schema';
 import { runSqliteMigrations } from '../../src/agent-core/repositories/sqlite/migrations';
 import { SqliteWorkspaceRepository } from '../../src/agent-core/repositories/sqlite-workspace-repository';
 import { createFileLogger } from '../../src/agent-core/observability/logger';
@@ -69,7 +69,7 @@ export async function runCoreChecks(dataDirectory: string, fixturePath: string):
     const otherDirectory = path.join(options.dataDirectory, '其他工作区');
     const database = new DatabaseSync(databasePath);
     try {
-      const legacySql = INITIAL_SCHEMA_SQL.replace(PROJECT_WORKSPACES_SQL,
+      const legacySql = INITIAL_SCHEMA_SQL.replace(AGENT_COORDINATION_SQL, '').replace(PROJECT_WORKSPACES_SQL,
         'CREATE UNIQUE INDEX projects_owner_cwd_idx ON projects(owner_id, cwd);')
         .replace('CREATE TABLE projects(id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, name TEXT,',
           'CREATE TABLE projects(id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, cwd TEXT NOT NULL, name TEXT,');

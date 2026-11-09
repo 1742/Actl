@@ -148,9 +148,9 @@ export const useAgentStore = defineStore("agent", {
     sessionIsActive: (state) => (sessionId: string) => (
       isActiveStatus(state.runtimeBySessionId[sessionId]?.status || "idle")
     ),
-    standaloneSessions: (state) => state.sessions.filter((item) => !item.projectId).sort(byUpdated),
+    standaloneSessions: (state) => state.sessions.filter((item) => !item.projectId && !item.parentSessionId).sort(byUpdated),
     sessionsByProject: (state) => (projectId: string) => (
-      state.sessions.filter((item) => item.projectId === projectId).sort(byUpdated)
+      state.sessions.filter((item) => item.projectId === projectId && !item.parentSessionId).sort(byUpdated)
     ),
   },
 

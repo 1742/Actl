@@ -8,6 +8,7 @@ import type { AgentWorkerRequest, AgentWorkerResponse, AgentResult } from '../sh
 import type { AgentStreamEvent } from "../shared/agent/responses";
 import { z } from 'zod';
 import type { Logger } from '../agent-core/observability/logger';
+import type { AgentTreeEvent, AgentTreeSnapshot } from '../shared/agent/coordination';
 
 const parent = process.parentPort;
 if (!parent) throw new Error('Agent must be launched as an Electron utility process.');
@@ -18,6 +19,7 @@ let stopping = false;
 let logger: Logger | undefined;
 const detached = new Set<string>();
 const active = new Set<Promise<void>>();
+const treeSubscriptions = new Map<string, () => void>();
 
 function failure(error: unknown): AgentResult {
   if (error instanceof z.ZodError) return { ok: false, error: { code: 'invalid_request', message: 'Invalid Agent request.', status: 400,
@@ -46,6 +48,34 @@ parent.on('message', ({ data }: { data: AgentWorkerRequest }) => {
   } else if (data.type === 'request') {
     if (!application || stopping) { send({ type: 'result', id: data.id, result: { ok: false, error: { code: 'runtime_unavailable', message: 'Agent is not ready.' } } }); return; }
     const current = application;
+    if (data.command.operation === 'agents.watch') {
+      const task = (async () => {
+        let root: string | undefined;
+        let overflowed = false;
+        const buffered: AgentTreeEvent[] = [];
+        const off = current.dependencies.agentCoordinator.events.subscribe((event) => {
+          if (!root) {
+            if (buffered.length < 256) buffered.push(event);
+            else overflowed = true;
+            return;
+          }
+          if ('rootSessionId' in event && event.rootSessionId === root) send({ type: 'tree_event', id: data.id, event });
+        });
+        treeSubscriptions.set(data.id, off);
+        try {
+          const snapshot = await current.invoke(data.command) as AgentTreeSnapshot;
+          if (treeSubscriptions.get(data.id) !== off) { send({ type: 'result', id: data.id, result: { ok: true, value: null } }); return; }
+          root = snapshot.rootSessionId;
+          send({ type: 'tree_event', id: data.id, event: { type: 'snapshot', snapshot } });
+          for (const event of buffered) if ('rootSessionId' in event && event.rootSessionId === root) send({ type: 'tree_event', id: data.id, event });
+          if (overflowed) send({ type: 'tree_event', id: data.id, event: { type: 'changed', rootSessionId: root } });
+          send({ type: 'result', id: data.id, result: { ok: true, value: null } });
+        } catch (error) { off(); treeSubscriptions.delete(data.id); send({ type: 'result', id: data.id, result: failure(error) }); }
+      })();
+      active.add(task);
+      void task.finally(() => active.delete(task)).catch(() => undefined);
+      return;
+    }
     const events: AgentStreamEvent[] = [];
     let timer: NodeJS.Timeout | undefined;
     const flush = () => {
@@ -71,9 +101,13 @@ parent.on('message', ({ data }: { data: AgentWorkerRequest }) => {
     active.add(task);
     void task.finally(() => active.delete(task)).catch(() => undefined);
   } else if (data.type === 'detach') {
+    const off = treeSubscriptions.get(data.id);
+    if (off) { off(); treeSubscriptions.delete(data.id); return; }
     detached.add(data.id);
   } else if (data.type === 'shutdown' && !stopping) {
     stopping = true;
+    for (const off of treeSubscriptions.values()) off();
+    treeSubscriptions.clear();
     void (async () => {
       try {
         if (application) await application.close(async () => { await Promise.allSettled([...active]); });

@@ -8,7 +8,7 @@ import type {
   SessionContentRecord,
   SessionContextStateRecord,
   ContextCompressionRecord,
-  SessionMetadataRecord,
+  SessionRecord,
   TimelineItemUpdate,
   WorkspaceRepository,
 } from "../repositories/workspace-repository.js";
@@ -20,9 +20,7 @@ import type { RunPermissionSnapshot } from "../permissions/engine.js";
 
 export type Project = ProjectRecord;
 export type FileChange = FileChangeRecord;
-type SessionMetadata = SessionMetadataRecord;
-
-export interface Session extends SessionMetadata {
+export interface Session extends SessionRecord {
   cwd: string | null;
   additionalWorkspacePaths?: string[];
   runs: AgentRunRecord[];
@@ -46,9 +44,10 @@ export class WorkspaceStoreError extends Error {
 
 export class WorkspaceStore {
   private projects: Project[] = [];
-  private sessionMetadata: SessionMetadata[] = [];
+  private sessionsRecord: SessionRecord[] = [];
   private readonly sessions = new Map<string, Session>();
   private readonly loadedSessionIds = new Set<string>();
+  private readonly loadingSessions = new Map<string, Promise<Session | undefined>>();
   private readonly providerResponseIds = new Map<string, string[]>();
   private readonly persistedTimelinePayloads = new Map<string, string[]>();
   private mutationQueue: Promise<void> = Promise.resolve();
@@ -62,12 +61,12 @@ export class WorkspaceStore {
   async initialize(): Promise<void> {
     const index = await this.repository.initialize();
     this.projects = index.projects;
-    this.sessionMetadata = index.sessions;
+    this.sessionsRecord = index.sessions;
     this.sessions.clear();
     this.loadedSessionIds.clear();
     this.providerResponseIds.clear();
     this.persistedTimelinePayloads.clear();
-    for (const metadata of this.sessionMetadata) {
+    for (const metadata of this.sessionsRecord) {
       this.sessions.set(metadata.id, this.toSession(metadata));
     }
   }
@@ -184,10 +183,10 @@ export class WorkspaceStore {
       if (!this.projects.some((item) => item.id === id && item.ownerId === ownerId)) {
         throw new WorkspaceStoreError("project_not_found", "Project not found.");
       }
-      const sessionIds = this.sessionMetadata.filter((item) => item.ownerId === ownerId && item.projectId === id).map((item) => item.id);
+      const sessionIds = this.sessionsRecord.filter((item) => item.ownerId === ownerId && item.projectId === id).map((item) => item.id);
       await this.repository.deleteProject(id);
       this.projects = this.projects.filter((item) => item.id !== id || item.ownerId !== ownerId);
-      this.sessionMetadata = this.sessionMetadata.filter((item) => item.projectId !== id || item.ownerId !== ownerId);
+      this.sessionsRecord = this.sessionsRecord.filter((item) => item.projectId !== id || item.ownerId !== ownerId);
       for (const sessionId of sessionIds) this.evictSession(sessionId);
     });
   }
@@ -201,10 +200,21 @@ export class WorkspaceStore {
 
   //按id获取会话
   async getSession(id: string, ownerId?: string): Promise<Session | undefined> {
+    const metadata = this.sessions.get(id);
+    if (!metadata || (ownerId !== undefined && metadata.ownerId !== ownerId)) return undefined;
+    const pending = this.loadingSessions.get(id);
+    if (pending) return pending;
+    const loading = this.loadSession(id, ownerId);
+    this.loadingSessions.set(id, loading);
+    try { return await loading; }
+    finally { if (this.loadingSessions.get(id) === loading) this.loadingSessions.delete(id); }
+  }
+
+  private async loadSession(id: string, ownerId?: string): Promise<Session | undefined> {
     const session = this.sessions.get(id);
     if (!session || (ownerId !== undefined && session.ownerId !== ownerId)) return undefined;
     if (session.projectId === null) {
-      await mkdir(this.standaloneWorkspacePath(id), { recursive: true });
+      await mkdir(this.standaloneWorkspacePath(session.rootSessionId ?? id), { recursive: true });
       if (this.sessions.get(id) !== session) return undefined;
     }
     if (this.loadedSessionIds.has(id)) return session;
@@ -245,15 +255,22 @@ export class WorkspaceStore {
   }
 
   //创建会话
-  async createSession(ownerId: string, input: { projectId?: string; title?: string } = {}): Promise<Session> {
+  async createSession(ownerId: string, input: { projectId?: string; title?: string; parentSessionId?: string; originRunId?: string; originCallId?: string } = {}): Promise<Session> {
     let created!: Session;
     await this.enqueue(async () => {
       if (input.projectId !== undefined && !this.projects.some((item) => item.id === input.projectId && item.ownerId === ownerId)) {
         throw new WorkspaceStoreError("project_not_found", "Project not found.");
       }
       const now = nowIso();
-      const metadata: SessionMetadata = {
-        id: createRandomId("session"),
+      const parent = input.parentSessionId ? this.requireOwnedSessionRecord(input.parentSessionId, ownerId) : undefined;
+      if (parent && parent.projectId !== (input.projectId ?? null)) throw new Error('Child project must match its parent.');
+      const id = createRandomId('session');
+      const metadata: SessionRecord = {
+        id,
+        rootSessionId: parent?.rootSessionId ?? parent?.id ?? id,
+        ...(parent ? { parentSessionId: parent.id } : {}),
+        ...(input.originRunId ? { originRunId: input.originRunId } : {}),
+        ...(input.originCallId ? { originCallId: input.originCallId } : {}),
         ownerId,
         projectId: input.projectId ?? null,
         ...(input.title === undefined ? {} : { title: input.title }),
@@ -261,7 +278,7 @@ export class WorkspaceStore {
         updated_at: now,
       };
       created = this.toSession(metadata);
-      const workspace = metadata.projectId === null ? this.standaloneWorkspacePath(metadata.id) : undefined;
+      const workspace = metadata.projectId === null && !parent ? this.standaloneWorkspacePath(metadata.id) : undefined;
       if (workspace) {
         await mkdir(this.standaloneWorkspaceRoot, { recursive: true });
         await mkdir(workspace);
@@ -272,7 +289,7 @@ export class WorkspaceStore {
         if (workspace) await rmdir(workspace).catch(() => undefined);
         throw error;
       }
-      this.sessionMetadata.push(metadata);
+      this.sessionsRecord.push(metadata);
       this.sessions.set(created.id, created);
       this.loadedSessionIds.add(created.id);
     });
@@ -283,17 +300,17 @@ export class WorkspaceStore {
   async updateSession(ownerId: string, id: string, title: string | undefined): Promise<Session> {
     let updated!: Session;
     await this.enqueue(async () => {
-      const index = this.sessionMetadata.findIndex((item) => item.id === id && item.ownerId === ownerId);
-      const metadata = this.sessionMetadata[index];
+      const index = this.sessionsRecord.findIndex((item) => item.id === id && item.ownerId === ownerId);
+      const metadata = this.sessionsRecord[index];
       if (!metadata) throw new WorkspaceStoreError("session_not_found", "Session not found.");
-      const replacement: SessionMetadata = {
+      const replacement: SessionRecord = {
         ...metadata,
         ...(title === undefined ? {} : { title }),
         updated_at: nowIso(),
       };
       if (title === undefined) delete replacement.title;
       await this.repository.updateSession(replacement);
-      this.sessionMetadata[index] = replacement;
+      this.sessionsRecord[index] = replacement;
       updated = this.applyMetadata(replacement);
     });
     return updated;
@@ -301,10 +318,11 @@ export class WorkspaceStore {
 
   async deleteSession(ownerId: string, id: string): Promise<void> {
     await this.enqueue(async () => {
-      this.requireOwnedSessionMetadata(id, ownerId);
+      this.requireOwnedSessionRecord(id, ownerId);
       await this.repository.deleteSession(id);
-      this.sessionMetadata = this.sessionMetadata.filter((item) => item.id !== id);
-      this.evictSession(id);
+      const ids = new Set(this.descendants(id).map((item) => item.id));
+      this.sessionsRecord = this.sessionsRecord.filter((item) => !ids.has(item.id));
+      for (const childId of ids) this.evictSession(childId);
     });
   }
 
@@ -455,12 +473,37 @@ export class WorkspaceStore {
   }
 
   async findActiveResponseInScope(session: Session): Promise<AgentRunRecord | undefined> {
-    return session.projectId === null ? this.findActiveResponse([session.id])
-      : this.findActiveResponseInProject(session.ownerId, session.projectId);
+    // find all sessions in same tree or project
+    const candidates = session.projectId === null
+      ? this.sessionsRecord.filter((item) => (item.rootSessionId ?? item.id) === (session.rootSessionId ?? session.id)) // same tree
+      : this.sessionsRecord.filter((item) => item.ownerId === session.ownerId && item.projectId === session.projectId); // same project
+    return this.findActiveResponse(candidates.filter((item) => item.id === session.id ||
+      (item.rootSessionId ?? item.id) !== (session.rootSessionId ?? session.id)).map((item) => item.id));
+  }
+
+  descendants(id: string): Session[] {
+    const ids = new Set([id]);
+    for (;;) {
+      const size = ids.size;
+      for (const item of this.sessionsRecord) if (item.parentSessionId && ids.has(item.parentSessionId)) ids.add(item.id);
+      if (ids.size === size) break;
+    }
+    return [...ids].flatMap((key) => this.sessions.get(key) ? [this.sessions.get(key)!] : []);
+  }
+
+  async activeRunsForProjectScope(session: Session): Promise<AgentRunRecord[]> {
+    const ids = this.sessionsRecord.filter((item) => item.ownerId === session.ownerId &&
+      (session.projectId !== null ? item.projectId === session.projectId : (item.rootSessionId ?? item.id) === (session.rootSessionId ?? session.id)));
+    const result: AgentRunRecord[] = [];
+    for (const item of ids) {
+      const loaded = await this.getSession(item.id);
+      result.push(...(loaded?.runs.filter((run) => run.status === 'in_progress' || run.status === 'waiting_permission') ?? []));
+    }
+    return result;
   }
 
   findActiveResponseInProject(ownerId: string, projectId: string): Promise<AgentRunRecord | undefined> {
-    return this.findActiveResponse(this.sessionMetadata.filter((metadata) => metadata.ownerId === ownerId && metadata.projectId === projectId)
+    return this.findActiveResponse(this.sessionsRecord.filter((metadata) => metadata.ownerId === ownerId && metadata.projectId === projectId)
       .map((metadata) => metadata.id));
   }
 
@@ -539,14 +582,14 @@ export class WorkspaceStore {
     return this.repository.loadSessionContent(id);
   }
 
-  private requireSessionMetadata(id: string): SessionMetadata {
-    const metadata = this.sessionMetadata.find((item) => item.id === id);
+  private requireSessionMetadata(id: string): SessionRecord {
+    const metadata = this.sessionsRecord.find((item) => item.id === id);
     if (!metadata) throw new WorkspaceStoreError("session_not_found", "Session not found.");
     return metadata;
   }
 
-  private requireOwnedSessionMetadata(id: string, ownerId: string): SessionMetadata {
-    const metadata = this.sessionMetadata.find((item) => item.id === id && item.ownerId === ownerId);
+  private requireOwnedSessionRecord(id: string, ownerId: string): SessionRecord {
+    const metadata = this.sessionsRecord.find((item) => item.id === id && item.ownerId === ownerId);
     if (!metadata) throw new WorkspaceStoreError("session_not_found", "Session not found.");
     return metadata;
   }
@@ -560,7 +603,7 @@ export class WorkspaceStore {
     return session;
   }
 
-  private applyMetadata(metadata: SessionMetadata): Session {
+  private applyMetadata(metadata: SessionRecord): Session {
     const session = this.sessions.get(metadata.id);
     if (!session) throw new WorkspaceStoreError("session_not_found", "Session not found.");
     Object.assign(session, metadata);
@@ -568,10 +611,10 @@ export class WorkspaceStore {
     return session;
   }
 
-  private toSession(metadata: SessionMetadata): Session {
+  private toSession(metadata: SessionRecord): Session {
     const project = this.projects.find((item) => item.id === metadata.projectId && item.ownerId === metadata.ownerId);
     const directories = project ? projectSessionDirectories(project)
-      : { cwd: metadata.projectId === null ? this.standaloneWorkspacePath(metadata.id) : null };
+      : { cwd: metadata.projectId === null ? this.standaloneWorkspacePath(metadata.rootSessionId ?? metadata.id) : null };
     return { ...metadata, ...directories, runs: [], fileChanges: [], compressionRecords: [] };
   }
 

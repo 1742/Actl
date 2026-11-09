@@ -18,6 +18,7 @@ import type { AgentRuntimeKind } from '../services/runtimeClient';
 import type { RuntimeProject, RuntimeSession } from '../components/navigation/types';
 import type { AgentProject, AgentSession, ProjectSettings } from '../../../../shared/agent/sessions';
 import { agentResponsesToContexts, titleFromInput } from '../utils';
+import type { AgentTreeSnapshot } from '../../../../shared/agent/coordination';
 
 const activeStreamControllers = new Map<string, AbortController>();
 const historyRequestVersions = new Map<string, number>();
@@ -724,7 +725,8 @@ export async function sendAgentMessage(
   }
   if (session.projectId) {
     const ownerId = store.projectActivityOwner(session.projectId);
-    if (ownerId && ownerId !== sessionId) {
+    const ownerSession = store.sessions.find((item) => item.id === ownerId);
+    if (ownerId && ownerId !== sessionId && (ownerSession?.rootSessionId ?? ownerSession?.runtimeId) !== (session.rootSessionId ?? session.runtimeId)) {
       const owner = store.sessions.find((item) => item.id === ownerId);
       store.setConflict(sessionId, {
         sessionId: ownerId,
@@ -1063,8 +1065,11 @@ async function handleRuntimeRequestError(
   return errorResult(error);
 }
 
-function applyRuntimeEvent(sessionId: string, event: AgentStreamEvent) {
+export function applyRuntimeEvent(sessionId: string, event: AgentStreamEvent) {
   const store = useAgentStore();
+  const existingId = 'response_id' in event ? event.response_id : undefined;
+  const existing = existingId ? store.findResponse(sessionId, existingId) : undefined;
+  if (existing?.lastSequenceNumber !== undefined && event.sequence_number <= existing.lastSequenceNumber) return;
   advanceSessionState(sessionId);
   const runtime = store.ensureRuntime(sessionId);
   if (event.type === 'response.created') {
@@ -1094,10 +1099,12 @@ function applyRuntimeEvent(sessionId: string, event: AgentStreamEvent) {
   const context = store.findResponse(sessionId, responseId);
   if (!context) return;
   if (event.type === 'agent.permissions.requested') {
+    context.lastSequenceNumber = event.sequence_number;
     applyPendingPermissionBatch(sessionId, context, event.batch);
     return;
   }
   if (event.type === 'agent.permissions.resolved') {
+    context.lastSequenceNumber = event.sequence_number;
     applyPermissionResolutions(context, event.decisions);
     store.upsertResponse(sessionId, context);
     store.setPendingPermissionBatch(sessionId);
@@ -1124,6 +1131,31 @@ function applyRuntimeEvent(sessionId: string, event: AgentStreamEvent) {
     });
   if (reduced.status === 'completed' && previousStatus !== 'completed') {
     notifyAgentEvent(sessionId, 'completed', tr('ui.agentFinishedResponding'));
+  }
+}
+
+export function applyAgentTreeSnapshot(snapshot: AgentTreeSnapshot): void {
+  const store = useAgentStore();
+  for (const member of snapshot.members) {
+    const session = decorateSession('local', member.session);
+    const known = store.sessions.findIndex((item) => item.id === session.id);
+    if (known < 0) store.sessions.push(session);
+    else store.sessions[known] = session;
+    if (!member.response) continue;
+    const runtime = store.ensureRuntime(session.id);
+    const latest = runtime.responses.at(-1);
+    // An earlier snapshot may arrive after an automatic follow-up has started.
+    // Never let that snapshot replace the current run or its approval state.
+    if (latest && latest.response.id !== member.response.id && (
+      latest.response.id.startsWith('local-') ||
+      runtime.responses.some((item) => item.response.id === member.response!.id) ||
+      latest.createdAt > member.response.created_at
+    )) continue;
+    const existing = store.findResponse(session.id, member.response.id);
+    if (existing?.lastSequenceNumber !== undefined && existing.lastSequenceNumber > (member.sequenceNumber ?? -1)) continue;
+    applyStreamResponseSnapshot(session.id, member.response);
+    const context = store.findResponse(session.id, member.response.id);
+    if (context) context.lastSequenceNumber = member.sequenceNumber;
   }
 }
 

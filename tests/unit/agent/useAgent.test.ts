@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createPinia, setActivePinia } from 'pinia';
-import { resolveAgentPermissionBatch, selectAgentSession, stopAgentResponse } from '../../../src/renderer/src/agent/composables/useAgent';
+import { applyAgentTreeSnapshot, applyRuntimeEvent, resolveAgentPermissionBatch, selectAgentSession, stopAgentResponse } from '../../../src/renderer/src/agent/composables/useAgent';
 import { useAgentStore } from '../../../src/renderer/src/agent/stores/agent';
 import { localClient } from '../../../src/renderer/src/agent/services/localClient';
 import { normalizeResponseContext } from '../../../src/renderer/src/agent/utils/aiResponse';
@@ -40,6 +40,35 @@ function setup(id: string) {
   return store;
 }
 const approve = (id: string, batch = 'a') => resolveAgentPermissionBatch([{ permission_id: `permission-${batch}`, decision: 'approve' }], id);
+
+test('tree and request streams deduplicate approval events and reject stale snapshots', () => {
+  const id = 'local:session'; const store = setup(id);
+  const emit = (event: AgentStreamEvent) => applyRuntimeEvent(id, event);
+  emit({ type: 'agent.permissions.requested', response_id: 'response', sequence_number: 3, batch: pending('b') });
+  emit({ type: 'agent.permissions.resolved', response_id: 'response', sequence_number: 4,
+    decisions: [{ permission_id: 'permission-b', decision: 'approve' }] });
+  emit({ type: 'agent.permissions.requested', response_id: 'response', sequence_number: 3, batch: pending('b') });
+  assert.equal(store.pendingPermissionBatch, undefined);
+  assert.equal(store.status, 'running');
+  applyAgentTreeSnapshot({ rootSessionId: 'session', plan: { revision: 0, items: [] }, members: [{
+    session: { id: 'session', rootSessionId: 'session', projectId: null, created_at: '', updated_at: '' },
+    response: response(pending('b')), sequenceNumber: 3,
+  }] });
+  assert.equal(store.pendingPermissionBatch, undefined);
+  assert.equal(store.findResponse(id, 'response')?.lastSequenceNumber, 4);
+});
+
+test('a delayed tree snapshot cannot replace a newer automatic run', () => {
+  const id = 'local:session'; const store = setup(id);
+  const newer = { ...response(), id: 'new-response', status: 'in_progress' as const, created_at: '2026-11-06T00:00:03Z' };
+  applyRuntimeEvent(id, { type: 'response.created', response_id: newer.id, sequence_number: 0, response: newer });
+  applyAgentTreeSnapshot({ rootSessionId: 'session', plan: { revision: 0, items: [] }, members: [{
+    session: { id: 'session', rootSessionId: 'session', projectId: null, created_at: '', updated_at: '' },
+    response: response(), sequenceNumber: 10,
+  }] });
+  assert.equal(store.ensureRuntime(id).activeResponseId, 'new-response');
+  assert.equal(store.status, 'running');
+});
 
 test('permission stream reply restores the next approval if its last IPC event is absent', async () => {
   const store = setup('reply-fallback');

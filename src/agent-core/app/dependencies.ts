@@ -1,4 +1,6 @@
 import path from "node:path";
+import { AgentCoordinator } from '../runtime/multi-agents/agent-coordinator.js';
+import { SubagentToolProvider } from '../tools/builtin/subagent.js';
 import { InMemoryHookEventBus } from "../hooks/event-bus.js";
 import { RunPermissionEngine } from "../permissions/engine.js";
 import { SqliteWorkspaceRepository } from "../repositories/sqlite-workspace-repository.js";
@@ -39,6 +41,7 @@ export interface AppDependencies {
   readonly webSearchService: WebSearchService;
   readonly mcpManager: McpServerManager;
   readonly agentLoop: AgentLoop;
+  readonly agentCoordinator: AgentCoordinator;
 }
 
 /** Construct the runtime dependency graph from the resolved application config. */
@@ -83,7 +86,7 @@ export async function createAppDependencies(
   await mcpManager.initialize();
   toolRegistry.registerProvider(mcpManager);
 
-  const promptCompiler = new PromptCompiler(workspaceRepository);
+  const promptCompiler = new PromptCompiler(workspaceRepository, workspaceRepository.coordination);
 
   const agentLoop = new AgentLoop(
     modelStore,
@@ -99,7 +102,13 @@ export async function createAppDependencies(
     mcpManager,
   );
 
+  const agentCoordinator = new AgentCoordinator(workspaceStore, workspaceRepository.coordination, agentLoop, storedFiles, processSupervisor);
+  agentLoop.support = agentCoordinator;
+  toolRegistry.registerProvider(new SubagentToolProvider(agentCoordinator, workspaceStore));
+  await agentCoordinator.recover('developer:local');
+
   return {
+    agentCoordinator,
     workspaceRepository,
     workspaceStore,
     storedFiles,

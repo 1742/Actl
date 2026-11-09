@@ -31,7 +31,7 @@ export class ResponseExecutionLifecycle {
     const reservation = await this.concurrency.reserve(scope, () => this.recoverActiveResponse(session));
     try {
       const run = await createResponse();
-      this.concurrency.activate(reservation, activeResponseReference(run));
+      this.concurrency.activate(reservation, activeResponseReference(run, session));
       return this.execution(session, run, scope);
     } catch (error) {
       await this.concurrency.releaseReservation(reservation);
@@ -43,7 +43,7 @@ export class ResponseExecutionLifecycle {
     const scope = executionScopeForSession(session);
     await this.concurrency.ensureHolder(
       scope,
-      activeResponseReference(run),
+      activeResponseReference(run, session),
       () => this.recoverActiveResponse(session),
     );
     return this.execution(session, run, scope);
@@ -130,11 +130,8 @@ export class ResponseExecutionLifecycle {
   }
 
   private async recoverActiveResponse(session: Session) {
-    const active = session.projectId === null
-      ? this.workspaceStore.listResponses(session.id)
-        .find((run) => run.status === "in_progress" || run.status === "waiting_permission")
-      : await this.workspaceStore.findActiveResponseInScope(session);
-    return active ? activeResponseReference(active) : undefined;
+    const active = await this.workspaceStore.activeRunsForProjectScope(session);
+    return Promise.all(active.map(async (run) => activeResponseReference(run, await this.workspaceStore.getSession(run.sessionId))));
   }
 
   private async releaseAfterTerminal(

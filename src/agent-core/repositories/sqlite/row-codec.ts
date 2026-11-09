@@ -7,7 +7,7 @@ import {
 import type {
   FileChangeRecord,
   ProjectRecord,
-  SessionMetadataRecord,
+  SessionRecord,
   StoredFileRecord,
 } from "../workspace-repository.js";
 import { runPermissionSnapshotSchema } from "../../permissions/engine.js";
@@ -29,9 +29,13 @@ export function toProject(row: SqliteRow, workspaceRows: SqliteRow[]): ProjectRe
   };
 }
 
-export function toSessionMetadata(row: SqliteRow): SessionMetadataRecord {
+export function toSessionMetadata(row: SqliteRow): SessionRecord {
   const title = nullableStringColumn(row, "title");
   return {
+    ...(row.parent_session_id ? { parentSessionId: stringColumn(row, 'parent_session_id') } : {}),
+    rootSessionId: nullableStringColumn(row, 'root_session_id') ?? stringColumn(row, 'id'),
+    ...(row.origin_run_id ? { originRunId: stringColumn(row, 'origin_run_id') } : {}),
+    ...(row.origin_call_id ? { originCallId: stringColumn(row, 'origin_call_id') } : {}),
     id: stringColumn(row, "id"), ownerId: stringColumn(row, "owner_id"), projectId: nullableStringColumn(row, "project_id"),
     ...(title ? { title } : {}), created_at: stringColumn(row, "created_at"), updated_at: stringColumn(row, "updated_at"),
   };

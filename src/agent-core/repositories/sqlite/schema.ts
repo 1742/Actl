@@ -1,5 +1,30 @@
 export const SQLITE_SCHEMA_GENERATION = "multi-user-multi-model";
-export const SQLITE_SCHEMA_VERSION = 20;
+export const SQLITE_SCHEMA_VERSION = 21;
+
+const SQLITE_REVISION_SQL = 'CREATE TABLE schema_metadata(id INTEGER PRIMARY KEY CHECK(id = 1), generation TEXT NOT NULL, version INTEGER NOT NULL CHECK(version > 0), created_at TEXT NOT NULL) STRICT;';
+
+const PROJECT_SQL = 'CREATE TABLE projects(id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, name TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL) STRICT;';
+
+const SESSION_SQL = `
+CREATE TABLE sessions(id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, project_id TEXT REFERENCES projects(id) ON DELETE CASCADE, title TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL) STRICT;
+`;
+
+export const AGENT_COORDINATION_SQL = `
+ALTER TABLE sessions ADD COLUMN parent_session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE;
+ALTER TABLE sessions ADD COLUMN root_session_id TEXT;
+ALTER TABLE sessions ADD COLUMN origin_run_id TEXT;
+ALTER TABLE sessions ADD COLUMN origin_call_id TEXT;
+UPDATE sessions SET root_session_id = id;
+CREATE INDEX sessions_root_idx ON sessions(root_session_id);
+CREATE UNIQUE INDEX sessions_delegation_idx ON sessions(origin_run_id, origin_call_id);
+CREATE TABLE agent_plans(root_session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+ revision INTEGER NOT NULL, items_json TEXT NOT NULL CHECK(json_valid(items_json))) STRICT;
+CREATE TABLE agent_messages(id TEXT PRIMARY KEY, from_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+ to_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, source_run_id TEXT NOT NULL,
+ kind TEXT NOT NULL CHECK(kind IN ('message', 'result')), text TEXT NOT NULL,
+ wake INTEGER NOT NULL, consumed INTEGER NOT NULL DEFAULT 0, dedupe_key TEXT NOT NULL UNIQUE) STRICT;
+CREATE INDEX agent_messages_inbox_idx ON agent_messages(to_session_id, consumed);
+`;
 
 export const PROJECT_WORKSPACES_SQL = `
 CREATE UNIQUE INDEX projects_id_owner_idx ON projects(id, owner_id);
@@ -14,10 +39,11 @@ CREATE UNIQUE INDEX project_workspaces_primary_idx ON project_workspaces(project
 `;
 
 export const INITIAL_SCHEMA_SQL = `
-CREATE TABLE schema_metadata(id INTEGER PRIMARY KEY CHECK(id = 1), generation TEXT NOT NULL, version INTEGER NOT NULL CHECK(version > 0), created_at TEXT NOT NULL) STRICT;
-CREATE TABLE projects(id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, name TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL) STRICT;
+${SQLITE_REVISION_SQL}
+${PROJECT_SQL}
 ${PROJECT_WORKSPACES_SQL}
-CREATE TABLE sessions(id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, project_id TEXT REFERENCES projects(id) ON DELETE CASCADE, title TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL) STRICT;
+${SESSION_SQL}
+${AGENT_COORDINATION_SQL}
 CREATE TABLE agent_runs(
   id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   run_order INTEGER NOT NULL, status TEXT NOT NULL, model_snapshot_json TEXT NOT NULL,

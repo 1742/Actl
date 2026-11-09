@@ -12,6 +12,7 @@ import type { VerificationCheck } from './types';
 import type { AgentResponseDto, AgentStreamEvent, ResponseInputPartDto } from '../../src/shared/agent/responses';
 import type { AgentProject } from '../../src/shared/agent/sessions';
 import type { SessionReview } from '../../src/shared/agent/review';
+import type { AgentTreeEvent, AgentTreeSnapshot } from '../../src/shared/agent/coordination';
 import type { RuntimeProjectFileSearchResult, RuntimeWorkspaceFileSearchResult, RuntimeWorkspaceTree, WorkspaceFilePreview } from '../../src/shared/agent/workspace';
 
 type FixtureMessage = { role: string; content: unknown };
@@ -35,7 +36,16 @@ async function startFixture(processCommands: Map<string, string>, explicitWorksp
       })}\n\n`);
       const done = () => { response.write('data: [DONE]\n\n'); response.end(); };
       emit({ role: 'assistant' });
-      if (text.includes('workspace-shell-') && payload.messages.at(-1)?.role !== 'tool') {
+      if (text.includes('multi-child-fixture')) {
+        emit({ content: 'child running' });
+        const timer = setTimeout(() => { emit({ content: ' child result ready' }, 'stop'); done(); }, 350);
+        response.once('close', () => clearTimeout(timer));
+      } else if (text.includes('multi-root-fixture') && payload.messages.at(-1)?.role !== 'tool') {
+        emit({ tool_calls: [{ index: 0, id: `call-${randomUUID()}`, type: 'function', function: {
+          name: 'spawn_agent', arguments: JSON.stringify({ title: 'Background reviewer', prompt: 'multi-child-fixture' }),
+        } }] }, 'tool_calls');
+        done();
+      } else if (text.includes('workspace-shell-') && payload.messages.at(-1)?.role !== 'tool') {
         workspaceMessages = payload.messages;
         emit({ tool_calls: [{ index: 0, id: `call-${randomUUID()}`, type: 'function', function: {
           name: 'shell', arguments: JSON.stringify({ command: 'cd', ...(text.includes('workspace-shell-explicit') ? { cwd: explicitWorkspace } : {}) }),
@@ -372,6 +382,42 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
       assert.equal(edit.ok, false); if (!edit.ok) assert.equal(edit.error.code, 'project_active_response_exists');
       const cancelled = await request<AgentResponseDto>({ operation: 'responses.cancel', params: { sessionId, responseId: slow.id } });
       assert.equal(cancelled.status, 'cancelled'); assert.equal(success(await slow.running).status, 'cancelled');
+      const next = await startSlow();
+      assert.equal((await request<AgentResponseDto>({ operation: 'responses.cancel', params: { sessionId, responseId: slow.id } })).status, 'cancelled');
+      const context = await request<{ responses: AgentResponseDto[] }>({ operation: 'sessions.context', params: { sessionId } });
+      assert.equal(context.responses.find((response) => response.id === next.id)?.status, 'in_progress', 'Retrying an old cancellation must not stop a new run.');
+      await request({ operation: 'responses.cancel', params: { sessionId, responseId: next.id } });
+      assert.equal(success(await next.running).status, 'cancelled');
+    });
+    await step('Background agent tree subscription, detach, follow-up and restart persistence', async () => {
+      const rootSession = await request<{ id: string }>({ operation: 'sessions.create', body: { projectId } });
+      const events: AgentTreeEvent[] = [];
+      const subscription = randomUUID();
+      assert.ok((await host.watchTree(subscription, rootSession.id, (event) => events.push(event))).ok);
+      assert.equal(events[0]?.type, 'snapshot');
+      assert.equal(success(await run('multi-root-fixture', undefined, rootSession.id)).status, 'completed');
+      await waitFor(async () => {
+        const tree = await request<AgentTreeSnapshot>({ operation: 'agents.tree', params: { sessionId: rootSession.id } });
+        return tree.members.length === 2 && tree.members.every((member) => member.response?.status === 'completed');
+      }, 'Background child did not complete.');
+      await waitFor(() => events.some((event) => event.type === 'response' && event.sessionId !== rootSession.id && event.events.some((item) => item.type === 'response.completed')), 'Tree subscription missed background completion.');
+      const tree = await request<AgentTreeSnapshot>({ operation: 'agents.tree', params: { sessionId: rootSession.id } });
+      const child = tree.members.find((member) => member.session.parentSessionId === rootSession.id)!;
+      assert.ok(child);
+      host.detach(subscription);
+      const count = events.length;
+      await request({ operation: 'agents.message', params: { sessionId: rootSession.id }, body: { targetSessionId: child.session.id, message: 'Continue with a short summary.' } });
+      await waitFor(async () => {
+        const context = await request<{ responses: AgentResponseDto[] }>({ operation: 'sessions.context', params: { sessionId: child.session.id } });
+        return context.responses.length === 2 && context.responses[1]?.status === 'completed';
+      }, 'Idle child did not resume after a follow-up.');
+      assert.equal(events.length, count, 'Detached subscription received more events.');
+      // Stop any queued root follow-up before checking process restart persistence.
+      await request({ operation: 'agents.stop', params: { sessionId: rootSession.id } });
+      await host.close(); host = new AgentProcessHost(options); await host.ready();
+      const restored = await request<AgentTreeSnapshot>({ operation: 'agents.tree', params: { sessionId: rootSession.id } });
+      assert.equal(restored.members.length, 2);
+      assert.equal(restored.members.find((member) => member.session.id === child.session.id)?.session.parentSessionId, rootSession.id);
     });
     await step('Unexpected runtime exit fails in-flight calls and recovers history', async () => {
       const orphanPid = await launchOrphan('crash-orphan');

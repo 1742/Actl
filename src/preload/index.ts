@@ -2,6 +2,12 @@ import { contextBridge, ipcRenderer } from 'electron';
 import type { DesktopApi } from '../shared/agent-ipc';
 
 const desktop: DesktopApi = {
+  watchTree: (id, sessionId) => ipcRenderer.invoke('agent:watch-tree', id, sessionId),
+  onTreeEvents: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, batch: Parameters<typeof listener>[0]) => listener(batch);
+    ipcRenderer.on('agent:tree-events', handler);
+    return () => ipcRenderer.removeListener('agent:tree-events', handler);
+  },
   ready: () => ipcRenderer.invoke('agent:ready'),
   request: (command) => ipcRenderer.invoke('agent:request', command),
   stream: (id, command) => ipcRenderer.invoke('agent:stream', id, command),

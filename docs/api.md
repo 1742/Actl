@@ -33,7 +33,9 @@ type AgentResult<T> =
 | request | AgentCommand；返回 AgentResult |
 | stream | subscriptionId、AgentCommand；订阅事件并返回最终 AgentResult |
 | onEvents | listener；返回移除监听函数 |
-| detach | subscriptionId；停止转发该请求事件 |
+| watchTree | subscriptionId、sessionId；先返回树快照事件，随后持续订阅，Promise 只确认建立订阅 |
+| onTreeEvents | listener；接收 `{subscriptionId,event}`，返回移除监听函数 |
+| detach | subscriptionId；停止转发请求事件或树事件，不停止后台执行 |
 | restart | 无；关闭现有 Agent，下一次 ready/请求按最新设置启动 |
 | getSettings | 无；返回 `{storageDirectory}` |
 | saveSettings | `{storageDirectory}`，非空绝对路径；不自动重启或搬迁数据 |
@@ -62,6 +64,19 @@ type AgentResult<T> =
 Project 包含 id/cwd/name?/created_at/updated_at；Session 列表不内嵌完整 Run 历史。context 包含 last_input_tokens（可缺省）、summarized_run_count 和 compressions。压缩要求相应执行范围空闲，项目/会话删除执行取消与清理。
 
 workspace.search 的 limit 为 1–100，默认 20；workspace.tree 的 path 默认 `.`，maxEntries 为 1–500，默认 200。当前没有独立项目重命名、单项目详情、单会话详情操作，完整会话数据从列表与 context 获取。
+
+Session 另含 `parentSessionId?`、`rootSessionId`。创建子会话由运行时的 `spawn_agent` 工具负责，普通 sessions.create 不接受父会话参数。
+
+### 多 Agent 协作
+
+| 操作 | 输入 | 返回 |
+| --- | --- | --- |
+| agents.tree | params.sessionId，树内任一会话 | `{rootSessionId,members,plan}`；成员含 session、最新 response 和 sequenceNumber |
+| agents.watch | 由桌面 watchTree 封装，params.sessionId | 订阅确认；事件持续至 detach 或运行时退出 |
+| agents.message | params.sessionId 为发送方；body=`{targetSessionId,message}` | `{sessionId,accepted:true}`；只允许同树直接父子通信 |
+| agents.stop | params.sessionId | 停止该会话及后代，并抑制排队自动唤醒 |
+
+树事件包括初始 `snapshot`、带 sessionId 和 response 事件数组的 `response`、需刷新快照的 `changed`。旧请求流和树订阅共用 response 序号，客户端去重；切换页面后重新订阅通过快照恢复，不重放无限事件日志。计划更新由根 Agent 的 update_plan 工具执行，使用 revision 防止覆盖。当前工具与限制见[多 Agent 协作](modules/multi-agent.md)。
 
 源码：[project.schemas.ts](../src/agent-core/contracts/projects/project.schemas.ts)、[session.schemas.ts](../src/agent-core/contracts/sessions/session.schemas.ts)。
 

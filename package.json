@@ -23,7 +23,8 @@
     "pack:win": "pnpm build && electron-builder --win nsis --x64",
     "verify:agent": "pnpm build && node scripts/verify-agent.mjs",
     "verify:agent:packaged": "node scripts/verify-agent.mjs --packaged",
-    "test:agent-ui": "node --import tsx --test tests/unit/agent/useAgent.test.ts tests/unit/agent/desktopTransport.test.ts tests/unit/i18n/catalog.test.ts"
+    "test:agent-ui": "node --import tsx --test tests/unit/agent/useAgent.test.ts tests/unit/agent/desktopTransport.test.ts tests/unit/i18n/catalog.test.ts",
+    "test:multi-agent": "node --import tsx --test tests/unit/agent/multiAgent.test.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/client": "2.0.0",

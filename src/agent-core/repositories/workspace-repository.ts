@@ -27,8 +27,12 @@ export interface ProjectRecord extends AgentProject {
   ownerId: string;
 }
 
-export interface SessionMetadataRecord {
+export interface SessionRecord {
   id: string;
+  parentSessionId?: string;
+  rootSessionId?: string;
+  originRunId?: string;
+  originCallId?: string;
   ownerId: string;
   projectId: string | null;
   title?: string;
@@ -38,7 +42,7 @@ export interface SessionMetadataRecord {
 
 export interface WorkspaceIndex {
   projects: ProjectRecord[];
-  sessions: SessionMetadataRecord[];
+  sessions: SessionRecord[];
 }
 
 export interface SessionContentRecord {
@@ -92,8 +96,8 @@ export interface WorkspaceRepository {
   createProject(project: ProjectRecord): Promise<void>;
   updateProject(project: ProjectRecord): Promise<void>;
   deleteProject(projectId: string): Promise<void>;
-  createSession(session: SessionMetadataRecord): Promise<void>;
-  updateSession(session: SessionMetadataRecord): Promise<void>;
+  createSession(session: SessionRecord): Promise<void>;
+  updateSession(session: SessionRecord): Promise<void>;
   deleteSession(sessionId: string): Promise<void>;
   loadSessionContent(sessionId: string): Promise<SessionContentRecord>;
   createRun(run: AgentRunRecord): Promise<void>;

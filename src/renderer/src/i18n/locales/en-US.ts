@@ -1,4 +1,9 @@
 export default {
+  agents: {
+    team: 'Agents and plan', readOnly: 'Read-only subagents', back: 'Back to main chat', stopAll: 'Stop all',
+    running: 'Running', approval: 'Needs approval', stopping: 'Stopping', failed: 'Incomplete', cancelled: 'Stopped', done: 'Finished',
+    followup: 'Follow up', followupHint: 'Add instructions or a new task for this agent', send: 'Send', stop: 'Stop',
+  },
   settings: {
     sections: {
       agent: 'Local Agent',

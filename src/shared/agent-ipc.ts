@@ -1,8 +1,13 @@
 import type { AgentStreamEvent } from "./agent/responses.js";
+import type { AgentTreeEvent } from './agent/coordination.js';
 
 // Business operation names; payload validation and ownership checks run in the Agent.
 export const agentOperations = [
   'runtime.info',
+  'agents.tree',
+  'agents.watch',
+  'agents.message',
+  'agents.stop',
   'projects.list',
   'projects.create',
   'projects.update',
@@ -65,6 +70,8 @@ export interface AgentEventBatch { subscriptionId: string; events: AgentStreamEv
 export interface AgentRuntimeInfo { mode: 'development' | 'release'; ownerId: string; modelConfigurationEnabled: boolean }
 export interface DesktopSettings { storageDirectory: string }
 export interface DesktopApi {
+  watchTree(subscriptionId: string, sessionId: string): Promise<AgentResult>;
+  onTreeEvents(listener: (batch: { subscriptionId: string; event: AgentTreeEvent }) => void): () => void;
   ready(): Promise<AgentRuntimeInfo>;
   request(command: AgentCommand): Promise<AgentResult>;
   stream(subscriptionId: string, command: AgentCommand): Promise<AgentResult>;
@@ -89,6 +96,7 @@ export type AgentWorkerRequest =
   | { type: 'detach'; id: string }
   | { type: 'shutdown' };
 export type AgentWorkerResponse =
+  | { type: 'tree_event'; id: string; event: AgentTreeEvent }
   | { type: 'ready' }
   | { type: 'initialized'; result: AgentResult<AgentRuntimeInfo> }
   | { type: 'result'; id: string; result: AgentResult }

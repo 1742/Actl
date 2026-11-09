@@ -10,7 +10,6 @@ import type { AgentDomainEventHandler } from '../agent-core/runtime/agent-domain
 import { toProjectJson, toSessionJson } from '../agent-core/contracts/common/presenters';
 import { ApiError } from '../agent-core/contracts/common/api-error';
 import { inputFromDto, toAgentResponseDto } from '../agent-core/contracts/agent-responses/presenter';
-import { AgentStreamProjector } from '../agent-core/contracts/agent-responses/stream-projector';
 import type { AgentStreamEvent, ResponseInputMessageDto } from '../shared/agent/responses';
 import type { SessionContext } from '../shared/agent/sessions';
 import type { RuntimeStoredFile } from '../shared/agent/files';
@@ -67,6 +66,20 @@ export class AgentApplication {
     const accountId = () => accounts.providerAccountParamsSchema.parse(params).accountId;
     const modelId = () => models.modelParamsSchema.parse(params).modelTargetId;
     switch (command.operation) {
+      case 'agents.tree':
+      case 'agents.watch': return d.agentCoordinator.snapshot(await this.session(sessionId()));
+      case 'agents.message': {
+        const sender = await this.session(sessionId());
+        const input = z.object({ targetSessionId: z.string().min(1), message: z.string().trim().min(1).max(16000) }).strict().parse(body);
+        const run = sender.runs.at(-1);
+        if (!run) throw new ApiError(400, 'agent_run_required', 'Send an initial task before messaging agents.');
+        d.agentCoordinator.allowUserTurn(sender);
+        return d.agentCoordinator.send(sender, run, input.targetSessionId, `User follow-up: ${input.message}`, crypto.randomUUID());
+      }
+      case 'agents.stop': {
+        await d.agentCoordinator.stopTree(await this.session(sessionId()));
+        return;
+      }
       case 'runtime.info': return { mode: d.modelStore.mode, ownerId, modelConfigurationEnabled: true };
       case 'projects.list': return d.workspaceStore.listProjects(ownerId).map(toProjectJson);
       case 'projects.create': {
@@ -83,7 +96,8 @@ export class AgentApplication {
         const id = projectId(); this.project(id);
         await d.agentLoop.withProjectScopeMaintenance(id, async () => {
           const ids = d.workspaceStore.listSessions(ownerId, id).map((session) => session.id);
-          await Promise.all(ids.map((id) => d.agentLoop.cancelBySession(id)));
+          const roots = d.workspaceStore.listSessions(ownerId, id).filter((session) => !session.parentSessionId);
+          await Promise.all(roots.map((session) => d.agentCoordinator.stopTree(session)));
           await Promise.all(ids.map((id) => d.processSupervisor.stopByOwner({ type: 'session', id })));
           await d.workspaceStore.deleteProject(ownerId, id);
           await d.storedFiles.cleanupOrphans();
@@ -134,8 +148,7 @@ export class AgentApplication {
       case 'sessions.delete': {
         const id = sessionId(); await this.session(id);
         await d.agentLoop.withSessionScopeMaintenance(id, async () => {
-          await d.agentLoop.cancelBySession(id);
-          await d.processSupervisor.stopByOwner({ type: 'session', id });
+          await d.agentCoordinator.stopTree(await this.session(id));
           await d.workspaceStore.deleteSession(ownerId, id);
           await d.storedFiles.cleanupOrphans();
         });
@@ -187,6 +200,7 @@ export class AgentApplication {
       }
       case 'responses.create': {
         const session = await this.session(sessionId()); const input = sessions.createResponseBodySchema.parse(body);
+        d.agentCoordinator.allowUserTurn(session);
         const prepareInput = async () => {
           const normalized = await this.normalizeReferences(session, input.input);
           d.storedFiles.validateResponseFiles(session.id, normalized.flatMap((message) => message.content.flatMap((part) => part.type === 'input_file' ? [part.file_id] : [])));
@@ -206,7 +220,13 @@ export class AgentApplication {
       }
       case 'responses.cancel': {
         const ids = sessions.responseParamsSchema.parse(params); const session = await this.session(ids.sessionId);
-        return this.responseDto(await d.agentLoop.cancel(session, this.response(session, ids.responseId)));
+        const run = this.response(session, ids.responseId);
+        if (run.status === 'cancelled') return this.responseDto(run);
+        if (run.status !== 'in_progress' && run.status !== 'waiting_permission') {
+          throw new ApiError(409, 'response_not_cancellable', 'Response is no longer active.');
+        }
+        await d.agentCoordinator.stopTree(session);
+        return this.responseDto(run);
       }
       case 'files.upload': {
         const id = sessionId(); await this.session(id);
@@ -323,7 +343,7 @@ export class AgentApplication {
 
   async close(drain?: () => Promise<void>): Promise<void> {
     const d = this.dependencies;
-    await d.agentLoop.cancelRunning();
+    await d.agentCoordinator.close();
     await drain?.();
     const cleanup = await Promise.allSettled([d.processSupervisor.dispose(), d.mcpManager.close()]);
     try { await d.storedFiles.cleanupOrphans(); }
@@ -367,8 +387,7 @@ export class AgentApplication {
   }
   private projectEvents(onEvent: ((event: AgentStreamEvent) => void) | undefined): AgentDomainEventHandler | undefined {
     if (!onEvent) return undefined;
-    const projector = new AgentStreamProjector(this.dependencies.storedFiles.describeForSession.bind(this.dependencies.storedFiles));
-    return async (run, event) => { for (const projected of projector.project(run, event)) onEvent(structuredClone(projected)); };
+    return async (run, event) => { for (const projected of this.dependencies.agentCoordinator.events.project(run, event)) onEvent(structuredClone(projected)); };
   }
   private async skillCwd(input: { sessionId?: string | undefined; projectId?: string | undefined }) {
     if (input.sessionId) return (await this.session(input.sessionId)).cwd;
