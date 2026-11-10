@@ -6,7 +6,6 @@ import type { SessionReview } from '../shared/agent/review';
 import { reviewDiff } from '../agent-core/runtime/review-diff';
 import type { AppDependencies } from '../agent-core/app/dependencies';
 import type { Session } from '../agent-core/runtime/workspace-store';
-import type { AgentDomainEventHandler } from '../agent-core/runtime/agent-domain';
 import { toProjectJson, toSessionJson } from '../agent-core/contracts/common/presenters';
 import { ApiError } from '../agent-core/contracts/common/api-error';
 import { inputFromDto, toAgentResponseDto } from '../agent-core/contracts/agent-responses/presenter';
@@ -73,8 +72,7 @@ export class AgentApplication {
         const input = z.object({ targetSessionId: z.string().min(1), message: z.string().trim().min(1).max(16000) }).strict().parse(body);
         const run = sender.runs.at(-1);
         if (!run) throw new ApiError(400, 'agent_run_required', 'Send an initial task before messaging agents.');
-        d.agentCoordinator.allowUserTurn(sender);
-        return d.agentCoordinator.send(sender, run, input.targetSessionId, `User follow-up: ${input.message}`, crypto.randomUUID());
+        return d.agentCoordinator.send(sender, run, input.targetSessionId, `User follow-up: ${input.message}`, crypto.randomUUID(), true);
       }
       case 'agents.stop': {
         await d.agentCoordinator.stopTree(await this.session(sessionId()));
@@ -89,19 +87,12 @@ export class AgentApplication {
       case 'projects.update': {
         const id = projectId(); this.project(id);
         const input = projects.updateProjectBodySchema.parse(body);
-        return toProjectJson(await d.agentLoop.withIdleProjectScopeMaintenance(id, ownerId,
-          () => d.workspaceStore.updateProject(ownerId, id, input)));
+        return toProjectJson(await d.agentCoordinator.updateProject(id, ownerId, input));
       }
       case 'projects.delete': {
         const id = projectId(); this.project(id);
-        await d.agentLoop.withProjectScopeMaintenance(id, async () => {
-          const ids = d.workspaceStore.listSessions(ownerId, id).map((session) => session.id);
-          const roots = d.workspaceStore.listSessions(ownerId, id).filter((session) => !session.parentSessionId);
-          await Promise.all(roots.map((session) => d.agentCoordinator.stopTree(session)));
-          await Promise.all(ids.map((id) => d.processSupervisor.stopByOwner({ type: 'session', id })));
-          await d.workspaceStore.deleteProject(ownerId, id);
-          await d.storedFiles.cleanupOrphans();
-        });
+        await d.agentCoordinator.deleteProject(id, ownerId);
+        await d.storedFiles.cleanupOrphans();
         return;
       }
       case 'workspace.search': {
@@ -146,12 +137,8 @@ export class AgentApplication {
         return toSessionJson(await d.workspaceStore.updateSession(ownerId, sessionId(), input.title ?? undefined));
       }
       case 'sessions.delete': {
-        const id = sessionId(); await this.session(id);
-        await d.agentLoop.withSessionScopeMaintenance(id, async () => {
-          await d.agentCoordinator.stopTree(await this.session(id));
-          await d.workspaceStore.deleteSession(ownerId, id);
-          await d.storedFiles.cleanupOrphans();
-        });
+        await d.agentCoordinator.deleteSession(await this.session(sessionId()));
+        await d.storedFiles.cleanupOrphans();
         return;
       }
       case 'sessions.review': {
@@ -195,38 +182,33 @@ export class AgentApplication {
       }
       case 'sessions.compact': {
         const session = await this.session(sessionId()); const input = sessions.compactSessionBodySchema.parse(body);
-        const compressed = await d.agentLoop.withIdleSessionScopeMaintenance(session.id, () => d.agentLoop.compact(session, input.model, input.reasoningEffort));
+        const compressed = await d.agentCoordinator.compact(session, input.model, input.reasoningEffort);
         return { compressed, summarized_run_count: session.contextState?.summarizedRunCount ?? 0 };
       }
       case 'responses.create': {
         const session = await this.session(sessionId()); const input = sessions.createResponseBodySchema.parse(body);
-        d.agentCoordinator.allowUserTurn(session);
-        const prepareInput = async () => {
-          const normalized = await this.normalizeReferences(session, input.input);
+        const prepareInput = async (signal: AbortSignal) => {
+          const normalized = await this.normalizeReferences(session, input.input, signal);
+          signal.throwIfAborted();
           d.storedFiles.validateResponseFiles(session.id, normalized.flatMap((message) => message.content.flatMap((part) => part.type === 'input_file' ? [part.file_id] : [])));
           return inputFromDto(normalized);
         };
-        return this.responseDto(await d.agentLoop.run(session, prepareInput, {
+        return this.responseDto(await d.agentCoordinator.start(session, prepareInput, {
           model: input.model, permissionMode: input.permissionMode, ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
-        }, this.projectEvents(onEvent)));
+        }, onEvent));
       }
       case 'responses.permissions': {
         const ids = sessions.responseParamsSchema.parse(params); const session = await this.session(ids.sessionId);
         const run = this.response(session, ids.responseId); const input = sessions.resolvePermissionsBodySchema.parse(body);
-        return this.responseDto(await d.agentLoop.resolvePermissions(session, run, input.batchId, input.decisions.map((decision) => ({
+        return this.responseDto(await d.agentCoordinator.resume(session, run, input.batchId, input.decisions.map((decision) => ({
           permissionId: decision.permission_id, decision: decision.decision,
           ...(decision.decision === 'deny' && decision.reason ? { reason: decision.reason } : {}),
-        })), this.projectEvents(onEvent)));
+        })), onEvent));
       }
       case 'responses.cancel': {
         const ids = sessions.responseParamsSchema.parse(params); const session = await this.session(ids.sessionId);
         const run = this.response(session, ids.responseId);
-        if (run.status === 'cancelled') return this.responseDto(run);
-        if (run.status !== 'in_progress' && run.status !== 'waiting_permission') {
-          throw new ApiError(409, 'response_not_cancellable', 'Response is no longer active.');
-        }
-        await d.agentCoordinator.stopTree(session);
-        return this.responseDto(run);
+        return this.responseDto(await d.agentCoordinator.cancelResponse(session, run));
       }
       case 'files.upload': {
         const id = sessionId(); await this.session(id);
@@ -343,12 +325,11 @@ export class AgentApplication {
 
   async close(drain?: () => Promise<void>): Promise<void> {
     const d = this.dependencies;
-    await d.agentCoordinator.close();
-    await drain?.();
-    const cleanup = await Promise.allSettled([d.processSupervisor.dispose(), d.mcpManager.close()]);
+    const execution = await Promise.allSettled([d.agentCoordinator.close(drain)]);
+    const cleanup = await Promise.allSettled([d.mcpManager.close()]);
     try { await d.storedFiles.cleanupOrphans(); }
     finally { d.closeDatabase(); }
-    const failed = cleanup.find((result) => result.status === 'rejected');
+    const failed = [...execution, ...cleanup].find((result) => result.status === 'rejected');
     if (failed?.status === 'rejected') throw failed.reason;
   }
 
@@ -385,19 +366,16 @@ export class AgentApplication {
     return { id: file.id, object: 'stored_file', session_id: file.sessionId, filename: file.filename,
       media_type: file.mediaType, size: file.size, created_at: file.createdAt };
   }
-  private projectEvents(onEvent: ((event: AgentStreamEvent) => void) | undefined): AgentDomainEventHandler | undefined {
-    if (!onEvent) return undefined;
-    return async (run, event) => { for (const projected of this.dependencies.agentCoordinator.events.project(run, event)) onEvent(structuredClone(projected)); };
-  }
   private async skillCwd(input: { sessionId?: string | undefined; projectId?: string | undefined }) {
     if (input.sessionId) return (await this.session(input.sessionId)).cwd;
     if (input.projectId) return this.project(input.projectId).cwd;
     return null;
   }
-  private async normalizeReferences(session: Session, input: ResponseInputMessageDto[]) {
+  private async normalizeReferences(session: Session, input: ResponseInputMessageDto[], signal: AbortSignal) {
     const normalized = structuredClone(input);
     for (const message of normalized) for (const part of message.content) {
       if (part.type !== 'input_workspace_file') continue;
+      signal.throwIfAborted();
       if (!session.projectId || !session.cwd) throw new ApiError(400, 'workspace_file_requires_project', 'Workspace file references require a Project-bound Session.');
       const directory = this.workspaceDirectory(session.projectId, part.workspaceId);
       try {

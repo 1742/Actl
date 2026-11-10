@@ -93,6 +93,10 @@ export interface AgentRunRecord {
   nextSequenceNumber: number;
 }
 
+export function isTerminalRun(run: AgentRunRecord): boolean {
+  return run.status === "completed" || run.status === "incomplete" || run.status === "failed" || run.status === "cancelled";
+}
+
 export type AgentDomainEvent =
   | { type: "run_created"; run: AgentRunRecord }
   | { type: "item_started"; item: AgentTimelineItem; outputIndex: number }

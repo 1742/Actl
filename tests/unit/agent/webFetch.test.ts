@@ -60,11 +60,12 @@ test("fetches same-domain redirects through the registry and stops at other doma
   const registry = new ToolRegistry();
   registry.registerProvider(new WebFetchToolProvider());
   const call = { id: "fetch", name: "web_fetch", input: { url: "https://example.com/start" } };
-  const requirement = await registry.getPermissionRequirement(call);
+  const context = { cwd: null, sessionId: "session", runId: "run", callId: call.id };
+  const requirement = await registry.getPermissionRequirement(call, context);
   assert.deepEqual(requirement, { capability: "network.fetch", resource: "example.com", action: "read" });
-  assert.equal((await registry.callTool(call)).ok, false);
+  assert.equal((await registry.callTool(call, context)).ok, false);
   assert.deepEqual((await registry.callTool(call, {
-    cwd: null, authorization: { requirement: requirement!, approvedByUser: false },
+    ...context, authorization: { requirement: requirement!, approvedByUser: false },
   })).output, {
     requestedUrl: "https://example.com/start", finalUrl: "https://example.com/article",
     contentType: "text/html; charset=UTF-8", title: null, content: "Article text.", truncated: false,

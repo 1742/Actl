@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { RichToolOutput, type ToolCall, type ToolResult } from "../runtime/transcript.js";
 import type { ModelCapabilities } from "../model/catalog-types.js";
+import type { SessionProcessAccess } from "../runtime/process/process-types.js";
 
 export interface ToolSchema {
   name: string;
@@ -51,6 +52,7 @@ export interface ToolCallContext {
   authorization?: ToolExecutionAuthorization;
   signal?: AbortSignal;
   modelCapabilities?: ModelCapabilities;
+  processes?: SessionProcessAccess;
   recordFileChange?: (change: {
     filePath: string;
     created: boolean;

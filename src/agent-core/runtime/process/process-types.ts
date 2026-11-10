@@ -74,3 +74,14 @@ export interface StopProcessInput {
   cursor?: number;
   line?: number;
 }
+
+export interface SessionProcessAccess {
+  owns(processId: string): boolean;
+  start(input: Omit<StartProcessInput, 'owner'>): Promise<ManagedProcessPoll>;
+  poll(input: Omit<PollProcessInput, 'owner'>): Promise<ManagedProcessPoll>;
+  stop(input: Omit<StopProcessInput, 'owner'>): Promise<ManagedProcessPoll>;
+}
+
+export interface SessionProcessScope extends SessionProcessAccess {
+  stopAll(): Promise<void>;
+}

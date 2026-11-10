@@ -1,9 +1,9 @@
 import type { HookEventBus } from "../../hooks/event-bus.js";
-import { allowedAgentTool } from '../multi-agents/agent-tool-policy.js';
+import type { SessionTools } from "../session/session-tools.js";
 import type { TranscriptItem } from "../../model/types.js";
 import type { Logger } from "../../observability/logger.js";
 import type { PermissionEngine } from "../../permissions/engine.js";
-import type { ToolCallContext, ToolExecutionPolicy, ToolPermissionRequirement, ToolRegistry } from "../../tools/registry.js";
+import type { ToolExecutionPolicy, ToolPermissionRequirement } from "../../tools/registry.js";
 import { createRandomId, nowIso } from "../../utils.js";
 import {
   type AgentDomainEvent,
@@ -34,7 +34,7 @@ type ToolExecutionPermission = "automatic" | "user_approved" | "user_denied" | "
 
 export class ToolBatchExecutor {
   constructor(
-    private readonly toolRegistry: ToolRegistry,
+    private readonly tools: SessionTools,
     private readonly permissionEngine: PermissionEngine,
     private readonly hookEventBus: HookEventBus,
     private readonly workspaceStore: WorkspaceStore,
@@ -50,8 +50,7 @@ export class ToolBatchExecutor {
   ): Promise<boolean> {
     const preparedItems: PendingToolBatchItem[] = [];
     let hasPermissionRequests = false;
-    const availableTools = new Set((await this.toolRegistry.listTools(run.modelSnapshot.capabilities))
-      .filter((tool) => allowedAgentTool(tool.name, !!session.parentSessionId)).map((tool) => tool.name));
+    const availableTools = new Set((await this.tools.listTools(run)).map((tool) => tool.name));
 
     for (const functionCall of functionCalls) {
       signal.throwIfAborted();
@@ -60,20 +59,13 @@ export class ToolBatchExecutor {
         name: functionCall.name,
         input: parseArguments(functionCall.argumentsJson),
       };
-      const prepared = await this.toolRegistry.prepareToolCall(unvalidatedToolCall);
+      const prepared = await this.tools.prepareToolCall(unvalidatedToolCall, run, availableTools);
       if (!prepared.ok) {
         preparedItems.push({ kind: "result", toolCall: unvalidatedToolCall, result: prepared.result, emitPostToolUse: false });
         continue;
       }
 
       const toolCall = prepared.toolCall;
-      if (!availableTools.has(toolCall.name)) {
-        preparedItems.push({ kind: "result", toolCall, emitPostToolUse: false, result: {
-          toolCallId: toolCall.id, toolName: toolCall.name, ok: false,
-          error: `Tool ${toolCall.name} is unavailable for the current model. Switch to a model supporting its required input capabilities.`,
-        } });
-        continue;
-      }
       const preToolUseDecision = await this.hookEventBus.emit("PreToolUse", { session, toolCall });
       signal.throwIfAborted();
       if (preToolUseDecision.blocked) {
@@ -94,13 +86,7 @@ export class ToolBatchExecutor {
 
       let requirement: ToolPermissionRequirement | null;
       try {
-        requirement = await this.toolRegistry.getPermissionRequirement(toolCall, {
-          cwd: session.cwd,
-          runId: run.id,
-          callId: toolCall.id,
-          sessionId: session.id,
-          signal,
-        });
+        requirement = await this.tools.getPermissionRequirement(toolCall, run, signal);
       } catch (error) {
         signal.throwIfAborted();
         preparedItems.push({
@@ -140,7 +126,7 @@ export class ToolBatchExecutor {
           permissionId: createRandomId("permission"),
           toolCall,
           requirement,
-          execution: await this.toolRegistry.getExecutionPolicy(toolCall),
+          execution: await this.tools.getExecutionPolicy(toolCall),
           prompt: permissionDecision.prompt,
         });
       } else if (permissionDecision.type === "deny") {
@@ -156,7 +142,7 @@ export class ToolBatchExecutor {
           kind: "execute",
           toolCall,
           requirement,
-          execution: await this.toolRegistry.getExecutionPolicy(toolCall),
+          execution: await this.tools.getExecutionPolicy(toolCall),
         });
       }
     }
@@ -360,35 +346,8 @@ export class ToolBatchExecutor {
     approvedByUser: boolean,
     signal: AbortSignal,
   ): Promise<ToolResult> {
-    if (!allowedAgentTool(toolCall.name, !!session.parentSessionId)) {
-      return { toolCallId: toolCall.id, toolName: toolCall.name, ok: false, error: 'Tool is disabled for read-only subagents.' };
-    }
     const startedAt = performance.now();
-    const context: ToolCallContext = {
-      runId: run.id,
-      callId: toolCall.id,
-      cwd: session.cwd,
-      sessionId: session.id,
-      authorization: { requirement, approvedByUser },
-      signal,
-      modelCapabilities: run.modelSnapshot.capabilities,
-      recordFileChange: async ({ filePath, created, before, after }) => {
-        if (!created && before !== undefined && before === after) return;
-        try {
-          await this.workspaceStore.addFileChange(session, {
-            runId: run.id,
-            filePath,
-            changeType: created ? "create" : "modify",
-            summary: toolCall.name,
-            ...(before === undefined ? {} : { oldContent: before }),
-            ...(after === undefined ? {} : { newContent: after }),
-          });
-        } catch (error) {
-          this.logger.warn({ event: "agent.file_change.record_failed", ...logFields(session, run), error: String(error) });
-        }
-      },
-    };
-    const result = await this.toolRegistry.callTool(toolCall, context);
+    const result = await this.tools.callTool(toolCall, run, signal, { requirement, approvedByUser });
     signal.throwIfAborted();
     const fields = {
       event: "agent.tool.completed", ...logFields(session, run), toolName: toolCall.name,

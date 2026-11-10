@@ -12,6 +12,7 @@ import type {
   PollProcessInput,
   ProcessCommandInput,
   ProcessOwner,
+  SessionProcessScope,
   StartProcessInput,
   StopProcessInput,
 } from "./process-types.js";
@@ -249,6 +250,17 @@ export class ProcessSupervisor {
     if (input.line !== undefined && input.cursor !== undefined) throw new RangeError("cursor and line cannot be used together.");
     await this.stopRecord(record);
     return this.snapshot(record, cursor, input.line);
+  }
+
+  forSession(sessionId: string): SessionProcessScope {
+    const owner: ProcessOwner = { type: 'session', id: sessionId };
+    return {
+      owns: (processId) => this.owns(owner, processId),
+      start: (input) => this.start({ ...input, owner }),
+      poll: (input) => this.poll({ ...input, owner }),
+      stop: (input) => this.stop({ ...input, owner }),
+      stopAll: () => this.stopByOwner(owner),
+    };
   }
 
   async stopByOwner(owner: ProcessOwner): Promise<void> {

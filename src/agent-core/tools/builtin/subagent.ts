@@ -1,7 +1,6 @@
 import { z } from 'zod';
 import type { ToolProvider, ToolDefinition, ToolCallContext } from '../registry.js';
 import type { AgentCoordinator } from '../../runtime/multi-agents/agent-coordinator.js';
-import type { WorkspaceStore } from '../../runtime/workspace-store.js';
 
 const id = z.string().min(1).max(200);
 const spawn = z.object({ title: z.string().trim().min(1).max(100), prompt: z.string().trim().min(1).max(30000) }).strict();
@@ -15,7 +14,7 @@ const plan = z.object({ revision: z.number().int().min(0), items: z.array(z.obje
 export class SubagentToolProvider implements ToolProvider {
   readonly name = 'builtin-agents';
 
-  constructor(private readonly coordinator: AgentCoordinator, private readonly workspace: WorkspaceStore) {}
+  constructor(private readonly coordinator: AgentCoordinator) {}
 
   async listTools(): Promise<ToolDefinition[]> {
     return [
@@ -55,10 +54,8 @@ export class SubagentToolProvider implements ToolProvider {
   async getPermissionRequirement() { return { capability: 'agent.coordinate', action: 'coordinate' }; }
 
   async callTool(name: string, input: unknown, context: ToolCallContext): Promise<unknown> {
-    const session = await this.workspace.getSession(context.sessionId);
-    const run = session?.runs.find((item) => item.id === context.runId);
-    if (!session || !run || run.status !== 'in_progress') throw new Error('Caller run is not active.');
     context.signal?.throwIfAborted();
+    const { session, run } = this.coordinator.activeToolCaller(context.sessionId, context.runId);
     switch (name) {
       case 'spawn_agent': { const value = spawn.parse(input); return this.coordinator.spawn(session, run, context.callId, value.title, value.prompt); }
       case 'send_message': { const value = send.parse(input); return this.coordinator.send(session, run, value.sessionId, value.message, context.callId); }

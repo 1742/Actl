@@ -53,7 +53,7 @@ parent.on('message', ({ data }: { data: AgentWorkerRequest }) => {
         let root: string | undefined;
         let overflowed = false;
         const buffered: AgentTreeEvent[] = [];
-        const off = current.dependencies.agentCoordinator.events.subscribe((event) => {
+        const off = current.dependencies.agentCoordinator.subscribe((event) => {
           if (!root) {
             if (buffered.length < 256) buffered.push(event);
             else overflowed = true;

@@ -34,12 +34,16 @@ list 方法通常提供拷贝，getSession 提供运行时对象；AgentLoop 会
 
 | 文件                                                                                                          | 职责                                            |
 | ------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
-| [agent-loop.ts](../../src/agent-core/runtime/agent-loop/agent-loop.ts)                                             | 创建、继续、审批恢复、取消、压缩和模型事件消费  |
-| [response-execution-lifecycle.ts](../../src/agent-core/runtime/agent-loop/response-execution-lifecycle.ts)         | 预留/占用范围、跟踪 promise、终态释放、维护操作 |
-| [response-concurrency-coordinator.ts](../../src/agent-core/runtime/agent-loop/response-concurrency-coordinator.ts) | 按 project/session key 协调执行和维护互斥       |
-| [run-execution-manager.ts](../../src/agent-core/runtime/agent-loop/run-execution-manager.ts)                       | Run 的 AbortController、运行 promise 和取消协作 |
+| [agent-coordinator.ts](../../src/agent-core/runtime/multi-agents/agent-coordinator.ts)                            | 统一执行入口、会话树、准入、消息调度和事件分发  |
+| [session-runtime.ts](../../src/agent-core/runtime/session/session-runtime.ts)                                | 单会话启动、审批恢复、压缩、停止；统一持有当前操作的取消信号和 Promise       |
+| [session-model-context.ts](../../src/agent-core/runtime/session/session-model-context.ts)                    | 组装模型步骤输入、收件箱投递、会话历史与压缩    |
+| [session-tools.ts](../../src/agent-core/runtime/session/session-tools.ts)                                    | 会话工具清单、调用授权、ToolCallContext         |
+| [agent-loop.ts](../../src/agent-core/runtime/agent-loop/agent-loop.ts)                                             | 执行已创建的 Run，处理模型流、工具和结束条件    |
+| [execution-admission.ts](../../src/agent-core/runtime/execution-admission.ts) | 项目/会话准入、持久化占用恢复和维护互斥；不管理执行 Promise |
 | [tool-batch-executor.ts](../../src/agent-core/runtime/agent-loop/tool-batch-executor.ts)                           | 工具准备、权限批次、并行/串行执行、结果记录     |
 | [agent-run-finalizer.ts](../../src/agent-core/runtime/agent-loop/agent-run-finalizer.ts)                           | 终态、取消/失败补齐、持久化及事件               |
+
+主调用链为 `AgentCoordinator → SessionRuntime → AgentLoop`。`SessionRuntime` 从准备输入到执行结束共用一个 AbortController 和完成 Promise；停止时先中断并等待当前操作，再收尾待审批 Run 和会话进程。审批暂停后释放内存中的执行对象，准入占用仍保留；恢复审批时创建新的执行操作。`ExecutionAdmission` 是共享的准入辅助组件，不调用模型循环，也不跟踪执行 Promise。
 
 项目会话使用 project 范围，独立会话使用根 session 范围。一个项目同时接纳一棵会话树，同树的不同会话可并发，每个会话仍只允许一个活动 Run。创建前先预留，失败释放；waiting_permission 保持占用；最后一个成员终态后释放整棵树的占用。恢复占用时检查持久化历史，防止重启后待审批 Run 被绕过。父子任务、消息、计划与独立事件订阅见[多 Agent 协作](multi-agent.md)。
 
@@ -47,19 +51,19 @@ maintenance 用于删除和压缩等操作，阻止与新 Run 创建交错。idl
 
 ## 5. 创建与执行循环
 
-run 先解析模型版本快照并检查历史/当前输入兼容性，再进入 lifecycle.create。预留范围后，按需压缩旧历史，校验显式 Skills/MCP，创建响应和权限快照，发 run_created。
+协调器找到或创建会话的 SessionRuntime。Runtime 登记可取消的准备阶段并预留执行范围，再解析模型快照、检查历史和当前输入的兼容性、按需压缩旧历史和校验显式 Skills/MCP。创建 Run 后发出 run_created，交给该会话的 AgentLoop 执行。
 
 continue 每次至多 100 步：
 
 1. 检查取消；如时间线有未解决的工具调用，先执行或进入审批。
-2. 根据当前搜索设置和模型快照选择原生/外部搜索策略。
+2. 投递 SQLite 收件箱中的消息，再根据当前搜索设置和模型快照选择原生/外部搜索策略。
 3. 从 ToolRegistry 取模型可用工具；使用原生搜索时移除普通 web_search 工具。
 4. 取得摘要之后的模型上下文，物化 stored_file 和历史图片，再物化当前输入的 Skill/MCP 引用。
 5. PromptCompiler 生成 instructions 和 transcript。
 6. 根据快照拿模型客户端，调用 runTurn 并消费增量事件。
 7. 记录供应商响应 ID/usage，补入只在最终结果出现的 output 项。
 8. unknown finish 视为错误，length/content_filter 结束为 incomplete；存在 function calls 时处理批次并继续。
-9. 无工具调用时发 Stop hook，未阻止则 completed；阻止则追加提示继续。
+9. 无工具调用时发 Stop hook。被阻止则追加提示继续，有待处理消息则进入下一步，其余情况完成 Run。
 
 期间异常归入 failed；signal 已取消则 cancelled。工具层产生普通错误结果不一定使 Run 失败。
 

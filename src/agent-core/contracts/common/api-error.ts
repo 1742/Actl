@@ -1,5 +1,4 @@
-
-import { AgentLoopError } from "../../runtime/agent-loop/agent-loop.js";
+import { AgentLoopError } from "../../runtime/agent-loop/agent-loop-error.js";
 import { WorkspaceStoreError } from "../../runtime/workspace-store.js";
 import { ModelStoreError } from "../../runtime/model-store.js";
 

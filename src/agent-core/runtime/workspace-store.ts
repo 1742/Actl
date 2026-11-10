@@ -203,6 +203,10 @@ export class WorkspaceStore {
   }
 
   //按id获取会话
+  hasSession(id: string, ownerId: string): boolean {
+    return this.sessions.get(id)?.ownerId === ownerId;
+  }
+
   async getSession(id: string, ownerId?: string): Promise<Session | undefined> {
     const metadata = this.sessions.get(id);
     if (!metadata || (ownerId !== undefined && metadata.ownerId !== ownerId)) return undefined;

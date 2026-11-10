@@ -3,8 +3,7 @@ import { isUtf8 } from "node:buffer";
 import path from "node:path";
 import iconv from "iconv-lite";
 import { z } from "zod";
-import type { ProcessOwner } from "../../runtime/process/process-types.js";
-import { ProcessSupervisor } from "../../runtime/process/process-supervisor.js";
+import type { SessionProcessAccess } from "../../runtime/process/process-types.js";
 import {
   type ToolCallContext,
   type ToolDefinition,
@@ -67,8 +66,6 @@ export interface ShellRuntime {
 export class ShellToolProvider implements ToolProvider {
   readonly name = "builtin-shell";
 
-  constructor(private readonly processSupervisor: ProcessSupervisor) {}
-
   async listTools(): Promise<ToolDefinition[]> {
     const runtime = getShellRuntime();
     return [
@@ -105,11 +102,11 @@ export class ShellToolProvider implements ToolProvider {
       };
     }
     if (name === "shell_poll" || name === "shell_stop") {
-      const owner = this.requireOwner(context);
+      const processes = this.requireProcesses(context);
       const processId = name === "shell_poll"
         ? (input as ShellPollInput).processId
         : (input as ShellStopInput).processId;
-      if (!this.processSupervisor.owns(owner, processId)) throw new Error("process_not_found");
+      if (!processes.owns(processId)) throw new Error("process_not_found");
       return {
         capability: name === "shell_poll" ? "process.read" : "process.terminate",
         resource: processId,
@@ -125,9 +122,8 @@ export class ShellToolProvider implements ToolProvider {
       const resolved = await this.resolveCommand(input, context);
       this.assertAuthorization(context, "process.spawn", "execute", resolved.resource);
       const outputEncoding = await detectShellOutputEncoding(runtime);
-      const owner = this.requireOwner(context);
-      const started = await this.processSupervisor.start({
-        owner,
+      const processes = this.requireProcesses(context);
+      const started = await processes.start({
         command: resolved.command,
         cwd: resolved.cwd,
         shell: runtime.executable,
@@ -137,7 +133,7 @@ export class ShellToolProvider implements ToolProvider {
         ...(context.signal ? { signal: context.signal } : {}),
       });
       if (context.signal?.aborted) {
-        await this.processSupervisor.stop({ owner, processId: started.processId });
+        await processes.stop({ processId: started.processId });
         context.signal.throwIfAborted();
       }
       return started;
@@ -145,8 +141,7 @@ export class ShellToolProvider implements ToolProvider {
     if (name === "shell_poll") {
       const parsed = input as ShellPollInput;
       this.assertAuthorization(context, "process.read", "read", parsed.processId);
-      return this.processSupervisor.poll({
-        owner: this.requireOwner(context),
+      return this.requireProcesses(context).poll({
         processId: parsed.processId,
         ...(parsed.cursor === undefined ? {} : { cursor: parsed.cursor }),
         ...(parsed.line === undefined ? {} : { line: parsed.line }),
@@ -158,8 +153,7 @@ export class ShellToolProvider implements ToolProvider {
     if (name === "shell_stop") {
       const parsed = input as ShellStopInput;
       this.assertAuthorization(context, "process.terminate", "terminate", parsed.processId);
-      return this.processSupervisor.stop({
-        owner: this.requireOwner(context),
+      return this.requireProcesses(context).stop({
         processId: parsed.processId,
         ...(parsed.cursor === undefined ? {} : { cursor: parsed.cursor }),
         ...(parsed.line === undefined ? {} : { line: parsed.line }),
@@ -173,7 +167,7 @@ export class ShellToolProvider implements ToolProvider {
     context: ToolCallContext,
   ): Promise<ResolvedShellCommand> {
     const parsed = input as ShellInput;
-    this.requireOwner(context);
+    this.requireProcesses(context);
 
     const baseDirectory = toolBaseDirectory(context.cwd);
     const candidateCwd = parsed.cwd
@@ -192,9 +186,9 @@ export class ShellToolProvider implements ToolProvider {
     return resolved;
   }
 
-  private requireOwner(context: ToolCallContext): ProcessOwner {
-    if (!context.sessionId) throw new Error("Shell tools require a session context.");
-    return { type: "session", id: context.sessionId };
+  private requireProcesses(context: ToolCallContext): SessionProcessAccess {
+    if (!context.processes) throw new Error("Shell tools require session process access.");
+    return context.processes;
   }
 
   private assertAuthorization(context: ToolCallContext, capability: string, action: string, resource: string): void {

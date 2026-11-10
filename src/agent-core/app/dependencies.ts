@@ -15,7 +15,6 @@ import { SqliteSessionRepository } from "../repositories/sqlite/session-reposito
 import { SqliteStoredFileRepository } from "../repositories/sqlite/stored-file-repository.js";
 import { SqliteWebSearchSettingsRepository } from "../repositories/sqlite/web-search-settings-repository.js";
 import { WorkspaceFileService } from "../runtime/workspace-files.js";
-import { AgentLoop } from "../runtime/agent-loop/agent-loop.js";
 import { ModelStore } from "../runtime/model-store.js";
 import { ProcessSupervisor } from "../runtime/process/process-supervisor.js";
 import { WorkspaceStore } from "../runtime/workspace-store.js";
@@ -44,14 +43,11 @@ export interface AppDependencies {
   readonly storedFiles: StoredFileService;
   readonly secretProtector: SecretProtector;
   readonly modelStore: ModelStore;
-  readonly processSupervisor: ProcessSupervisor;
   readonly workspaceFiles: WorkspaceFileService;
   readonly promptSettingsRepository: PromptSettingsRepository;
-  readonly toolRegistry: ToolRegistry;
   readonly skillCatalog: SkillCatalog;
   readonly webSearchService: WebSearchService;
   readonly mcpManager: McpServerManager;
-  readonly agentLoop: AgentLoop;
   readonly agentCoordinator: AgentCoordinator;
 }
 
@@ -99,7 +95,7 @@ async function assembleAppDependencies(
   const toolRegistry = new ToolRegistry();
   toolRegistry.registerProvider(new FilesystemToolProvider(undefined, workspaceFiles));
 
-  toolRegistry.registerProvider(new ShellToolProvider(processSupervisor));
+  toolRegistry.registerProvider(new ShellToolProvider());
   toolRegistry.registerProvider(new StoredFileToolProvider(storedFiles));
   toolRegistry.registerProvider(new ReadImageToolProvider(storedFiles));
 
@@ -114,23 +110,19 @@ async function assembleAppDependencies(
 
   const promptCompiler = new PromptCompiler(promptSettingsRepository, coordinationRepository);
 
-  const agentLoop = new AgentLoop(
-    modelStore,
+  const agentCoordinator = new AgentCoordinator(workspaceStore, coordinationRepository, processSupervisor, {
+    models: modelStore,
+    files: storedFiles,
     toolRegistry,
-    new RunPermissionEngine(),
-    new InMemoryHookEventBus(),
-    workspaceStore,
-    storedFiles,
+    permissions: new RunPermissionEngine(),
+    hooks: new InMemoryHookEventBus(),
     promptCompiler,
     logger,
-    skillCatalog,
-    webSearchService,
-    mcpManager,
-  );
-
-  const agentCoordinator = new AgentCoordinator(workspaceStore, coordinationRepository, agentLoop, storedFiles, processSupervisor);
-  agentLoop.support = agentCoordinator;
-  toolRegistry.registerProvider(new SubagentToolProvider(agentCoordinator, workspaceStore));
+    skills: skillCatalog,
+    webSearch: webSearchService,
+    mcp: mcpManager,
+  });
+  toolRegistry.registerProvider(new SubagentToolProvider(agentCoordinator));
   await agentCoordinator.recover('developer:local');
 
   return {
@@ -143,12 +135,9 @@ async function assembleAppDependencies(
     storedFiles,
     secretProtector,
     modelStore,
-    processSupervisor,
     workspaceFiles,
-    toolRegistry,
     skillCatalog,
     webSearchService,
     mcpManager,
-    agentLoop,
   };
 }
