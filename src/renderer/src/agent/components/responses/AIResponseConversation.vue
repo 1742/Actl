@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { tr } from '../../../i18n';
-import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 import { ArrowDown } from '@lucide/vue';
 import type { SessionContextCompression } from '../../../../../shared/agent/sessions';
 import type { AIFileContent, AIMessageItem, AIResponseContext } from './types';
@@ -35,6 +35,7 @@ const emit = defineEmits<{
 }>();
 
 const scrollRef = ref<HTMLElement>();
+const contentRef = ref<HTMLElement>();
 const activeResponseId = ref<string>();
 const isNearBottom = ref(true);
 const bottomPadding = computed(() => `${props.bottomInset + (props.displayMode === 'compact' ? 24 : 132)}px`);
@@ -65,7 +66,10 @@ const refreshPosition = () => {
   if (!scroller) return;
   isNearBottom.value = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 120;
   const sections = Array.from(scroller.querySelectorAll<HTMLElement>('[data-response-id]'));
-  if (!sections.length) return;
+  if (!sections.length) {
+    activeResponseId.value = undefined;
+    return;
+  }
   const top = scroller.getBoundingClientRect().top;
   activeResponseId.value = sections.reduce((best, section) =>
     Math.abs(section.getBoundingClientRect().top - top - 24) <
@@ -88,16 +92,16 @@ const scrollToBottom = () => {
   scrollRef.value?.scrollTo({ top: scrollRef.value.scrollHeight, behavior: 'smooth' });
 };
 
-onMounted(refreshPosition);
 watch(
-  () => JSON.stringify(props.contexts),
-  async () => {
-    const stick = isNearBottom.value;
-    await nextTick();
-    if (scrollRef.value && stick)
-      scrollRef.value.scrollTo({ top: scrollRef.value.scrollHeight, behavior: 'instant' });
-    refreshPosition();
+  [scrollRef, contentRef],
+  ([scroller, content], _, onCleanup) => {
+    if (!scroller || !content) return;
+    const observer = new ResizeObserver(refreshPosition);
+    observer.observe(scroller);
+    observer.observe(content);
+    onCleanup(() => observer.disconnect());
   },
+  { flush: 'post' },
 );
 </script>
 
@@ -110,6 +114,7 @@ watch(
     >
       <div
         v-if="!contexts.length"
+        ref="contentRef"
         class="mx-auto flex h-full max-w-5xl items-center justify-center px-4 pt-8"
         :style="{ paddingBottom: bottomPadding }"
       >
@@ -117,6 +122,7 @@ watch(
       </div>
       <div
         v-else
+        ref="contentRef"
         class="mx-auto flex w-full max-w-5xl flex-col"
         :class="displayMode === 'compact' ? 'gap-5 px-3 pt-4' : 'gap-8 px-4 pt-8 sm:px-6 lg:px-14'"
         :style="{ paddingBottom: bottomPadding }"
