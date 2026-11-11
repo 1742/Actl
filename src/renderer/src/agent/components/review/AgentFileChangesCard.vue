@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, inject, shallowRef, watch } from 'vue';
-import { FileDiff } from '@lucide/vue';
+import { computed, inject, ref, shallowRef, watch } from 'vue';
+import { ChevronDown, FileDiff } from '@lucide/vue';
 import { useRouter } from 'vue-router';
 import type { ReviewFile } from '../../../../../shared/agent/review';
 import { getAgentRuntimeContext } from '../../services/runtimeClient';
@@ -8,7 +8,10 @@ import { reviewTargetKey } from './reviewNavigation';
 import AgentResultCard from '../conversation/AgentResultCard.vue';
 
 const props = defineProps<{ sessionId: string; runId: string }>();
+const previewCount = 2;
 const files = shallowRef<ReviewFile[]>([]);
+const expanded = ref(false);
+const visibleFiles = computed(() => expanded.value ? files.value : files.value.slice(0, previewCount));
 const reviewTarget = inject(reviewTargetKey);
 const router = useRouter();
 
@@ -27,6 +30,7 @@ const totals = computed(() => files.value.reduce(
 watch(() => [props.sessionId, props.runId] as const, async ([sessionId, runId], _, onCleanup) => {
   let current = true;
   onCleanup(() => { current = false; });
+  expanded.value = false;
   files.value = [];
   if (!sessionId || !runId || runId.startsWith('local-')) return;
   try {
@@ -49,10 +53,10 @@ watch(() => [props.sessionId, props.runId] as const, async ([sessionId, runId], 
         <span class="text-red-700">−{{ totals.deletions }}</span>
       </span>
     </template>
-    <ul class="max-h-44 overflow-y-auto">
-      <li v-for="file in files" :key="file.id" class="border-b border-gray-100 last:border-b-0">
+    <ul class="inset-scrollbar max-h-56 divide-y divide-gray-100 overflow-y-auto">
+      <li v-for="file in visibleFiles" :key="file.id">
         <button
-          class="agent-result-row"
+          class="flex min-h-11 w-full min-w-0 items-center gap-2 px-3 py-2 text-left text-sm hover:bg-gray-50"
           type="button"
           :title="file.path"
           @click="openFile(file.id)"
@@ -65,5 +69,17 @@ watch(() => [props.sessionId, props.runId] as const, async ([sessionId, runId], 
         </button>
       </li>
     </ul>
+    <button
+      v-if="files.length > previewCount"
+      class="agent-result-row border-t border-gray-100 text-gray-500 hover:text-gray-800"
+      type="button"
+      :aria-expanded="expanded"
+      @click="expanded = !expanded"
+    >
+      <span>{{
+        expanded ? $t('ui.hideChangedFiles') : $t('dynamic.moreChangedFiles', { count: files.length - previewCount })
+      }}</span>
+      <ChevronDown :size="14" class="transition-transform" :class="{ 'rotate-180': expanded }" />
+    </button>
   </AgentResultCard>
 </template>
