@@ -9,6 +9,7 @@ import {
   type AgentRunRecord,
   type AgentTimelineItem,
   findUnresolvedToolCalls,
+  modelMessageSource,
   type PermissionRequestItem,
   type PermissionResolution,
 } from "../agent-domain.js";
@@ -129,7 +130,7 @@ export class AgentLoop {
           continue;
         }
 
-        // Check the inbox for messages; if any are found, inject them into the user message in the next round.
+        // Deliver queued child instructions before completing the run.
         if (!this.context.readyToComplete()) continue;
         
         return this.finalizer.completed(session, run, onEvent);
@@ -150,7 +151,7 @@ export class AgentLoop {
   ): Promise<void> {
     if (event.type === "usage") return;
     if (event.type === "output_item_started") {
-      const item = createStreamingItem(event.item);
+      const item = createStreamingItem(withModelSource(run, event.item));
       const outputIndex = run.timeline.push(item) - 1;
       itemIndexes.set(event.item.id, outputIndex);
       await emit(onEvent, run, { type: "item_started", item, outputIndex });
@@ -176,8 +177,9 @@ export class AgentLoop {
       if (event.name) item.name = event.name;
       await emit(onEvent, run, { type: "tool_arguments_delta", itemId: event.itemId, outputIndex, delta: event.argumentsDelta ?? "" });
     } else if (event.type === "output_item_completed") {
-      run.timeline[outputIndex] = structuredClone(event.item);
-      await emit(onEvent, run, { type: "item_completed", item: event.item, outputIndex });
+      const completed = withModelSource(run, event.item);
+      run.timeline[outputIndex] = structuredClone(completed);
+      await emit(onEvent, run, { type: "item_completed", item: completed, outputIndex });
       await this.workspaceStore.touch(session, run);
     }
   }
@@ -189,7 +191,8 @@ export class AgentLoop {
     output: TranscriptItem[],
     onEvent?: AgentDomainEventHandler,
   ): Promise<void> {
-    for (const item of output) {
+    for (const outputItem of output) {
+      const item = withModelSource(run, outputItem);
       if (itemIndexes.has(item.id)) continue;
       const outputIndex = run.timeline.push(structuredClone(item)) - 1;
       itemIndexes.set(item.id, outputIndex);
@@ -200,13 +203,17 @@ export class AgentLoop {
   }
 
   private async addSyntheticMessage(session: Session, run: AgentRunRecord, text: string, onEvent?: AgentDomainEventHandler): Promise<void> {
-    const item: TranscriptMessage = { id: createRandomId("msg"), type: "message", role: "assistant", content: [{ type: "text", text }] };
+    const item: TranscriptMessage = { id: createRandomId("msg"), type: "message", role: "assistant", source: { kind: "runtime" }, content: [{ type: "text", text }] };
     const outputIndex = run.timeline.push(item) - 1;
     await this.workspaceStore.touch(session, run);
     await emit(onEvent, run, { type: "item_started", item: { ...item, content: [] }, outputIndex });
     await emit(onEvent, run, { type: "text_delta", itemId: item.id, outputIndex, contentIndex: 0, delta: text });
     await emit(onEvent, run, { type: "item_completed", item, outputIndex });
   }
+}
+
+function withModelSource<T extends TranscriptItem>(run: AgentRunRecord, item: T): T {
+  return item.type === "message" ? { ...item, source: modelMessageSource(run) } : item;
 }
 
 function createStreamingItem(item: Exclude<TranscriptItem, { type: "tool_result" }>): Exclude<AgentTimelineItem, PermissionRequestItem | Extract<TranscriptItem, { type: "tool_result" }>> {

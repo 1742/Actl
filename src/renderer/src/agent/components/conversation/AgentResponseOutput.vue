@@ -19,7 +19,7 @@ const isActive = computed(() =>
   ['in_progress', 'waiting_permission'].includes(props.context.response.status),
 );
 const finalMessageIndex = computed(() =>
-  groups.value.map((group) => group.type).lastIndexOf('message'),
+  groups.value.findIndex((group) => group.type === 'message' && group.isFinal),
 );
 const finalWebSearch = computed(() => {
   if (props.context.response.status !== 'completed' || finalMessageIndex.value < 0)
@@ -27,13 +27,14 @@ const finalWebSearch = computed(() => {
   const blocks = groups.value.flatMap((group) => (group.type === 'activity' ? group.blocks : []));
   return { sources: collectWebSources(blocks), queries: collectWebQueries(blocks) };
 });
-const completedHistory = computed(() =>
-  props.context.response.status === 'completed' && finalMessageIndex.value > 0
-    ? groups.value.slice(0, finalMessageIndex.value)
-    : [],
-);
+const completedHistory = computed(() => {
+  if (props.context.response.status !== 'completed' || finalMessageIndex.value <= 0) return [];
+  const prefix = groups.value.slice(0, finalMessageIndex.value);
+  const firstIncoming = prefix.findIndex((group) => group.type === 'message' && group.item.role === 'user');
+  return firstIncoming < 0 ? prefix : prefix.slice(0, firstIncoming);
+});
 const displayedGroups = computed(() =>
-  completedHistory.value.length ? groups.value.slice(finalMessageIndex.value) : groups.value,
+  groups.value.slice(completedHistory.value.length),
 );
 const completedHistoryItemCount = computed(() =>
   completedHistory.value.reduce(

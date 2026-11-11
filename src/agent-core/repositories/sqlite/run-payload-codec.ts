@@ -27,6 +27,11 @@ const messageSchema = z.object({
   type: z.literal("message"),
   id: z.string(),
   role: z.enum(["system", "developer", "user", "assistant"]),
+  source: z.union([
+    z.object({ kind: z.enum(["user", "runtime"]) }).strict(),
+    z.object({ kind: z.literal("model"), sessionId: z.string(), runId: z.string(), model: z.string().optional() }).strict(),
+    z.object({ kind: z.literal("mail"), subject: z.string() }).strict(),
+  ]).optional(),
   content: z.array(contentPartSchema),
 }).strict();
 

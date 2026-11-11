@@ -1,6 +1,6 @@
 import type { TranscriptMessage, TranscriptReasoning } from "../../model/types.js";
 import type { AgentDomainEvent, AgentRunRecord, AgentTimelineItem } from "../../runtime/agent-domain.js";
-import { toAgentItemDto, toAgentResponseDto, toPendingPermissionBatchDto, type StoredFileMetadataResolver } from "./presenter.js";
+import { mayBeMailTool, projectToolArguments, projectToolOutput, toAgentItemDto, toAgentResponseDto, toPendingPermissionBatchDto, type StoredFileMetadataResolver } from "./presenter.js";
 import type { AgentStreamEvent } from "../../../shared/agent/responses.js";
 
 type AgentStreamEventPayload = AgentStreamEvent extends infer Event
@@ -13,7 +13,7 @@ export class AgentStreamProjector {
   constructor(private readonly resolveStoredFile?: StoredFileMetadataResolver) {}
 
   project(run: AgentRunRecord, event: AgentDomainEvent): AgentStreamEvent[] {
-    const payloads = this.projectPayload(event);
+    const payloads = this.projectPayload(run, event);
     return payloads.map((payload) => ({
       ...payload,
       response_id: run.id,
@@ -21,7 +21,7 @@ export class AgentStreamProjector {
     }));
   }
 
-  private projectPayload(event: AgentDomainEvent): AgentStreamEventPayload[] {
+  private projectPayload(run: AgentRunRecord, event: AgentDomainEvent): AgentStreamEventPayload[] {
     if (event.type === "run_created") return [{ type: "response.created", response: toAgentResponseDto(event.run, this.resolveStoredFile) }];
     if (event.type === "run_completed") return [{ type: "response.completed", response: toAgentResponseDto(event.run, this.resolveStoredFile) }];
     if (event.type === "run_failed") return [{ type: "response.failed", response: toAgentResponseDto(event.run, this.resolveStoredFile) }];
@@ -30,7 +30,7 @@ export class AgentStreamProjector {
     if (event.type === "item_started") return [{
       type: "response.output_item.added",
       output_index: event.outputIndex,
-      item: toAgentItemDto(event.item, "in_progress"),
+      item: toAgentItemDto(event.item, "in_progress", run),
     }];
     if (event.type === "text_delta") {
       const events = this.ensureMessagePart(event.itemId, event.outputIndex, event.contentIndex);
@@ -46,9 +46,18 @@ export class AgentStreamProjector {
       events.push({ type: "response.reasoning_summary_text.delta", item_id: event.itemId, output_index: event.outputIndex, summary_index: event.contentIndex, delta: event.delta });
       return events;
     }
-    if (event.type === "tool_arguments_delta") return [{ type: "response.function_call_arguments.delta", item_id: event.itemId, output_index: event.outputIndex, delta: event.delta }];
-    if (event.type === "item_completed") return this.completeItem(event.item, event.outputIndex);
-    if (event.type === "tool_completed") return [{ type: "agent.tool.completed", item_id: event.itemId, call_id: event.callId, result: event.result }];
+    if (event.type === "tool_arguments_delta") {
+      const call = run.timeline[event.outputIndex];
+      if (call?.type === "tool_call" && mayBeMailTool(call.name)) return [];
+      return [{ type: "response.function_call_arguments.delta", item_id: event.itemId, output_index: event.outputIndex, delta: event.delta }];
+    }
+    if (event.type === "item_completed") return this.completeItem(run, event.item, event.outputIndex);
+    if (event.type === "tool_completed") {
+      const result = event.result.ok
+        ? { ...event.result, output: projectToolOutput(event.result.toolName, event.result.output) }
+        : event.result;
+      return [{ type: "agent.tool.completed", item_id: event.itemId, call_id: event.callId, result }];
+    }
     if (event.type === "permissions_requested") return [{
       type: "agent.permissions.requested",
       batch: toPendingPermissionBatchDto(event.batch),
@@ -65,7 +74,7 @@ export class AgentStreamProjector {
     return [{ type: "error", code: event.code, message: event.message, param: event.param }];
   }
 
-  private completeItem(item: AgentTimelineItem, outputIndex: number): AgentStreamEventPayload[] {
+  private completeItem(run: AgentRunRecord, item: AgentTimelineItem, outputIndex: number): AgentStreamEventPayload[] {
     const events: AgentStreamEventPayload[] = [];
     if (item.type === "message") {
       const message = item as TranscriptMessage;
@@ -96,9 +105,10 @@ export class AgentStreamProjector {
         events.push({ type: "response.reasoning_text.done", item_id: reasoning.id, output_index: outputIndex, content_index: contentIndex, text: part.text });
       });
     } else if (item.type === "tool_call") {
-      events.push({ type: "response.function_call_arguments.done", item_id: item.id, output_index: outputIndex, arguments: item.argumentsJson });
+      events.push({ type: "response.function_call_arguments.done", item_id: item.id, output_index: outputIndex,
+        arguments: projectToolArguments(item.name, item.argumentsJson) });
     }
-    events.push({ type: "response.output_item.done", output_index: outputIndex, item: toAgentItemDto(item, "completed") });
+    events.push({ type: "response.output_item.done", output_index: outputIndex, item: toAgentItemDto(item, "completed", run) });
     return events;
   }
 

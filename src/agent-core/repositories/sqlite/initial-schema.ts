@@ -1,8 +1,9 @@
 import type { DatabaseSync } from "node:sqlite";
 import { nowIso } from "../../utils.js";
+import { AGENT_MAIL_SQL } from "./migrations/v21-to-v22.js";
 
 export const SQLITE_SCHEMA_GENERATION = "multi-user-multi-model";
-export const SQLITE_SCHEMA_VERSION = 21;
+export const SQLITE_SCHEMA_VERSION = 22;
 
 // New databases start at the current version. Historical upgrades live in migrations/.
 const METADATA_SQL = `
@@ -116,7 +117,8 @@ CREATE TABLE agent_plans(root_session_id TEXT PRIMARY KEY REFERENCES sessions(id
 CREATE TABLE agent_messages(id TEXT PRIMARY KEY, from_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
  to_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, source_run_id TEXT NOT NULL,
  kind TEXT NOT NULL CHECK(kind IN ('message', 'result')), text TEXT NOT NULL,
- wake INTEGER NOT NULL, consumed INTEGER NOT NULL DEFAULT 0, dedupe_key TEXT NOT NULL UNIQUE) STRICT;
+ wake INTEGER NOT NULL, consumed INTEGER NOT NULL DEFAULT 0, dedupe_key TEXT NOT NULL UNIQUE,
+ author TEXT CHECK(author IN ('user', 'model')), model TEXT) STRICT;
 CREATE INDEX agent_messages_inbox_idx ON agent_messages(to_session_id, consumed);
 `;
 
@@ -133,6 +135,7 @@ const INITIAL_SCHEMA_SQL = [
   PROMPT_SETTINGS_SQL,
   MCP_CONFIG_SQL,
   AGENT_COORDINATION_SQL,
+  AGENT_MAIL_SQL,
 ].join("\n");
 
 export function initializeWorkspaceSchema(database: DatabaseSync): void {

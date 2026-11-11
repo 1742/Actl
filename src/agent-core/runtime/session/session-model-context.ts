@@ -15,6 +15,7 @@ import type { ModelStore } from "../model-store.js";
 import type { PromptCompiler } from "../prompt-compiler.js";
 import type { Session, WorkspaceStore } from "../workspace-store.js";
 import type { SessionTools } from "./session-tools.js";
+import type { AgentInboxMessage } from "../../../shared/agent/coordination.js";
 
 const COMPRESSION_INPUT_RATIO = 0.8;
 
@@ -85,14 +86,8 @@ export class SessionModelContext {
     for (const message of this.inbox.pending(session.id)) {
       signal.throwIfAborted();
       // The transcript write and acknowledgment can be interrupted by a restart.
-      const delivered = session.runs.some((entry) =>
-        entry.input.some((item) => item.id === message.id) || entry.timeline.some((item) => item.id === message.id));
-      if (!delivered) {
-        const source = message.kind === "result" ? "Runtime child result" : "Agent message";
-        const item: TranscriptMessage = {
-          id: message.id, type: "message", role: "user",
-          content: [{ type: "text", text: `[${source} from ${message.fromSessionId}; source run ${message.sourceRunId}]\n${message.text}` }],
-        };
+      if (!instructionDelivered(session, message.id)) {
+        const item = instructionInput(message);
         const outputIndex = run.timeline.push(item) - 1;
         await this.workspaceStore.touch(session, run);
         await onEvent(run, { type: "item_started", item, outputIndex });
@@ -199,6 +194,23 @@ export class SessionModelContext {
       throw new AgentLoopError("model_incompatible_with_session", `Selected model does not support: ${unsupported.join(", ")}.`);
     }
   }
+}
+
+export function instructionDelivered(session: Session, id: string): boolean {
+  return session.runs.some((run) =>
+    run.input.some((item) => item.id === id) || run.timeline.some((item) => item.id === id));
+}
+
+export function instructionInput(message: AgentInboxMessage): TranscriptMessage {
+  const source = message.author === "model" ? {
+    kind: "model" as const, sessionId: message.fromSessionId, runId: message.sourceRunId,
+    ...(message.model ? { model: message.model } : {}),
+  } : message.author === "user" ? { kind: "user" as const } : undefined;
+  return {
+    id: message.id, type: "message", role: "user",
+    ...(source ? { source } : {}),
+    content: [{ type: "text", text: message.text }],
+  };
 }
 
 function skillIdsFromInput(input: readonly TranscriptMessage[]): string[] {

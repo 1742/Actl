@@ -132,6 +132,15 @@ export function isTranscriptItem(item: AgentTimelineItem): item is TranscriptIte
   return item.type !== "permission_request";
 }
 
+export function modelMessageSource(run: AgentRunRecord) {
+  return {
+    kind: 'model' as const,
+    sessionId: run.sessionId,
+    runId: run.id,
+    model: run.modelSnapshot.displayName,
+  };
+}
+
 export function findUnresolvedToolCalls(timeline: readonly AgentTimelineItem[]): TranscriptToolCall[] {
   const resultCallIds = new Set(
     timeline.flatMap((item) => item.type === "tool_result" ? [item.callId] : []),

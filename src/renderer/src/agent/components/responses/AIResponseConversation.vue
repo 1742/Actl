@@ -7,6 +7,7 @@ import type { AIFileContent, AIMessageItem, AIResponseContext } from './types';
 import { readInputContentDisplayText } from '../../utils/aiResponse.ts';
 import InputMessageContent from './InputMessageContent.vue';
 import MessageTools from './MessageTools.vue';
+import MessageAuthor from './MessageAuthor.vue';
 import RunJumpSidebar from './RunJumpSidebar.vue';
 
 const props = withDefaults(
@@ -36,7 +37,7 @@ const emit = defineEmits<{
 const scrollRef = ref<HTMLElement>();
 const activeResponseId = ref<string>();
 const isNearBottom = ref(true);
-const bottomPadding = computed(() => `${props.bottomInset + 132}px`);
+const bottomPadding = computed(() => `${props.bottomInset + (props.displayMode === 'compact' ? 24 : 132)}px`);
 
 const inputMessages = (context: AIResponseContext) =>
   context.input.filter(
@@ -104,7 +105,7 @@ watch(
   <div class="relative min-h-0 w-full flex-1 bg-transparent">
     <div
       ref="scrollRef"
-      class="h-full w-full overflow-y-auto scroll-smooth"
+      class="inset-scrollbar h-full w-full overflow-y-auto scroll-smooth"
       @scroll.passive="refreshPosition"
     >
       <div
@@ -116,7 +117,8 @@ watch(
       </div>
       <div
         v-else
-        class="mx-auto flex w-full max-w-5xl flex-col gap-8 px-4 pt-8 sm:px-6 lg:px-14"
+        class="mx-auto flex w-full max-w-5xl flex-col"
+        :class="displayMode === 'compact' ? 'gap-5 px-3 pt-4' : 'gap-8 px-4 pt-8 sm:px-6 lg:px-14'"
         :style="{ paddingBottom: bottomPadding }"
       >
         <template v-for="(context, contextIndex) in contexts" :key="context.response.id">
@@ -127,6 +129,7 @@ watch(
               class="flex justify-end"
             >
               <div class="group/message flex max-w-[82%] flex-col items-end sm:max-w-[72%]">
+                <MessageAuthor :item="item" />
                 <div v-if="item.content.length" class="max-w-full">
                   <InputMessageContent
                     :parts="item.content"
@@ -192,6 +195,7 @@ watch(
       <ArrowDown :size="18" />
     </button>
     <RunJumpSidebar
+      v-if="displayMode === 'default'"
       :contexts="contexts"
       :active-response-id="activeResponseId"
       @jump="jumpToResponse"

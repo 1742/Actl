@@ -21,7 +21,8 @@ import { AgentCoordinator } from '../../../src/agent-core/runtime/multi-agents/a
 import { createSilentLogger } from '../../../src/agent-core/observability/logger';
 import { ProcessSupervisor } from '../../../src/agent-core/runtime/process/process-supervisor';
 import { ToolRegistry } from '../../../src/agent-core/tools/registry';
-import { SubagentToolProvider } from '../../../src/agent-core/tools/builtin/subagent';
+import { AgentTeamToolProvider } from '../../../src/agent-core/tools/builtin/agent-team';
+import { toAgentResponseDto } from '../../../src/agent-core/contracts/agent-responses/presenter';
 import { FilesystemToolProvider } from '../../../src/agent-core/tools/builtin/filesystem/provider';
 import { ShellToolProvider } from '../../../src/agent-core/tools/builtin/shell';
 import { InMemoryHookEventBus } from '../../../src/agent-core/hooks/event-bus';
@@ -66,7 +67,7 @@ async function fixture(handler: (request: ModelTurnRequest, signal?: AbortSignal
     models, files, toolRegistry: registry, permissions: new RunPermissionEngine(),
     hooks: new InMemoryHookEventBus(), promptCompiler: compiler, logger: createSilentLogger(),
   });
-  registry.registerProvider(new SubagentToolProvider(coordinator));
+  registry.registerProvider(new AgentTeamToolProvider(coordinator));
   const project = await workspace.createProject(owner, { workspacePaths: [projectPath], primaryWorkspacePath: projectPath });
   const root = await workspace.createSession(owner, { projectId: project.id });
   return { directory, projectPath, coordination, workspace, files, coordinator, root, project, compiler,
@@ -85,6 +86,8 @@ test('migrates v20 without losing sessions, persists plans/messages, and rejects
       id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
       title TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     ) STRICT;
+    CREATE TABLE agent_runs(id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id));
+    CREATE TABLE timeline_items(run_id TEXT, item_id TEXT, item_type TEXT, payload_json TEXT);
   `);
   db.prepare('INSERT INTO schema_metadata VALUES (1, ?, 20, ?)').run('multi-user-multi-model', 'now');
   db.prepare('INSERT INTO sessions VALUES (?, ?, NULL, ?, ?, ?)').run('root', owner, 'retained', 'now', 'now');
@@ -106,6 +109,28 @@ test('migrates v20 without losing sessions, persists plans/messages, and rejects
     const reopened = new SqliteAgentCoordinationRepository(database);
     assert.equal(reopened.plan('root').revision, 2);
     assert.equal(reopened.pending('root')[0]?.text, 'retained message');
+    database.exec(`
+      DROP TABLE agent_mail;
+      ALTER TABLE agent_messages DROP COLUMN author;
+      ALTER TABLE agent_messages DROP COLUMN model;
+      UPDATE schema_metadata SET version = 21;
+      INSERT INTO sessions(id, owner_id, title, created_at, updated_at, parent_session_id, root_session_id)
+        VALUES ('child', 'developer:local', 'child', 'now', 'now', 'root', 'root');
+      INSERT INTO agent_messages(id, from_session_id, to_session_id, source_run_id, kind, text, wake, consumed, dedupe_key)
+        VALUES ('old-mail', 'child', 'root', 'child-run', 'result', 'legacy private body', 1, 1, 'result:child-run'),
+               ('old-instruction', 'root', 'child', 'root-run', 'message', 'legacy instruction', 1, 0, 'instruction');
+      INSERT INTO agent_runs VALUES ('root-run', 'root');
+      INSERT INTO timeline_items VALUES ('root-run', 'old-mail', 'message',
+        '{"type":"message","id":"old-mail","role":"user","content":[{"type":"text","text":"legacy private body"}]}');
+    `);
+    database.close();
+    database = await openWorkspaceDatabase(dbPath);
+    const migrated = new SqliteAgentCoordinationRepository(database);
+    assert.equal(migrated.listMail('root', { limit: 5 })[0]?.read, true);
+    assert.equal(migrated.listMail('root', { limit: 5 })[0]?.sentAt, null);
+    assert.equal(migrated.readMail('root', 'old-mail')?.body, 'legacy private body');
+    assert.equal(migrated.pending('child')[0]?.id, 'old-instruction');
+    assert.equal(database.prepare("SELECT json_extract(payload_json, '$.source.kind') AS source FROM timeline_items").get()?.source, 'mail');
   } finally { if (database.isOpen) database.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -165,7 +190,7 @@ test('child completion does not resume a parent through pending approval; plan r
     assert.equal(run.status, 'waiting_permission');
     await delay(150);
     assert.equal(f.root.runs.length, 1); assert.equal(run.status, 'waiting_permission');
-    assert.ok(f.coordination.pending(f.root.id).some((message) => message.kind === 'result'));
+    assert.ok(f.coordination.listMail(f.root.id, { limit: 10 }).some((message) => message.kind === 'result'));
     const batch = run.pendingToolBatch!;
     const completed = await f.coordinator.resume(f.root, run, batch.id, batch.permissions.map((permission) => ({ permissionId: permission.id, decision: 'approve' })));
     assert.equal(completed.status, 'completed');
@@ -255,7 +280,7 @@ test('stopping a session aborts input preparation and releases its reservation',
   } finally { await f.close(); }
 });
 
-test('a running child keeps its project reserved and wakes the idle parent on completion', { timeout: 5000 }, async () => {
+test('a running child keeps its project reserved and sends a receipt without waking its parent', { timeout: 5000 }, async () => {
   const finishChild = new AbortController();
   const f = await fixture(async (request, signal) => {
     if (isChild(request)) {
@@ -272,20 +297,114 @@ test('a running child keeps its project reserved and wakes the idle parent on co
     assert.equal(initial.status, 'completed');
     const other = await f.workspace.createSession(owner, { projectId: f.project.id });
     await assert.rejects(f.coordinator.start(other, input('conflict'), options), { code: 'project_active_response_exists' });
-    let complete!: () => void;
-    const resumed = new Promise<void>((resolve) => { complete = resolve; });
-    const unsubscribe = f.coordinator.subscribe((event) => {
-      if (event.type === 'response' && event.sessionId === f.root.id &&
-        event.events.some((item) => item.type === 'response.completed' && item.response_id !== initial.id)) complete();
-    });
-    try {
-      finishChild.abort();
-      await resumed;
-      assert.equal(f.root.runs.length, 2);
-      assert.ok(f.root.runs[1]?.timeline.some((item) => item.type === 'message' && item.role === 'user' &&
-        item.content.some((part) => part.type === 'text' && part.text.includes('child findings'))));
-    } finally { unsubscribe(); }
+    const waiting = f.coordinator.waitForMail(f.root, undefined, 2000);
+    finishChild.abort();
+    const receipt = (await waiting).items[0]!;
+    assert.equal(receipt.kind, 'result');
+    assert.match(f.coordinator.readMail(f.root, receipt.id).body, /child findings/);
+    await delay(30);
+    assert.equal(f.root.runs.length, 1);
+    assert.ok(!JSON.stringify(f.root.runs[0]?.timeline).includes('child findings'));
   } finally { await f.close(); }
+});
+
+test('mail reaches the model as a tool result and projects metadata to both desktop streams', async () => {
+  const body = 'private findings 40c3';
+  const f = await fixture(async (request) => {
+    if (isChild(request)) {
+      assert.ok(request.tools.some((tool) => tool.name === 'send_mail'));
+      assert.ok(!request.tools.some((tool) => tool.name === 'send_message' || tool.name === 'read_mail'));
+      if (!calls(request, 'send_mail').length) return [call('send_mail', { subject: 'Progress report', body })];
+      return [text('Child completed')];
+    }
+    assert.ok(!request.tools.some((tool) => tool.name === 'send_mail'));
+    if (!calls(request, 'spawn_agent').length) return [call('spawn_agent', { title: 'Review', prompt: 'Review' })];
+    if (!calls(request, 'wait_for_mail').length) return [call('wait_for_mail', { timeoutMs: 2000 })];
+    if (!calls(request, 'read_mail').length) {
+      assert.ok(!JSON.stringify(request.transcript).includes(body));
+      const id = f.coordinator.listMail(f.root, { limit: 10 }).items.find((mail) => mail.subject === 'Progress report')!.id;
+      return [call('read_mail', { mailId: id })];
+    }
+    assert.ok(request.transcript.some((item) => item.type === 'tool_result' && JSON.stringify(item).includes(body)));
+    return [text('Reviewed the progress report')];
+  });
+  try {
+    const streamed: unknown[] = [];
+    const treeEvents: unknown[] = [];
+    const off = f.coordinator.subscribe((event) => {
+      if (event.type === 'response' && event.sessionId === f.root.id) treeEvents.push(event);
+    });
+    const run = await f.coordinator.start(f.root, input('Review'), options, (event) => { streamed.push(event); });
+    off();
+    assert.equal(run.status, 'completed');
+    for (const result of [streamed, treeEvents, toAgentResponseDto(run), await f.coordinator.snapshot(f.root)]) {
+      assert.match(JSON.stringify(result), /Progress report/);
+      assert.ok(!JSON.stringify(result).includes(body));
+    }
+    assert.ok((await f.coordinator.waitForMail(f.root, undefined, 2000)).items.some((item) => item.kind === 'result'));
+    const { items, nextBeforeId } = f.coordinator.listMail(f.root, { limit: 1 });
+    assert.equal(items.length, 1);
+    assert.ok(nextBeforeId);
+    assert.equal(f.coordinator.listMail(f.root, { beforeId: nextBeforeId, limit: 5 }).items.length, 1);
+    const message = f.coordinator.listMail(f.root, { unread: false, limit: 10 }).items[0]!;
+    assert.equal(f.coordinator.readMail(f.root, message.id).body, body);
+    const other = await f.workspace.createSession(owner);
+    assert.throws(() => f.coordinator.readMail(other, message.id), /not found/);
+  } finally { await f.close(); }
+});
+
+test('mail waits time out and cancel without consuming messages', async () => {
+  const f = await fixture(async () => [text('Ready')]);
+  try {
+    assert.deepEqual(await f.coordinator.waitForMail(f.root, undefined, 15), { items: [], timedOut: true });
+    const abort = new AbortController();
+    const waiting = f.coordinator.waitForMail(f.root, undefined, 60000, abort.signal);
+    abort.abort();
+    await assert.rejects(waiting, { name: 'AbortError' });
+    assert.deepEqual(f.coordinator.listMail(f.root, { limit: 5 }).items, []);
+  } finally { await f.close(); }
+});
+
+test('running children get ordered user instructions in their timeline and idle children start with the actual input', async () => {
+  let releaseChild!: () => void;
+  const gate = new Promise<void>((resolve) => { releaseChild = resolve; });
+  const f = await fixture(async (request) => {
+    if (!isChild(request)) {
+      return calls(request, 'spawn_agent').length
+        ? [text('Parent ready')]
+        : [call('spawn_agent', { title: 'Review', prompt: 'Initial assignment' })];
+    }
+    await gate;
+    return [text('Child ready')];
+  });
+  try {
+    const rootRun = await f.coordinator.start(f.root, input('Start'), options);
+    const child = f.workspace.descendants(f.root.id).find((session) => session.parentSessionId)!;
+    await f.coordinator.send(f.root, rootRun, child.id, 'First instruction', 'first');
+    await f.coordinator.send(f.root, rootRun, child.id, 'Duplicate instruction', 'first');
+    await f.coordinator.send(f.root, rootRun, child.id, 'Second instruction', 'second');
+    const firstReceipt = f.coordinator.waitForMail(f.root, child.id, 2000);
+    releaseChild();
+    for (const receipt of (await firstReceipt).items) f.coordinator.readMail(f.root, receipt.id);
+    const firstRun = toAgentResponseDto(child.runs[0]!);
+    assert.equal(firstRun.input[0]?.source?.kind, 'model');
+    assert.deepEqual(firstRun.output.flatMap((item) =>
+      item.type === 'message' && item.role === 'user' ? item.content : [],
+    ).map((part) => part.type === 'output_text' ? part.text : ''), ['First instruction', 'Second instruction']);
+    assert.ok(firstRun.output.some((item) => item.type === 'message' && item.role === 'assistant' && item.source?.kind === 'model'));
+
+    await f.coordinator.send(f.root, rootRun, child.id, 'Actual new input', 'third', true);
+    assert.ok((await f.coordinator.waitForMail(f.root, child.id, 2000)).items.length);
+    assert.equal(child.runs.length, 2);
+    const nextRun = toAgentResponseDto(child.runs[1]!);
+    assert.deepEqual(nextRun.input[0]?.content, [{ type: 'input_text', text: 'Actual new input' }]);
+    assert.equal(nextRun.input[0]?.source?.kind, 'user');
+    assert.ok(!nextRun.output.some((item) => item.type === 'message' && item.role === 'user'));
+    assert.equal(f.coordination.pending(child.id).length, 0);
+  } finally {
+    releaseChild();
+    await f.close();
+  }
 });
 
 for (const scope of ['session', 'project'] as const) {

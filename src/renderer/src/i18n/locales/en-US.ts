@@ -1,5 +1,9 @@
 export default {
   agents: {
+    plan: 'Plan', subagents: 'Subagents', empty: 'No subagents yet',
+    loadingHistory: 'Loading subagent conversation…', noMessages: 'No messages yet',
+    parentAgent: 'Parent agent', runtime: 'Runtime',
+    receivedMail: 'Mail received',
     team: 'Agents and plan', readOnly: 'Read-only subagents', back: 'Back to main chat', stopAll: 'Stop all',
     running: 'Running', approval: 'Needs approval', stopping: 'Stopping', failed: 'Incomplete', cancelled: 'Stopped', done: 'Finished',
     followup: 'Follow up', followupHint: 'Add instructions or a new task for this agent', send: 'Send', stop: 'Stop',

@@ -3,72 +3,20 @@ import { tr } from '../../../i18n';
 import { computed, ref } from 'vue';
 import { ChevronRight } from '@lucide/vue';
 import type { AgentToolTimelineBlock } from './types';
+import { agentToolHeading } from '../../utils';
 import AgentWebSearchBlock from '../web-search/AgentWebSearchBlock.vue';
 
 const props = defineProps<{ block: AgentToolTimelineBlock }>();
-
-const labels: Record<AgentToolTimelineBlock['presentation'], string> = {
-  shell: 'Shell',
-  read: 'Read',
-  write: 'Write',
-  edit: 'Edit',
-  list: 'List',
-  glob: 'Glob',
-  grep: 'Grep',
-  move: 'Move',
-  delete: 'Delete',
-  process: 'Process',
-  skill: 'Skill',
-  web_search: 'Search',
-  web_fetch: 'Web Fetch',
-  generic: 'Tool',
-};
 
 const args = computed(() => props.block.arguments || {});
 const output = computed(() => props.block.result?.output);
 const outputRecord = computed(() => asRecord(output.value));
 const expanded = ref(false);
 
-const title = computed(() => labels[props.block.presentation]);
-const path = computed(() => stringAt(args.value, 'path'));
+const heading = computed(() => agentToolHeading(props.block));
+const title = computed(() => heading.value.title);
+const summary = computed(() => heading.value.detail);
 const command = computed(() => stringAt(args.value, 'command'));
-const summary = computed(() => {
-  if (props.block.presentation === 'shell')
-    return command.value || stringAt(args.value, 'processId');
-  if (
-    props.block.presentation === 'read' ||
-    props.block.presentation === 'write' ||
-    props.block.presentation === 'delete'
-  ) {
-    return path.value || stringAt(args.value, 'file_id');
-  }
-  if (props.block.presentation === 'glob') return stringAt(args.value, 'pattern');
-  if (props.block.presentation === 'grep') {
-    return [stringAt(args.value, 'pattern'), stringAt(args.value, 'path')]
-      .filter(Boolean)
-      .join(' in ');
-  }
-  if (props.block.presentation === 'list') return path.value || '.';
-  if (props.block.presentation === 'move') {
-    return [stringAt(args.value, 'source'), stringAt(args.value, 'destination')]
-      .filter(Boolean)
-      .join(' → ');
-  }
-  if (props.block.presentation === 'edit') {
-    const patches = arrayAt(args.value, 'patches');
-    return patches
-      .map((patch) => stringAt(asRecord(patch), 'path'))
-      .filter(Boolean)
-      .join(', ');
-  }
-  if (props.block.presentation === 'process')
-    return stringAt(args.value, 'processId') || command.value;
-  if (props.block.presentation === 'skill')
-    return stringAt(args.value, 'path') || stringAt(args.value, 'skillId');
-  if (props.block.presentation === 'web_search') return stringAt(args.value, 'query');
-  if (props.block.presentation === 'web_fetch') return stringAt(args.value, 'url');
-  return props.block.call.name || 'tool';
-});
 
 const readContent = computed(() => stringAt(outputRecord.value, 'content'));
 const writeContent = computed(() => stringAt(args.value, 'content'));

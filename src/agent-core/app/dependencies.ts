@@ -1,7 +1,7 @@
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { AgentCoordinator } from '../runtime/multi-agents/agent-coordinator.js';
-import { SubagentToolProvider } from '../tools/builtin/subagent.js';
+import { AgentTeamToolProvider } from '../tools/builtin/agent-team.js';
 import { InMemoryHookEventBus } from "../hooks/event-bus.js";
 import { RunPermissionEngine } from "../permissions/engine.js";
 import type { PromptSettingsRepository } from "../repositories/prompt-settings-repository.js";
@@ -122,7 +122,7 @@ async function assembleAppDependencies(
     webSearch: webSearchService,
     mcp: mcpManager,
   });
-  toolRegistry.registerProvider(new SubagentToolProvider(agentCoordinator));
+  toolRegistry.registerProvider(new AgentTeamToolProvider(agentCoordinator));
   await agentCoordinator.recover('developer:local');
 
   return {

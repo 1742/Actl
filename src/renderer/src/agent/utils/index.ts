@@ -3,7 +3,7 @@ import type { AIFunctionCallItem, AIFunctionCallOutputItem, AIMessageItem, AIRea
 import { normalizeResponseContext, readContentText } from './aiResponse';
 import type { AgentComposerDocument, ResolvedAgentComposer } from '../components/composer/types';
 import type { ResponseInputPartDto, AgentResponseDto, PermissionRequestItemDto } from '../../../../shared/agent/responses';
-import type { AgentOutputBlock, AgentToolPresentation, AgentToolResultEnvelope, AgentToolStatus } from '../components/conversation/types';
+import type { AgentOutputBlock, AgentToolPresentation, AgentToolResultEnvelope, AgentToolStatus, AgentToolTimelineBlock } from '../components/conversation/types';
 import type { RuntimeSkill } from '../../../../shared/agent/skills';
 
 const toolPresentations: Readonly<Record<string, AgentToolPresentation>> = {
@@ -23,6 +23,34 @@ const toolPresentations: Readonly<Record<string, AgentToolPresentation>> = {
   run_skill_script: 'skill',
   web_search: 'web_search',
   web_fetch: 'web_fetch',
+  spawn_agent: 'agent_team',
+  send_message: 'agent_team',
+  wait_agents: 'agent_team',
+  list_agents: 'agent_team',
+  interrupt_agent: 'agent_team',
+  update_plan: 'agent_team',
+  send_mail: 'agent_team',
+  wait_for_mail: 'agent_team',
+  list_mail: 'agent_team',
+  read_mail: 'agent_team',
+};
+
+const toolLabels: Record<AgentToolPresentation, string> = {
+  shell: 'Shell',
+  read: 'Read',
+  write: 'Write',
+  edit: 'Edit',
+  list: 'List',
+  glob: 'Glob',
+  grep: 'Grep',
+  move: 'Move',
+  delete: 'Delete',
+  process: 'Process',
+  skill: 'Skill',
+  web_search: 'Web Search',
+  web_fetch: 'Web Fetch',
+  agent_team: 'Sub Agent',
+  generic: 'Tool',
 };
 
 const asRecord = (value: unknown): Record<string, unknown> | null =>
@@ -180,29 +208,23 @@ export function agentOutputHint(block: Exclude<AgentOutputBlock, { type: 'messag
   }
   if (block.type === 'unknown') return tr('dynamic.unknownOutput', { type: block.item.type });
 
+  const { title, detail } = agentToolHeading(block, 'activity');
+  return [title, detail].filter(Boolean).join(' · ');
+}
+
+export function agentToolHeading(block: AgentToolTimelineBlock, view: 'row' | 'activity' = 'row') {
+  const { presentation } = block;
   const args = block.arguments;
   const stringArg = (key: string) => (typeof args?.[key] === 'string' ? (args[key] as string) : '');
-  const labels: Record<AgentToolPresentation, string> = {
-    shell: 'Shell',
-    read: 'Read',
-    write: 'Write',
-    edit: 'Edit',
-    list: 'List',
-    glob: 'Glob',
-    grep: 'Grep',
-    move: 'Move',
-    delete: 'Delete',
-    process: 'Process',
-    skill: 'Skill',
-    web_search: 'Web Search',
-    web_fetch: 'Web Fetch',
-    generic: 'Tool',
-  };
   let detail: string;
-  switch (block.presentation) {
+  switch (presentation) {
     case 'shell':
-    case 'process':
       detail = stringArg('command') || stringArg('processId');
+      break;
+    case 'process':
+      detail = view === 'row'
+        ? stringArg('processId') || stringArg('command')
+        : stringArg('command') || stringArg('processId');
       break;
     case 'read':
     case 'write':
@@ -243,10 +265,51 @@ export function agentOutputHint(block: Exclude<AgentOutputBlock, { type: 'messag
         : '';
       break;
     }
-    default:
-      detail = block.call.name;
+    case 'agent_team':
+      detail = agentTeamToolHeading(block);
+      break;
+    case 'generic':
+      detail = block.call.name || (view === 'row' ? 'tool' : '');
+      break;
   }
-  return [labels[block.presentation], detail].filter(Boolean).join(' · ');
+  return { title: toolLabels[presentation], detail };
+}
+
+function agentTeamToolHeading(block: AgentToolTimelineBlock) {
+  const args = block.arguments;
+  const result = asRecord(block.result?.output);
+  const text = (value: unknown) => typeof value === 'string' ? value : '';
+  const count = (items: unknown, noun: string) =>
+    Array.isArray(items) ? `${items.length} ${items.length === 1 ? noun : noun + 's'}` : '';
+
+  switch (block.call.name) {
+    case 'spawn_agent':
+      return text(args?.title);
+    case 'send_message':
+      return '';
+    case 'wait_agents':
+      return count(args?.sessionIds, 'subagent');
+    case 'list_agents': {
+      const children = Array.isArray(result?.agents)
+        ? result.agents.filter((agent) => asRecord(agent)?.parentSessionId)
+        : undefined;
+      return count(children, 'subagent');
+    }
+    case 'interrupt_agent':
+      return '';
+    case 'update_plan':
+      return count(args?.items, 'task');
+    case 'send_mail':
+      return text(args?.subject);
+    case 'wait_for_mail':
+      return result?.timedOut === true ? 'Wait timed out' : count(result?.items, 'message');
+    case 'list_mail':
+      return count(result?.items, 'message');
+    case 'read_mail':
+      return text(result?.subject);
+    default:
+      return block.call.name;
+  }
 }
 
 /** Groups execution activity between assistant messages for compact rendering. */
@@ -274,7 +337,7 @@ export function buildAgentOutputGroups(context: AIResponseContext): AgentOutputG
   flushActivity();
   for (let index = groups.length - 1; index >= 0; index -= 1) {
     const group = groups[index]!;
-    if (group.type === 'message') {
+    if (group.type === 'message' && group.item.role === 'assistant' && group.item.source?.kind !== 'runtime') {
       group.isFinal = true;
       break;
     }

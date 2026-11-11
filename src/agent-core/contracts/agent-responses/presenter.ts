@@ -24,6 +24,7 @@ export function inputFromDto(input: readonly ResponseInputMessageDto[]): Transcr
       type: "message",
       id: createRandomId("msg"),
       role: "user",
+      source: { kind: "user" },
       content: normalizedParts.map((part) => {
         if (part.type === "input_text") return { type: "text" as const, text: part.text };
         if (part.type === "input_workspace_file") return { type: "workspace_file" as const, path: part.path };
@@ -45,7 +46,7 @@ export function toAgentResponseDto(run: AgentRunRecord, resolveStoredFile?: Stor
     ...(run.modelSnapshot.reasoningEffort ? { reasoning_effort: run.modelSnapshot.reasoningEffort } : {}),
     permission_mode: run.permissionSnapshot.permissionMode,
     input: run.input.map((message) => toInputDto(message, run.sessionId, resolveStoredFile)),
-    output: run.timeline.map((item) => toAgentItemDto(item, "completed")),
+    output: run.timeline.map((item) => toAgentItemDto(item, "completed", run)),
     ...(run.pendingToolBatch ? { pending_permission_batch: toPendingPermissionBatchDto(run.pendingToolBatch) } : {}),
     ...(run.error ? { error: structuredClone(run.error) } : {}),
     created_at: run.createdAt,
@@ -54,13 +55,14 @@ export function toAgentResponseDto(run: AgentRunRecord, resolveStoredFile?: Stor
   };
 }
 
-export function toAgentItemDto(item: AgentTimelineItem, status: "in_progress" | "completed"): AgentItemDto {
+export function toAgentItemDto(item: AgentTimelineItem, status: "in_progress" | "completed", run?: AgentRunRecord): AgentItemDto {
   if (item.type === "message") return {
     id: item.id,
     type: "message",
-    role: "assistant",
+    role: item.role,
+    ...(item.source ? { source: item.source } : {}),
     status,
-    content: item.content.flatMap((part): ResponseMessagePartDto[] => {
+    content: item.source?.kind === 'mail' ? [] : item.content.flatMap((part): ResponseMessagePartDto[] => {
       if (part.type === "text") return [{ type: "output_text" as const, text: part.text, annotations: [] }];
       if (part.type === "refusal") return [{ type: "refusal" as const, refusal: part.reason }];
       return [];
@@ -72,7 +74,7 @@ export function toAgentItemDto(item: AgentTimelineItem, status: "in_progress" | 
     status,
     call_id: item.callId,
     name: item.name,
-    arguments: item.argumentsJson,
+    arguments: projectToolArguments(item.name, item.argumentsJson),
   };
   if (item.type === "tool_result") return {
     id: item.id,
@@ -81,7 +83,9 @@ export function toAgentItemDto(item: AgentTimelineItem, status: "in_progress" | 
     call_id: item.callId,
     // Keep the execution envelope parseable by existing clients; rich content
     // travels separately instead of appending non-JSON text to the envelope.
-    output: item.content[0]?.type === "json" ? JSON.stringify(item.content[0].value) : contentToText(item.content),
+    output: item.content[0]?.type === "json"
+      ? JSON.stringify(projectToolEnvelope(item.content[0].value, run, item.callId))
+      : contentToText(item.content),
     ...(item.content[0]?.type === "json" && item.content.length > 1 ? { content: structuredClone(item.content.slice(1)) } : {}),
   };
   if (item.type === "reasoning") return {
@@ -109,6 +113,48 @@ export function toAgentItemDto(item: AgentTimelineItem, status: "in_progress" | 
     ...(item.denialReason ? { denial_reason: item.denialReason } : {}),
     status: item.status,
   };
+}
+
+export function projectToolArguments(name: string, args: string): string {
+  if (!args || !mayBeMailTool(name)) return args;
+  try {
+    const value: unknown = JSON.parse(args);
+    if (isRecord(value) && typeof value.subject === 'string') return JSON.stringify({ subject: value.subject });
+  } catch { /* Arguments can be incomplete while streaming. */ }
+  return '{}';
+}
+
+export function mayBeMailTool(name: string): boolean {
+  return 'send_mail'.startsWith(name);
+}
+
+export function projectToolOutput(name: string | undefined, output: unknown): unknown {
+  if (name === 'read_mail' && isRecord(output)) {
+    const { body: _body, ...metadata } = output;
+    return metadata;
+  }
+  if (name === 'wait_agents' && Array.isArray(output)) return output.map(withoutAgentOutput);
+  if (name === 'list_agents' && isRecord(output) && Array.isArray(output.agents)) {
+    return { ...output, agents: output.agents.map(withoutAgentOutput) };
+  }
+  return output;
+}
+
+function projectToolEnvelope(value: unknown, run: AgentRunRecord | undefined, callId: string): unknown {
+  const call = run?.timeline.find((item) => item.type === 'tool_call' && item.callId === callId);
+  return call?.type === 'tool_call' && isRecord(value) && 'output' in value
+    ? { ...value, output: projectToolOutput(call.name, value.output) }
+    : value;
+}
+
+function withoutAgentOutput(value: unknown): unknown {
+  if (!isRecord(value)) return value;
+  const { output: _output, ...status } = value;
+  return status;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function toPendingPermissionDto(permission: PendingPermission): PendingPermissionDto {
@@ -143,6 +189,7 @@ function toInputDto(
   return {
     type: "message",
     role: "user",
+    ...(message.source ? { source: message.source } : {}),
     content: message.content.flatMap((part): ResponseInputPartDto[] => {
       if (part.type === "text") return [{ type: "input_text" as const, text: part.text }];
       if (part.type === "workspace_file") return [{ type: "input_workspace_file" as const, path: part.path }];

@@ -11,10 +11,14 @@ import { useAgentStore } from '../../stores/agent.ts';
 import { projectName } from '../../utils';
 import AgentResponseOutput from './AgentResponseOutput.vue';
 
-withDefaults(defineProps<{ bottomInset?: number }>(), { bottomInset: 140 });
+const props = withDefaults(defineProps<{ bottomInset?: number; sessionId?: string; compact?: boolean }>(), { bottomInset: 140 });
 const agentStore = useAgentStore();
 const notify = useNotifyStore();
+const targetId = computed(() => props.sessionId ?? agentStore.selectedSessionId);
+const runtime = computed(() => agentStore.runtimeBySessionId[targetId.value]);
+const error = computed(() => props.sessionId ? runtime.value?.errorMessage : agentStore.errorMessage);
 const emptyText = computed(() => {
+  if (props.sessionId) return tr(runtime.value?.loadingHistory ? 'agents.loadingHistory' : 'agents.noMessages');
   if (agentStore.selectedSessionId) return tr('ui.whatCanIHelpYouWith');
   const project = agentStore.draftProject;
   return project
@@ -26,7 +30,7 @@ const skillNames = computed(() =>
 );
 
 async function downloadFile(file: AIFileContent) {
-  const result = await downloadAgentFile(file);
+  const result = await downloadAgentFile(file, targetId.value);
   if (result.status === 'error') notify.error(result.message || tr('ui.downloadFailed'));
 }
 
@@ -34,7 +38,7 @@ async function loadFilePreview(file: AIFileContent, sessionId: string) {
   const fileId = typeof file.file_id === 'string' ? file.file_id : '';
   if (!fileId) return undefined;
   const session =
-    agentStore.sessions.find((item) => item.id === agentStore.selectedSessionId) ??
+    agentStore.sessions.find((item) => item.id === targetId.value) ??
     agentStore.sessions.find((item) => item.runtimeId === sessionId);
   if (!session) return undefined;
   const { client } = getAgentRuntimeContext(session.runtimeKind);
@@ -45,24 +49,25 @@ async function loadFilePreview(file: AIFileContent, sessionId: string) {
 
 <template>
   <AIResponseConversation
-    :contexts="agentStore.responses"
+    :contexts="runtime?.responses ?? []"
     :bottom-inset="bottomInset"
+    :display-mode="compact ? 'compact' : 'default'"
     :empty-text="emptyText"
     :skill-names="skillNames"
     :load-file-preview="loadFilePreview"
-    :compressions="agentStore.currentRuntime?.context?.compressions || []"
-    :compression-in-progress="agentStore.currentRuntime?.compressionInProgress || false"
+    :compressions="runtime?.context?.compressions || []"
+    :compression-in-progress="runtime?.compressionInProgress || false"
     @download-file="downloadFile"
   >
     <template #output="{ context }">
       <AgentResponseOutput :context="context" />
     </template>
     <div
-      v-if="agentStore.errorMessage"
+      v-if="error"
       class="flex items-start gap-2 rounded-lg border border-red-100 bg-red-50 px-3 py-2 text-sm text-red-600"
     >
       <AlertCircle :size="16" class="mt-0.5 shrink-0" />
-      <span>{{ agentStore.errorMessage }}</span>
+      <span>{{ error }}</span>
     </div>
   </AIResponseConversation>
 </template>

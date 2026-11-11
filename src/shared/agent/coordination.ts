@@ -27,7 +27,31 @@ export interface AgentInboxMessage {
   fromSessionId: string;
   toSessionId: string;
   sourceRunId: string;
-  kind: 'message' | 'result';
+  kind: 'message';
+  author?: 'user' | 'model';
+  model?: string;
   text: string;
   wake: boolean;
+}
+
+export interface AgentMailSummary {
+  id: string;
+  fromSessionId: string;
+  toSessionId: string;
+  sourceRunId: string;
+  kind: 'message' | 'result';
+  subject: string;
+  sentAt: string | null;
+  read: boolean;
+}
+
+export interface AgentMail extends AgentMailSummary {
+  body: string;
+}
+
+export interface AgentMailFilter {
+  fromSessionId?: string | undefined;
+  unread?: boolean | undefined;
+  beforeId?: string | undefined;
+  limit: number;
 }

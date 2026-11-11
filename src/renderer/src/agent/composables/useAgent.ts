@@ -233,7 +233,10 @@ export async function restoreInitialAgentView(): Promise<ActionResult> {
     persistedView?.type === 'session' &&
     store.sessions.some((session) => session.id === persistedView.id)
   ) {
-    return selectAgentSession(persistedView.id);
+    const session = store.sessions.find((item) => item.id === persistedView.id)!;
+    return selectAgentSession(session.rootSessionId
+      ? runtimeResourceKey(session.runtimeKind, session.rootSessionId)
+      : session.id);
   }
   if (
     persistedView?.type === 'project' &&
@@ -536,6 +539,39 @@ export function refreshAgentSession() {
   return store.selectedSessionId
     ? selectAgentSession(store.selectedSessionId)
     : initAgentSession(store.runtimeKind);
+}
+
+export async function loadSubagentHistory(sessionId: string, isCurrent: () => boolean): Promise<void> {
+  const store = useAgentStore();
+  const runtime = store.ensureRuntime(sessionId);
+  const version = (historyRequestVersions.get(sessionId) ?? 0) + 1;
+  historyRequestVersions.set(sessionId, version);
+  store.setLoadingHistory(sessionId, true);
+  const current = () => isCurrent() && historyRequestVersions.get(sessionId) === version;
+  try {
+    const { session, client } = sessionContext(sessionId);
+    const history = await client.getContext(session.runtimeId);
+    if (!current()) return;
+    const responses = agentResponsesToContexts(history.responses);
+    const live = new Map(runtime.responses.map((context) => [context.response.id, context]));
+    const ids = new Set(responses.map((context) => context.response.id));
+    const merged = [
+      ...responses.map((context) => live.get(context.response.id) ?? context),
+      ...runtime.responses.filter((context) => !ids.has(context.response.id)),
+    ];
+    store.setResponses(sessionId, merged);
+    store.setContextSummary(sessionId, history.context);
+    store.setHydrated(sessionId, true);
+    const latest = history.responses.at(-1);
+    if (latest && merged.at(-1)?.response.id === latest.id && !live.has(latest.id)) {
+      store.setPendingPermissionBatch(sessionId, latest.pending_permission_batch);
+      syncStateFromResponse(sessionId, latest);
+    }
+  } catch (error) {
+    if (current()) store.setError(sessionId, errorResult(error).message);
+  } finally {
+    if (historyRequestVersions.get(sessionId) === version) store.setLoadingHistory(sessionId, false);
+  }
 }
 
 export function startNewAgentDraft(projectId?: string): ActionResult {
@@ -856,9 +892,9 @@ export async function sendAgentMessage(
   }
 }
 
-export async function downloadAgentFile(file: AIFileContent): Promise<ActionResult> {
+export async function downloadAgentFile(file: AIFileContent, targetSessionId?: string): Promise<ActionResult> {
   const store = useAgentStore();
-  const sessionId = store.selectedSessionId;
+  const sessionId = targetSessionId ?? store.selectedSessionId;
   const fileId = typeof file.file_id === 'string' ? file.file_id : '';
   if (!sessionId || !fileId)
     return { status: 'error', message: tr('ui.attachmentInformationIsIncomplete') };

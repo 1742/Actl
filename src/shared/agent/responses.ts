@@ -38,7 +38,13 @@ export type ResponseInputPartDto =
   | { type: "input_skill"; id: string; name?: string }
   | { type: "input_mcp_server"; name: string };
 
+export type MessageSource =
+  | { kind: 'user' | 'runtime' }
+  | { kind: 'model'; sessionId: string; runId: string; model?: string }
+  | { kind: 'mail'; subject: string };
+
 export interface ResponseInputMessageDto {
+  source?: MessageSource;
   type: "message";
   role: "user";
   content: ResponseInputPartDto[];
@@ -47,7 +53,7 @@ export interface ResponseInputMessageDto {
 type ResponseInputPart = Exclude<ResponseInputPartDto, { type: "input_file" }> | { type: "input_file"; file_id: string };
 
 export interface CreateResponseRequest {
-  input: Array<Omit<ResponseInputMessageDto, "content"> & { content: ResponseInputPart[] }>;
+  input: Array<Omit<ResponseInputMessageDto, "content" | "source"> & { content: ResponseInputPart[] }>;
   model: string;
   reasoningEffort?: ReasoningEffort | undefined;
   permissionMode?: PermissionMode;
@@ -71,7 +77,8 @@ export type ResponseMessagePartDto = ResponseTextPartDto | ResponseRefusalPartDt
 export interface ResponseMessageItemDto {
   id: string;
   type: "message";
-  role: "assistant";
+  role: "assistant" | "user" | "system" | "developer";
+  source?: MessageSource;
   status: "in_progress" | "completed";
   content: ResponseMessagePartDto[];
 }

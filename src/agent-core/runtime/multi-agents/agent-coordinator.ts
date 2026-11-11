@@ -1,13 +1,15 @@
 import { setTimeout as delay } from 'node:timers/promises';
-import type { AgentInboxMessage, AgentTreeEvent, AgentTreeSnapshot, PlanItem } from '../../../shared/agent/coordination.js';
+import { EventEmitter, once } from 'node:events';
+import type { AgentInboxMessage, AgentMail, AgentMailFilter, AgentTreeEvent, AgentTreeSnapshot, PlanItem } from '../../../shared/agent/coordination.js';
 import type { AgentCoordinationRepository } from '../../repositories/agent-coordination-repository.js';
 import type { ReasoningEffort } from '../../model/catalog-types.js';
 import type { AgentStreamEvent } from '../../../shared/agent/responses.js';
 import type { ProjectSettings } from '../../../shared/agent/sessions.js';
 import { toSessionJson } from '../../contracts/common/presenters.js';
 import { toAgentResponseDto } from '../../contracts/agent-responses/presenter.js';
-import { createRandomId } from '../../utils.js';
-import { isTerminalRun, type AgentDomainEventHandler, type AgentRunRecord, type PermissionResolution } from '../agent-domain.js';
+import { createRandomId, nowIso } from '../../utils.js';
+import { isTerminalRun, modelMessageSource, type AgentDomainEventHandler, type AgentRunRecord, type PermissionResolution } from '../agent-domain.js';
+import { instructionDelivered, instructionInput } from '../session/session-model-context.js';
 import { AgentLoopError } from '../agent-loop/agent-loop-error.js';
 import { ExecutionAdmission, ResponseScopeConflictError } from '../execution-admission.js';
 import { SessionRuntime, mapSessionConcurrencyError, type AgentRunOptions, type PrepareRunInput, type SessionRuntimeServices } from '../session/session-runtime.js';
@@ -20,6 +22,7 @@ const MAX_CHILDREN = 12;
 
 export class AgentCoordinator {
   private readonly events: AgentEventHub;
+  private readonly mailEvents = new EventEmitter();
   private readonly executions = new Set<Promise<unknown>>();
   private readonly runtimes = new Map<string, SessionRuntime>();
   private readonly admission: ExecutionAdmission;
@@ -120,7 +123,7 @@ export class AgentCoordinator {
       if (!metadata.parentSessionId) continue;
       const session = await this.workspace.getSession(metadata.id, ownerId);
       if (!session) continue;
-      for (const run of session.runs) if (isTerminalRun(run)) this.recordResult(session, run, false);
+      for (const run of session.runs) if (isTerminalRun(run)) this.recordResult(session, run);
     }
   }
 
@@ -155,7 +158,6 @@ export class AgentCoordinator {
     return { rootSessionId: snapshot.rootSessionId, plan: snapshot.plan, agents: snapshot.members.map((member) => ({
       sessionId: member.session.id, parentSessionId: member.session.parentSessionId, title: member.session.title,
       runId: member.response?.id, status: member.response?.status ?? 'idle',
-      output: this.resultText(this.workspace.listResponses(member.session.id).at(-1)),
     })) };
   }
 
@@ -188,6 +190,7 @@ export class AgentCoordinator {
 
   async send(sender: Session, sourceRun: AgentRunRecord, targetId: string, text: string, callId: string, userFollowUp = false) {
     const target = await this.related(sender, targetId);
+    if (target.parentSessionId !== sender.id) throw new Error('Instructions can only be sent to a direct child.');
     return this.serialized(sender.rootSessionId ?? sender.id, () => {
       this.assertSessionExists(sender);
       this.assertSessionExists(target);
@@ -198,12 +201,67 @@ export class AgentCoordinator {
       const message: AgentInboxMessage = {
         id: createRandomId('agent_message'), fromSessionId: sender.id, toSessionId: target.id,
         sourceRunId: sourceRun.id, kind: 'message', text, wake: true,
+        author: userFollowUp ? 'user' : 'model',
+        ...(userFollowUp ? {} : { model: sourceRun.modelSnapshot.displayName }),
       };
       this.state.enqueue(message, `message:${sourceRun.id}:${callId}`);
       this.scheduleWake(target.id);
       this.changed(sender.rootSessionId ?? sender.id);
       return { sessionId: target.id, accepted: true };
     });
+  }
+
+  async sendMail(sender: Session, run: AgentRunRecord, subject: string, body: string, callId: string) {
+    if (!sender.parentSessionId) throw new Error('Only a child can send mail to its parent.');
+    const parent = await this.related(sender, sender.parentSessionId);
+    return this.serialized(parent.id, () => {
+      this.assertSessionExists(sender);
+      this.assertSessionExists(parent);
+      this.assertOpen(sender);
+      this.storeMail(sender, parent.id, run, 'message', subject, body, `message:${run.id}:${callId}`);
+      return { accepted: true };
+    });
+  }
+
+  listMail(session: Session, filter: AgentMailFilter) {
+    this.assertMailbox(session);
+    const mail = this.state.listMail(session.id, { ...filter, limit: filter.limit + 1 });
+    const items = mail.slice(0, filter.limit);
+    return { items, nextBeforeId: mail.length > filter.limit ? items.at(-1)?.id : undefined };
+  }
+
+  readMail(session: Session, id: string) {
+    this.assertMailbox(session);
+    const mail = this.state.readMail(session.id, id);
+    if (!mail) throw new Error('Mail not found.');
+    return mail;
+  }
+
+  async waitForMail(session: Session, fromSessionId: string | undefined, timeoutMs: number, signal?: AbortSignal) {
+    this.assertMailbox(session);
+    if (fromSessionId) {
+      const child = await this.related(session, fromSessionId);
+      if (child.parentSessionId !== session.id) throw new Error('Only direct children can be awaited.');
+    }
+    const timeout = new AbortController();
+    const timer = setTimeout(() => timeout.abort(), timeoutMs);
+    const waitSignal = signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal;
+    try {
+      for (;;) {
+        signal?.throwIfAborted();
+        const { items } = this.listMail(session, { fromSessionId, unread: true, limit: 20 });
+        if (items.length) return { items, timedOut: false };
+        if (timeoutMs === 0 || timeout.signal.aborted) return { items, timedOut: true };
+        // The synchronous lookup and listener registration run in the same turn.
+        await once(this.mailEvents, session.id, { signal: waitSignal });
+      }
+    } catch (error) {
+      signal?.throwIfAborted();
+      if (timeout.signal.aborted) return { items: [], timedOut: true };
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   async wait(parent: Session, ids: string[], timeoutMs: number, signal?: AbortSignal) {
@@ -216,8 +274,7 @@ export class AgentCoordinator {
       signal?.throwIfAborted();
       const members = (await this.snapshot(parent)).members.filter((item) => ids.includes(item.session.id));
       if (members.some((item) => item.response?.status !== 'in_progress') || Date.now() >= deadline) {
-        return members.map((item) => ({ sessionId: item.session.id, status: item.response?.status ?? 'idle',
-          output: this.resultText(this.workspace.listResponses(item.session.id).at(-1)) }));
+        return members.map((item) => ({ sessionId: item.session.id, status: item.response?.status ?? 'idle' }));
       }
       await delay(Math.min(200, Math.max(1, deadline - Date.now())), undefined, signal ? { signal } : undefined);
     }
@@ -303,7 +360,7 @@ export class AgentCoordinator {
     return (run, event) => {
       const terminal = event.type === 'run_completed' || event.type === 'run_failed' || event.type === 'run_cancelled' || event.type === 'run_incomplete';
       if (terminal && session.parentSessionId) {
-        this.recordResult(session, run, !this.closing && !this.stoppedSessions.has(session.id) && !this.stoppingTrees.has(rootSessionId));
+        this.recordResult(session, run);
       }
       const events = this.events.project(run, event);
       this.events.publish({ type: 'response', rootSessionId, sessionId: session.id, events });
@@ -323,9 +380,14 @@ export class AgentCoordinator {
   }
 
   private startFromRun(session: Session, prompt: string, sourceRun: AgentRunRecord, onCreated?: (run: AgentRunRecord) => void): Promise<AgentRunRecord> {
-    return this.begin(session, async () => [{
-      id: createRandomId('msg'), type: 'message', role: 'user', content: [{ type: 'text', text: prompt }],
-    }], {
+    return this.startWithInput(session, async () => [{
+      id: createRandomId('msg'), type: 'message', role: 'user', source: modelMessageSource(sourceRun),
+      content: [{ type: 'text', text: prompt }],
+    }], sourceRun, onCreated);
+  }
+
+  private startWithInput(session: Session, prepareInput: PrepareRunInput, sourceRun: AgentRunRecord, onCreated?: (run: AgentRunRecord) => void): Promise<AgentRunRecord> {
+    return this.begin(session, prepareInput, {
       model: sourceRun.modelSnapshot.targetId,
       ...(sourceRun.modelSnapshot.reasoningEffort ? { reasoningEffort: sourceRun.modelSnapshot.reasoningEffort } : {}),
       permissionMode: sourceRun.permissionSnapshot.permissionMode,
@@ -373,8 +435,14 @@ export class AgentCoordinator {
       if (session.runs.some((run) => !isTerminalRun(run))) return;
       const previous = session.runs.at(-1);
       if (!previous) return;
+      const input = this.state.pending(id).flatMap((message) => {
+        if (!instructionDelivered(session, message.id)) return [instructionInput(message)];
+        this.state.acknowledge(message.id);
+        return [];
+      });
+      if (!input.length) return;
       if (session.parentSessionId) this.assertCapacity(session);
-      void this.startFromRun(session, 'Continue with the queued agent messages. Reconcile the plan and report the result.', previous);
+      void this.startWithInput(session, async () => input, previous);
     });
   }
 
@@ -421,26 +489,44 @@ export class AgentCoordinator {
   private assertOpen(session: Session): void {
     if (this.closing || this.stoppingTrees.has(session.rootSessionId ?? session.id) || this.stoppedSessions.has(session.id)) throw new Error('Agent tree is stopping.');
   }
-  private recordResult(session: Session, run: AgentRunRecord, wake: boolean): void {
+
+  private recordResult(session: Session, run: AgentRunRecord): void {
     if (!session.parentSessionId) return;
-    this.state.enqueue({ id: createRandomId('agent_result'), fromSessionId: session.id,
-      toSessionId: session.parentSessionId, sourceRunId: run.id, kind: 'result',
-      text: `Status: ${run.status}\n${this.resultText(run)}`, wake,
-    }, `result:${run.id}`);
+    this.storeMail(session, session.parentSessionId, run, 'result', `${session.title || 'Child agent'}: ${run.status}`,
+      `Status: ${run.status}\n${this.resultText(run)}`, `result:${run.id}`);
   }
+
+  private storeMail(sender: Session, toSessionId: string, run: AgentRunRecord, kind: AgentMail['kind'], subject: string, body: string, dedupeKey: string): void {
+    const inserted = this.state.sendMail({
+      id: createRandomId('agent_mail'), fromSessionId: sender.id, toSessionId, sourceRunId: run.id,
+      kind, subject, body, sentAt: kind === 'result' ? run.completedAt ?? run.updatedAt : nowIso(), read: false,
+    }, dedupeKey);
+    // interrupt wait in AgentCoordinator.waitForMail
+    if (inserted) this.mailEvents.emit(toSessionId);
+  }
+
+  private assertMailbox(session: Session): void {
+    this.assertSessionExists(session);
+    if (session.parentSessionId) throw new Error('Only the parent can read its mailbox.');
+  }
+
   private assertCapacity(session: Session): void {
     const root = session.rootSessionId ?? session.id;
     const active = this.workspace.descendants(root).filter((item) => item.parentSessionId &&
       (this.runtimes.get(item.id)?.preparing || item.runs.some((run) => !isTerminalRun(run))));
     if (active.length >= MAX_ACTIVE_CHILDREN) throw new Error(`At most ${MAX_ACTIVE_CHILDREN} child agents can be active. Wait for one to finish.`);
   }
+
   private resultText(run?: AgentRunRecord): string {
     if (!run) return '';
-    const last = run.timeline.findLast((item) => item.type === 'message' && item.role === 'assistant');
+    const last = run.timeline.findLast((item) =>
+      item.type === 'message' && item.role === 'assistant' && item.source?.kind !== 'runtime');
     const text = last?.type === 'message' ? last.content.flatMap((part) => part.type === 'text' ? [part.text] : []).join('\n') : '';
     return [text.slice(0, 16000), run.error?.message].filter(Boolean).join('\n');
   }
+
   private changed(rootSessionId: string): void { this.events.publish({ type: 'changed', rootSessionId }); }
+  
   private serialized<T>(root: string, operation: () => T | Promise<T>): Promise<T> {
     const result = (this.queues.get(root) ?? Promise.resolve()).catch(() => undefined).then(operation);
     const tail = result.then(() => undefined, () => undefined);

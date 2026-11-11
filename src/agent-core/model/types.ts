@@ -1,5 +1,6 @@
 import type { ToolSchema } from "../tools/registry.js";
 import type { ReasoningEffort, RuntimeModelProtocol } from "../../shared/agent/models.js";
+import type { MessageSource } from "../../shared/agent/responses.js";
 
 export type ModelProtocol = RuntimeModelProtocol;
 export type TranscriptRole = "system" | "developer" | "user" | "assistant";
@@ -30,6 +31,7 @@ export type ContentPart =
   | { type: "refusal"; reason: string };
 
 export interface TranscriptMessage {
+  source?: MessageSource;
   type: "message";
   id: string;
   role: TranscriptRole;

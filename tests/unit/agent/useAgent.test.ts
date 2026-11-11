@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createPinia, setActivePinia } from 'pinia';
-import { applyAgentTreeSnapshot, applyRuntimeEvent, resolveAgentPermissionBatch, selectAgentSession, stopAgentResponse } from '../../../src/renderer/src/agent/composables/useAgent';
+import { applyAgentTreeSnapshot, applyRuntimeEvent, loadSubagentHistory, resolveAgentPermissionBatch, selectAgentSession, stopAgentResponse } from '../../../src/renderer/src/agent/composables/useAgent';
 import { useAgentStore } from '../../../src/renderer/src/agent/stores/agent';
 import { localClient } from '../../../src/renderer/src/agent/services/localClient';
 import { normalizeResponseContext } from '../../../src/renderer/src/agent/utils/aiResponse';
@@ -68,6 +68,34 @@ test('a delayed tree snapshot cannot replace a newer automatic run', () => {
   }] });
   assert.equal(store.ensureRuntime(id).activeResponseId, 'new-response');
   assert.equal(store.status, 'running');
+});
+
+test('loading subagent history keeps live output and the parent selection', async () => {
+  const store = setup('local:session');
+  const sessionId = 'local:child';
+  const old = { ...response(), id: 'older', session_id: 'child' };
+  const live = { ...response(), id: 'live', session_id: 'child', status: 'in_progress' as const };
+  applyAgentTreeSnapshot({ rootSessionId: 'session', plan: { revision: 0, items: [] }, members: [{
+    session: { id: 'child', parentSessionId: 'session', rootSessionId: 'session', projectId: null, created_at: '', updated_at: '' },
+    response: live, sequenceNumber: 1,
+  }] });
+  const history = deferred<SessionContext>();
+  const originalGet = localClient.getContext;
+  localClient.getContext = () => history.promise;
+  try {
+    const loading = loadSubagentHistory(sessionId, () => true);
+    applyRuntimeEvent(sessionId, { type: 'response.output_item.added', response_id: 'live', sequence_number: 2,
+      output_index: 0, item: { id: 'live-item', type: 'message', role: 'assistant', status: 'in_progress',
+        content: [{ type: 'output_text', text: 'Live text', annotations: [] }] } });
+    history.resolve({ session_id: 'child', responses: [old, live], context: { summarized_run_count: 0, compressions: [] } });
+    await loading;
+    assert.equal(store.selectedSessionId, 'local:session');
+    assert.deepEqual(store.ensureRuntime(sessionId).responses.map((context) => context.response.id), ['older', 'live']);
+    assert.equal(store.findResponse(sessionId, 'live')?.lastSequenceNumber, 2);
+    assert.match(JSON.stringify(store.findResponse(sessionId, 'live')), /Live text/);
+  } finally {
+    localClient.getContext = originalGet;
+  }
 });
 
 test('permission stream reply restores the next approval if its last IPC event is absent', async () => {

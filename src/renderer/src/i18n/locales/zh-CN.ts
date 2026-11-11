@@ -1,5 +1,9 @@
 export default {
   agents: {
+    plan: '计划', subagents: '子代理', empty: '暂无子代理',
+    loadingHistory: '正在加载子对话…', noMessages: '暂无消息',
+    parentAgent: '父代理', runtime: '运行时',
+    receivedMail: '收到邮件',
     team: '协作与计划', readOnly: '子 Agent 只读', back: '返回主会话', stopAll: '停止全部',
     running: '运行中', approval: '等待审批', stopping: '正在停止', failed: '未完成', cancelled: '已停止', done: '已结束',
     followup: '追加指令', followupHint: '向这个子 Agent 追加说明或新任务', send: '发送', stop: '停止',

@@ -1,3 +1,5 @@
+import type { MessageSource } from '../../../../../shared/agent/responses';
+
 export type AIResponseStatus =
   | "in_progress"
   | "waiting_permission"
@@ -83,6 +85,7 @@ export interface AIMessageItem {
   type: "message";
   id?: string;
   role: "user" | "assistant" | "system" | "developer";
+  source?: MessageSource;
   status?: string;
   content: AIResponseContent[];
   [key: string]: unknown;

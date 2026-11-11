@@ -92,6 +92,10 @@ export async function runCoreChecks(dataDirectory: string, fixturePath: string):
           run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE, message_order INTEGER NOT NULL,
           message_id TEXT NOT NULL, payload_json TEXT NOT NULL, PRIMARY KEY(run_id, message_order)
         ) STRICT;
+        CREATE TABLE timeline_items(
+          run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE, item_order INTEGER NOT NULL,
+          item_id TEXT NOT NULL, item_type TEXT NOT NULL, payload_json TEXT NOT NULL, PRIMARY KEY(run_id, item_order)
+        ) STRICT;
         CREATE TABLE file_changes(
           id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
           file_path TEXT NOT NULL, change_type TEXT NOT NULL, summary TEXT NOT NULL,

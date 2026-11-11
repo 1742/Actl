@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { ClipboardCheck, Folder, Globe2, Terminal } from '@lucide/vue';
+import { ClipboardCheck, Folder, Terminal, Users } from '@lucide/vue';
 
 defineProps<{ hasProject: boolean; projectLabel: string }>();
-defineEmits<{ openFiles: []; openReview: [] }>();
+defineEmits<{ openFiles: []; openReview: []; openSubagents: [] }>();
 </script>
 
 <template>
@@ -27,9 +27,9 @@ defineEmits<{ openFiles: []; openReview: [] }>();
         <Terminal :size="16" />
         {{ $t('ui.terminal') }}
       </button>
-      <button class="tool" type="button" disabled :title="$t('ui.browserIsComingSoon')">
-        <Globe2 :size="16" />
-        {{ $t('ui.browser') }}
+      <button class="tool" type="button" @click="$emit('openSubagents')">
+        <Users :size="16" />
+        {{ $t('agents.subagents') }}
       </button>
     </div>
   </section>

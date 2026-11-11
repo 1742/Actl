@@ -1,4 +1,4 @@
-import type { AgentInboxMessage, AgentPlan, PlanItem } from "../../shared/agent/coordination.js";
+import type { AgentInboxMessage, AgentMail, AgentMailFilter, AgentMailSummary, AgentPlan, PlanItem } from "../../shared/agent/coordination.js";
 
 /** Durable coordination state. Delivery is acknowledged after transcript persistence. */
 export interface AgentCoordinationRepository {
@@ -8,4 +8,7 @@ export interface AgentCoordinationRepository {
   pending(sessionId: string): AgentInboxMessage[];
   acknowledge(id: string): void;
   suppressWake(sessionId: string): void;
+  sendMail(mail: AgentMail, dedupeKey: string): boolean;
+  listMail(sessionId: string, filter: AgentMailFilter): AgentMailSummary[];
+  readMail(sessionId: string, id: string): AgentMail | undefined;
 }
