@@ -384,6 +384,7 @@ export class AgentCoordinator {
       (target.parentSessionId !== sender.id && sender.parentSessionId !== target.id)) throw new Error('Target must be a parent or direct child in this agent tree.');
     return target;
   }
+  
   private assertSessionExists(session: Session): void {
     if (!this.workspace.hasSession(session.id, session.ownerId)) throw new Error('Agent session no longer exists.');
   }

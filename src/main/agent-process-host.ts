@@ -11,15 +11,6 @@ interface Pending { resolve: (result: AgentResult) => void; onEvents?: ((events:
 
 export class AgentProcessHost {
   private readonly treeListeners = new Map<string, (event: AgentTreeEvent) => void>();
-  async watchTree(id: string, sessionId: string, listener: (event: AgentTreeEvent) => void): Promise<AgentResult> {
-    if (this.treeListeners.size >= 32 || this.treeListeners.has(id)) throw new Error('Too many or duplicate tree subscriptions.');
-    this.treeListeners.set(id, listener);
-    try {
-      const result = await this.request({ operation: 'agents.watch', params: { sessionId } }, undefined, id);
-      if (!result.ok) this.treeListeners.delete(id);
-      return result;
-    } catch (error) { this.treeListeners.delete(id); throw error; }
-  }
   private child: UtilityProcess | undefined;
   private boot: Promise<AgentRuntimeInfo> | undefined;
   private pending = new Map<string, Pending>();
@@ -49,6 +40,16 @@ export class AgentProcessHost {
       this.pending.set(id, { resolve, onEvents });
       this.child!.postMessage({ type: 'request', id, command, stream: !!onEvents });
     });
+  }
+
+  async watchTree(id: string, sessionId: string, listener: (event: AgentTreeEvent) => void): Promise<AgentResult> {
+    if (this.treeListeners.size >= 32 || this.treeListeners.has(id)) throw new Error('Too many or duplicate tree subscriptions.');
+    this.treeListeners.set(id, listener);
+    try {
+      const result = await this.request({ operation: 'agents.watch', params: { sessionId } }, undefined, id);
+      if (!result.ok) this.treeListeners.delete(id);
+      return result;
+    } catch (error) { this.treeListeners.delete(id); throw error; }
   }
 
   detach(id: string): void {

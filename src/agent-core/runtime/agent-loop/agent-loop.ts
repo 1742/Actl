@@ -128,7 +128,10 @@ export class AgentLoop {
           await this.addSyntheticMessage(session, run, stopDecision.reason ?? "Stop was blocked by a runtime hook.", onEvent);
           continue;
         }
+
+        // Check the inbox for messages; if any are found, inject them into the user message in the next round.
         if (!this.context.readyToComplete()) continue;
+        
         return this.finalizer.completed(session, run, onEvent);
       }
       throw new Error("Agent loop exceeded maximum steps.");
@@ -204,7 +207,6 @@ export class AgentLoop {
     await emit(onEvent, run, { type: "text_delta", itemId: item.id, outputIndex, contentIndex: 0, delta: text });
     await emit(onEvent, run, { type: "item_completed", item, outputIndex });
   }
-
 }
 
 function createStreamingItem(item: Exclude<TranscriptItem, { type: "tool_result" }>): Exclude<AgentTimelineItem, PermissionRequestItem | Extract<TranscriptItem, { type: "tool_result" }>> {

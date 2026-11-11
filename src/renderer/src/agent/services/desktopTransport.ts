@@ -39,6 +39,7 @@ export function desktopStream<T>(command: AgentCommand, onEvent: (event: AgentSt
       settled = true; cleanup(); window.actlAgent.detach(id);
       reject(signal?.reason ?? new DOMException('Stream detached.', 'AbortError'));
     };
+    // window.actlAgent.onEvents transport events and return a method to close ipcRenderer listener
     const off = window.actlAgent.onEvents((batch) => {
       if (settled || batch.subscriptionId !== id) return;
       try { for (const event of batch.events) onEvent(event); }

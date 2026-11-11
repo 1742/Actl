@@ -47,7 +47,7 @@ export class DesktopAgent {
       this.subscriptions.add(id);
       try {
         const host = await this.ensureHost();
-          if (!this.subscriptions.has(id)) return { ok: true, value: null };
+        if (!this.subscriptions.has(id)) return { ok: true, value: null };
         const result = await host.watchTree(id, target, (event) => {
           const window = this.getWindow();
           if (this.subscriptions.has(id) && window && !window.webContents.isDestroyed()) window.webContents.send('agent:tree-events', { subscriptionId: id, event });
