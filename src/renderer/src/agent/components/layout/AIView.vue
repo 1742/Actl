@@ -164,7 +164,18 @@ watch(() => route.fullPath, closeNavSidebar);
 </script>
 
 <template>
-  <div class="agent-workspace relative flex h-full w-full overflow-hidden">
+  <div
+    v-if="runtimeReadyState === 'checking'"
+    class="flex h-full w-full items-center justify-center bg-gray-50"
+  >
+    <div class="text-center" role="status">
+      <div
+        class="agent-runtime-spinner mx-auto mb-4 h-9 w-9 animate-spin rounded-full border-4"
+      ></div>
+      <p class="text-sm text-gray-600">{{ $t('ui.connectingToAgent') }}</p>
+    </div>
+  </div>
+  <div v-else class="agent-workspace relative flex h-full w-full overflow-hidden">
     <ActivityBar />
     <div class="agent-content-shell relative flex min-w-0 flex-1 overflow-hidden">
       <div
@@ -207,19 +218,8 @@ watch(() => route.fullPath, closeNavSidebar);
       </Transition>
 
       <main class="relative flex h-full min-w-0 flex-1 flex-col overflow-hidden">
-        <div
-          v-if="runtimeReadyState === 'checking'"
-          class="flex h-full w-full items-center justify-center bg-gray-50"
-        >
-          <div class="text-center" role="status">
-            <div
-              class="agent-runtime-spinner mx-auto mb-4 h-9 w-9 animate-spin rounded-full border-4"
-            ></div>
-            <p class="text-sm text-gray-600">{{ $t('ui.connectingToAgent') }}</p>
-          </div>
-        </div>
         <AgentRecovery
-          v-else-if="runtimeReadyState === 'unavailable' && $route.name === 'aiAgent'"
+          v-if="runtimeReadyState === 'unavailable' && $route.name === 'aiAgent'"
           :error="runtimeError"
           :retry="initializeAgent"
         />
