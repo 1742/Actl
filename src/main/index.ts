@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, type IpcMainInvokeEvent, type MenuItemConstructorOptions } from 'electron';
+import { app, BrowserWindow, Menu, screen, type IpcMainInvokeEvent, type MenuItemConstructorOptions } from 'electron';
 import { writeFile } from 'node:fs/promises';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
@@ -37,9 +37,13 @@ function validateSender(event: IpcMainInvokeEvent): void {
 }
 
 async function createWindow(): Promise<void> {
+  const workArea = screen.getPrimaryDisplay().workAreaSize;
   const mainWindow = new BrowserWindow({
     title: 'Actl',
-    width: 1280, height: 800, minWidth: 860, minHeight: 650,
+    width: Math.min(1436, workArea.width),
+    height: Math.min(960, workArea.height),
+    minWidth: Math.min(860, workArea.width),
+    minHeight: Math.min(650, workArea.height),
     show: false, backgroundColor: '#111316', autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.cjs'),

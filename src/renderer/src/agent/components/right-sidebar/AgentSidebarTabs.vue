@@ -152,22 +152,22 @@ function closeTab(tab: Tab, index: number) {
         <div
           v-for="(tab, index) in visibleTabs"
           :key="tab.id"
-          class="flex h-10 max-w-52 shrink-0 items-center rounded-lg border pr-1 text-sm"
+          class="flex h-9 min-w-22 max-w-52 items-center rounded-lg border pr-1 text-[13px]"
           :class="tab.id === group.activeId ? 'border-gray-200 bg-white text-gray-800 shadow-xs' : 'border-transparent text-gray-500 hover:bg-gray-100'"
         >
           <button
-            class="flex h-full min-w-0 items-center gap-2 pl-3 pr-1.5"
+            class="flex h-full min-w-0 items-center gap-1.5 pl-2.5 pr-1.5"
             type="button"
             :aria-current="tab.id === group.activeId ? 'page' : undefined"
             :title="tab.kind === 'file' ? fileTitle(tab) : tab.kind === 'subagent' ? tabLabel(tab) : undefined"
             @click="group.activeId = tab.id"
           >
-            <File v-if="tab.kind === 'file'" :size="16" class="shrink-0" />
-            <Folder v-else-if="tab.kind === 'files'" :size="16" class="shrink-0" />
-            <ClipboardCheck v-else-if="tab.kind === 'review'" :size="16" class="shrink-0" />
-            <Users v-else-if="tab.kind === 'subagents'" :size="16" class="shrink-0" />
-            <MessageSquare v-else-if="tab.kind === 'subagent'" :size="16" class="shrink-0" />
-            <LayoutGrid v-else :size="16" class="shrink-0" />
+            <File v-if="tab.kind === 'file'" :size="15" class="shrink-0" />
+            <Folder v-else-if="tab.kind === 'files'" :size="15" class="shrink-0" />
+            <ClipboardCheck v-else-if="tab.kind === 'review'" :size="15" class="shrink-0" />
+            <Users v-else-if="tab.kind === 'subagents'" :size="15" class="shrink-0" />
+            <MessageSquare v-else-if="tab.kind === 'subagent'" :size="15" class="shrink-0" />
+            <LayoutGrid v-else :size="15" class="shrink-0" />
             <span class="truncate">{{ tabLabel(tab) }}</span>
           </button>
           <button class="tab-icon size-6" type="button" :aria-label="$t('ui.closeSidebarTab')" :title="$t('ui.closeSidebarTab')" @click="closeTab(tab, index)">
