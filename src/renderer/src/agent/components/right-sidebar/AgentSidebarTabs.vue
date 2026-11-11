@@ -31,7 +31,7 @@ import AgentSidebarReview from '../review/AgentSidebarReview.vue';
 import AgentSidebarSubagents from '../sub-agents/AgentSidebarSubagents.vue';
 import { reviewTargetKey } from '../review/reviewNavigation';
 
-defineEmits<{ close: [] }>();
+const emit = defineEmits<{ close: [] }>();
 const store = useAgentStore();
 const project = computed(() =>
   store.session
@@ -72,7 +72,7 @@ watch(visibleTabs, (tabs) => {
   const fallback = tabs.find((tab) => tab.kind === 'subagents') ??
     tabs.find((tab) => tab.kind === 'files') ?? tabs[0];
   if (fallback) group.value.activeId = fallback.id;
-  else openTab(createHomeTab());
+  else if (visible.value) openTab(createHomeTab());
 }, { immediate: true });
 
 watch([projectId, activeTab, visible], () => {
@@ -82,7 +82,10 @@ watch([projectId, activeTab, visible], () => {
   });
 }, { flush: 'post' });
 
-onActivated(() => { visible.value = true; });
+onActivated(() => {
+  visible.value = true;
+  if (!visibleTabs.value.length) openTab(createHomeTab());
+});
 onDeactivated(() => { visible.value = false; });
 
 function openTab(tab: Tab) {
@@ -129,8 +132,13 @@ function closeTab(tab: Tab, index: number) {
   const state = group.value;
   state.tabs = state.tabs.filter(({ id }) => id !== tab.id);
   if (tab.kind === 'review' && reviewTarget) reviewTarget.value = undefined;
-  if (tab.id !== state.activeId) return;
   const tabs = visibleTabs.value;
+  if (!tabs.length) {
+    visible.value = false;
+    emit('close');
+    return;
+  }
+  if (tab.id !== state.activeId) return;
   const list = tab.kind === 'subagent' ? tabs.find((item) => item.kind === 'subagents') : undefined;
   const next = list ?? tabs[index] ?? tabs[index - 1];
   if (next) state.activeId = next.id;
@@ -170,7 +178,7 @@ function closeTab(tab: Tab, index: number) {
       <button class="tab-icon size-9" type="button" :aria-label="$t('ui.newSidebarTab')" :title="$t('ui.newSidebarTab')" @click="openTab(createHomeTab())">
         <Plus :size="18" />
       </button>
-      <button class="tab-icon size-9" type="button" :aria-label="$t('ui.closeSidebar')" :title="$t('ui.closeSidebar')" @click="$emit('close')">
+      <button class="tab-icon size-9" type="button" :aria-label="$t('ui.closeSidebar')" :title="$t('ui.closeSidebar')" @click="emit('close')">
         <X :size="18" />
       </button>
     </header>
