@@ -32,6 +32,7 @@ import { TEXT_TOOL_CAPABILITIES, type ModelExecutionSnapshot } from '../../../sr
 import type { ModelClient } from '../../../src/agent-core/model/client';
 import type { ModelTurnRequest, TranscriptItem } from '../../../src/agent-core/model/types';
 import type { AgentRunRecord } from '../../../src/agent-core/runtime/agent-domain';
+import type { AgentStreamEvent } from '../../../src/shared/agent/responses';
 
 const owner = 'developer:local';
 const snapshot: ModelExecutionSnapshot = { targetId: 'fake', displayName: 'Fake', providerModel: 'fake', accountId: 'fake',
@@ -311,7 +312,7 @@ test('a running child keeps its project reserved and sends a receipt without wak
   } finally { await f.close(); }
 });
 
-test('mail reaches the model as a tool result and projects metadata to both desktop streams', async () => {
+test('read_mail delivers the body to the model, desktop streams and history', async () => {
   const body = 'private findings 40c3';
   const f = await fixture(async (request) => {
     if (isChild(request)) {
@@ -361,18 +362,31 @@ test('mail reaches the model as a tool result and projects metadata to both desk
     return [text('Reviewed the progress report')];
   });
   try {
-    const streamed: unknown[] = [];
-    const treeEvents: unknown[] = [];
+    const streamed: AgentStreamEvent[] = [];
+    const treeEvents: AgentStreamEvent[] = [];
+    const childEvents: AgentStreamEvent[] = [];
     const off = f.coordinator.subscribe((event) => {
-      if (event.type === 'response' && event.sessionId === f.root.id) treeEvents.push(event);
+      if (event.type !== 'response') return;
+      (event.sessionId === f.root.id ? treeEvents : childEvents).push(...event.events);
     });
     const run = await f.coordinator.start(f.root, input('Review'), options, (event) => { streamed.push(event); });
     off();
     assert.equal(run.status, 'completed');
-    for (const result of [streamed, treeEvents, toAgentResponseDto(run), await f.coordinator.snapshot(f.root)]) {
-      assert.match(JSON.stringify(result), /Progress report/);
-      assert.ok(!JSON.stringify(result).includes(body));
+    for (const events of [streamed, treeEvents]) {
+      const results = events.filter((event) => event.type === 'agent.tool.completed');
+      const read = results.find((event) => event.result.toolName === 'read_mail');
+      assert.ok(read?.result.ok);
+      assert.match(JSON.stringify(read.result.output), /private findings 40c3/);
+      assert.ok(!JSON.stringify(results.filter((event) => event !== read)).includes(body));
     }
+    assert.ok(!JSON.stringify(childEvents).includes(body));
+    const response = toAgentResponseDto(run);
+    const readCall = response.output.find((item) => item.type === 'function_call' && item.name === 'read_mail');
+    assert.ok(readCall?.type === 'function_call');
+    const readOutput = response.output.find((item) => item.type === 'function_call_output' && item.call_id === readCall.call_id);
+    assert.ok(readOutput?.type === 'function_call_output');
+    assert.equal(JSON.parse(readOutput.output).output.body, body);
+    assert.match(JSON.stringify(await f.coordinator.snapshot(f.root)), /private findings 40c3/);
     assert.ok(f.coordinator.listMail(f.root, { unread: true, kind: 'result', limit: 1 }).items.length);
     const { items, nextBeforeId } = f.coordinator.listMail(f.root, { limit: 1 });
     assert.equal(items.length, 1);

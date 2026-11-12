@@ -18,6 +18,10 @@ const title = computed(() => heading.value.title);
 const summary = computed(() => heading.value.detail);
 const command = computed(() => stringAt(args.value, 'command'));
 
+const mailBody = computed(() => {
+  const body = outputRecord.value?.body;
+  return props.block.call.name === 'read_mail' && typeof body === 'string' ? body : undefined;
+});
 const readContent = computed(() => stringAt(outputRecord.value, 'content'));
 const writeContent = computed(() => stringAt(args.value, 'content'));
 const shellStdout = computed(() => stringAt(outputRecord.value, 'stdout'));
@@ -176,6 +180,11 @@ function formatUnknown(value: unknown) {
       >
         {{ block.result.error }}
       </div>
+
+      <div
+        v-else-if="mailBody !== undefined"
+        class="tool-output min-w-0 overflow-auto whitespace-pre-wrap wrap-anywhere rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-sm leading-relaxed"
+      >{{ mailBody }}</div>
 
       <div
         v-else-if="block.presentation === 'web_fetch' && block.status === 'success' && readContent"

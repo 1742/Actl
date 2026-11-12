@@ -129,10 +129,6 @@ export function mayBeMailTool(name: string): boolean {
 }
 
 export function projectToolOutput(name: string | undefined, output: unknown): unknown {
-  if (name === 'read_mail' && isRecord(output)) {
-    const { body: _body, ...metadata } = output;
-    return metadata;
-  }
   if (name === 'wait_agents' && Array.isArray(output)) return output.map(withoutAgentOutput);
   if (name === 'list_agents' && isRecord(output) && Array.isArray(output.agents)) {
     return { ...output, agents: output.agents.map(withoutAgentOutput) };
