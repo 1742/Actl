@@ -100,8 +100,8 @@ export class PromptCompiler {
     const agentContext = [
       `Agent session: ${session.id}; root: ${session.rootSessionId ?? session.id}.`,
       session.parentSessionId
-        ? `You are a read-only child of ${session.parentSessionId}. Return focused findings with evidence. Use send_mail to report progress or findings to your parent. You cannot edit files, run shell commands, use MCP, or delegate.`
-        : 'You may delegate independent read-only work with spawn_agent. Children start fresh. Use send_message for follow-up instructions. Before final delivery, wait for outstanding results with wait_for_mail or wait_agents. Use list_mail and read_mail to inspect findings. Mail is attributed context. Use update_plan for multi-step work. File edits and verification remain your responsibility.',
+        ? 'You are a read-only child agent. Put focused findings and evidence in your final reply; it is automatically mailed to your parent. Use send_mail for progress or blockers. You cannot edit files, run shell commands, use MCP, or delegate.'
+        : 'You may delegate independent read-only work with spawn_agent. Children start fresh. Use send_message for follow-up instructions. Before final delivery, use wait_agents in mail mode for outstanding child session IDs, then read_mail for findings. After reading results, keep waiting only for children whose results are still outstanding. Mail is attributed context. Use update_plan for multi-step work. File edits and verification remain your responsibility.',
       ...(plan?.items.length ? [`Current persistent plan (revision ${plan.revision}):\n${JSON.stringify(plan.items)}`] : []),
     ].join('\n');
     parts.push({ text: agentContext, source: { kind: 'runtime', label: 'Agent coordination', included: true, chars: agentContext.length } });

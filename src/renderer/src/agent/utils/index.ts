@@ -288,11 +288,13 @@ function agentTeamToolHeading(block: AgentToolTimelineBlock) {
     case 'send_message':
       return '';
     case 'wait_agents':
-      return count(args?.sessionIds, 'subagent');
+      if (result?.timedOut === true) return 'Wait timed out';
+      return args?.mode === 'mail' && Array.isArray(result?.items) ? count(result.items, 'message') : count(args?.sessionIds, 'subagent');
     case 'list_agents': {
-      const children = Array.isArray(result?.agents)
-        ? result.agents.filter((agent) => asRecord(agent)?.parentSessionId)
-        : undefined;
+      const agents = result?.agents;
+      const children = Array.isArray(agents) && typeof result?.rootSessionId === 'string'
+        ? agents.filter((agent) => asRecord(agent)?.parentSessionId)
+        : agents;
       return count(children, 'subagent');
     }
     case 'interrupt_agent':

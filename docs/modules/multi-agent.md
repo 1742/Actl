@@ -31,13 +31,12 @@ flowchart TD
 
 | 工具 | 行为 |
 | --- | --- |
-| spawn_agent | 根 Agent 创建子会话，启动后立即返回 sessionId/runId，允许后台并行 |
+| spawn_agent | 根 Agent 创建子会话，启动后返回子会话的 sessionId 和状态，允许后台并行 |
 | send_message | 根 Agent 向直属子会话发送持久化指令，空闲子会话以实际指令启动下一 Run |
 | send_mail | 子 Agent 向直属父会话发送主题和正文 |
-| wait_for_mail | 根 Agent 等待符合条件的未读邮件，最长 60 秒，可取消 |
-| list_mail / read_mail | 根 Agent 列出邮件元数据，或按 ID 读取正文并标记已读 |
-| wait_agents | 根 Agent 等待直属子会话状态变化，最长 60 秒，可取消 |
-| list_agents | 返回树成员、状态和计划 |
+| list_mail / read_mail | 根 Agent 列出邮箱内的邮件摘要，或按邮件 ID 读取正文并标记已读 |
+| wait_agents | 指定 1–12 个直属子代理，等待任一或全部运行结束（空闲也满足），或等待每个匹配子代理的未读邮件（默认结果邮件）。最长 60 秒，可取消，超时返回已有结果及仍未满足条件的子代理 ID |
+| list_agents | 返回直属子代理的 sessionId、标题、状态及当前计划 |
 | interrupt_agent | 父 Agent 停止指定子会话及其后代 |
 | update_plan | 根 Agent 使用当前 revision 更新整个计划，拒绝过期 revision |
 

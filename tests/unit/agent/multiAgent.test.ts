@@ -297,9 +297,12 @@ test('a running child keeps its project reserved and sends a receipt without wak
     assert.equal(initial.status, 'completed');
     const other = await f.workspace.createSession(owner, { projectId: f.project.id });
     await assert.rejects(f.coordinator.start(other, input('conflict'), options), { code: 'project_active_response_exists' });
-    const waiting = f.coordinator.waitForMail(f.root, undefined, 2000);
+    const child = f.workspace.descendants(f.root.id).find((session) => session.parentSessionId)!;
+    const waiting = f.coordinator.wait(f.root, { sessionIds: [child.id], mode: 'mail', until: 'any', timeoutMs: 2000 });
     finishChild.abort();
-    const receipt = (await waiting).items[0]!;
+    const result = await waiting;
+    assert.equal(result.mode, 'mail');
+    const receipt = result.items[0]!;
     assert.equal(receipt.kind, 'result');
     assert.match(f.coordinator.readMail(f.root, receipt.id).body, /child findings/);
     await delay(30);
@@ -317,15 +320,44 @@ test('mail reaches the model as a tool result and projects metadata to both desk
       if (!calls(request, 'send_mail').length) return [call('send_mail', { subject: 'Progress report', body })];
       return [text('Child completed')];
     }
-    assert.ok(!request.tools.some((tool) => tool.name === 'send_mail'));
+    assert.ok(!request.tools.some((tool) => tool.name === 'send_mail' || tool.name === 'wait_for_mail'));
+    function outputFor(name: string, index = -1) {
+      const callId = calls(request, name).at(index)?.callId;
+      const result = request.transcript.find((item) => item.type === 'tool_result' && item.callId === callId);
+      assert.ok(result?.type === 'tool_result' && !result.isError);
+      const envelope = result.content[0];
+      assert.ok(envelope?.type === 'json' && envelope.value && typeof envelope.value === 'object' && 'output' in envelope.value);
+      return envelope.value.output;
+    }
     if (!calls(request, 'spawn_agent').length) return [call('spawn_agent', { title: 'Review', prompt: 'Review' })];
-    if (!calls(request, 'wait_for_mail').length) return [call('wait_for_mail', { timeoutMs: 2000 })];
+    const child = outputFor('spawn_agent') as { sessionId: string; status: string };
+    assert.deepEqual(Object.keys(child).sort(), ['sessionId', 'status']);
+    const waits = calls(request, 'wait_agents');
+    if (!waits.length) return [call('wait_agents', { sessionIds: [child.sessionId], mode: 'mail', mailKind: 'message', timeoutMs: 2000 })];
+    const waiting = outputFor('wait_agents', 0) as { items: Array<{ id: string; subject: string }>; timedOut: boolean };
+    assert.equal(waiting.timedOut, false);
+    const message = waiting.items.find((mail) => mail.subject === 'Progress report');
+    assert.ok(message);
+    const summaryKeys = ['fromSessionId', 'id', 'kind', 'read', 'sentAt', 'subject'];
+    assert.deepEqual(Object.keys(message).sort(), summaryKeys);
+    if (!calls(request, 'list_mail').length) return [call('list_mail', { fromSessionId: child.sessionId })];
+    const listed = outputFor('list_mail') as { items: unknown[] };
+    assert.ok(listed.items.length);
+    for (const item of listed.items) assert.deepEqual(Object.keys(item as object).sort(), summaryKeys);
     if (!calls(request, 'read_mail').length) {
       assert.ok(!JSON.stringify(request.transcript).includes(body));
-      const id = f.coordinator.listMail(f.root, { limit: 10 }).items.find((mail) => mail.subject === 'Progress report')!.id;
-      return [call('read_mail', { mailId: id })];
+      return [call('read_mail', { mailId: message.id })];
     }
-    assert.ok(request.transcript.some((item) => item.type === 'tool_result' && JSON.stringify(item).includes(body)));
+    assert.deepEqual(outputFor('read_mail'), { ...message, body, read: true });
+    if (waits.length === 1) return [call('wait_agents', { sessionIds: [child.sessionId], timeoutMs: 2000 })];
+    assert.deepEqual(outputFor('wait_agents'), {
+      mode: 'status', statuses: [{ sessionId: child.sessionId, status: 'completed' }], pendingSessionIds: [], timedOut: false,
+    });
+    if (!calls(request, 'list_agents').length) return [call('list_agents', {})];
+    assert.deepEqual(outputFor('list_agents'), {
+      agents: [{ sessionId: child.sessionId, title: 'Review', status: 'completed' }],
+      plan: { revision: 0, items: [] },
+    });
     return [text('Reviewed the progress report')];
   });
   try {
@@ -341,7 +373,7 @@ test('mail reaches the model as a tool result and projects metadata to both desk
       assert.match(JSON.stringify(result), /Progress report/);
       assert.ok(!JSON.stringify(result).includes(body));
     }
-    assert.ok((await f.coordinator.waitForMail(f.root, undefined, 2000)).items.some((item) => item.kind === 'result'));
+    assert.ok(f.coordinator.listMail(f.root, { unread: true, kind: 'result', limit: 1 }).items.length);
     const { items, nextBeforeId } = f.coordinator.listMail(f.root, { limit: 1 });
     assert.equal(items.length, 1);
     assert.ok(nextBeforeId);
@@ -356,13 +388,70 @@ test('mail reaches the model as a tool result and projects metadata to both desk
 test('mail waits time out and cancel without consuming messages', async () => {
   const f = await fixture(async () => [text('Ready')]);
   try {
-    assert.deepEqual(await f.coordinator.waitForMail(f.root, undefined, 15), { items: [], timedOut: true });
+    const child = await f.workspace.createSession(owner, { projectId: f.project.id, parentSessionId: f.root.id });
+    const wait = { sessionIds: [child.id], mode: 'mail', until: 'any', timeoutMs: 15 } as const;
+    assert.deepEqual(await f.coordinator.wait(f.root, wait), {
+      mode: 'mail', items: [], pendingSessionIds: [child.id], timedOut: true,
+    });
     const abort = new AbortController();
-    const waiting = f.coordinator.waitForMail(f.root, undefined, 60000, abort.signal);
+    const waiting = f.coordinator.wait(f.root, { ...wait, timeoutMs: 60000 }, abort.signal);
     abort.abort();
     await assert.rejects(waiting, { name: 'AbortError' });
     assert.deepEqual(f.coordinator.listMail(f.root, { limit: 5 }).items, []);
   } finally { await f.close(); }
+});
+
+test('wait_agents can return for any child or wait for all children in both modes', async () => {
+  const finishFirst = new AbortController();
+  const finishSecond = new AbortController();
+  const f = await fixture(async (request, signal) => {
+    if (!isChild(request)) {
+      return calls(request, 'spawn_agent').length ? [text('Delegated')] : [
+        call('spawn_agent', { title: 'First', prompt: 'First assignment' }),
+        call('spawn_agent', { title: 'Second', prompt: 'Second assignment' }),
+      ];
+    }
+    const first = JSON.stringify(request.transcript).includes('First assignment');
+    const finish = first ? finishFirst.signal : finishSecond.signal;
+    try { await delay(60000, undefined, { signal: AbortSignal.any([signal!, finish]) }); }
+    catch (error) { if (!finish.aborted) throw error; }
+    return [text('Finished')];
+  });
+  try {
+    await f.coordinator.start(f.root, input('Delegate'), options);
+    const children = f.workspace.descendants(f.root.id);
+    const first = children.find((child) => child.title === 'First')!;
+    const second = children.find((child) => child.title === 'Second')!;
+    const wait = { sessionIds: [first.id, second.id], timeoutMs: 2000 };
+    await f.coordinator.sendMail(first, first.runs[0]!, 'Progress', 'Still working', 'progress');
+    const before = await f.coordinator.wait(f.root, { ...wait, mode: 'mail', until: 'any', timeoutMs: 0 });
+    assert.deepEqual(before.pendingSessionIds, wait.sessionIds);
+    assert.equal(before.timedOut, true);
+
+    const anyStatus = f.coordinator.wait(f.root, { ...wait, mode: 'status', until: 'any' });
+    const anyMail = f.coordinator.wait(f.root, { ...wait, mode: 'mail', until: 'any' });
+    const allStatus = f.coordinator.wait(f.root, { ...wait, mode: 'status', until: 'all' });
+    const allMail = f.coordinator.wait(f.root, { ...wait, mode: 'mail', until: 'all' });
+    finishFirst.abort();
+    for (const result of await Promise.all([anyStatus, anyMail])) {
+      assert.equal(result.timedOut, false);
+      assert.deepEqual(result.pendingSessionIds, [second.id]);
+    }
+    const partial = await f.coordinator.wait(f.root, { ...wait, mode: 'mail', until: 'all', timeoutMs: 0 });
+    assert.equal(partial.mode, 'mail');
+    assert.deepEqual(partial.items.map((item) => [item.fromSessionId, item.kind]), [[first.id, 'result']]);
+    assert.equal(partial.timedOut, true);
+
+    finishSecond.abort();
+    for (const result of await Promise.all([allStatus, allMail])) {
+      assert.equal(result.timedOut, false);
+      assert.deepEqual(result.pendingSessionIds, []);
+    }
+  } finally {
+    finishFirst.abort();
+    finishSecond.abort();
+    await f.close();
+  }
 });
 
 test('running children get ordered user instructions in their timeline and idle children start with the actual input', async () => {
@@ -383,9 +472,12 @@ test('running children get ordered user instructions in their timeline and idle 
     await f.coordinator.send(f.root, rootRun, child.id, 'First instruction', 'first');
     await f.coordinator.send(f.root, rootRun, child.id, 'Duplicate instruction', 'first');
     await f.coordinator.send(f.root, rootRun, child.id, 'Second instruction', 'second');
-    const firstReceipt = f.coordinator.waitForMail(f.root, child.id, 2000);
+    const wait = { sessionIds: [child.id], mode: 'mail', until: 'any', timeoutMs: 2000 } as const;
+    const firstReceipt = f.coordinator.wait(f.root, wait);
     releaseChild();
-    for (const receipt of (await firstReceipt).items) f.coordinator.readMail(f.root, receipt.id);
+    const result = await firstReceipt;
+    assert.equal(result.mode, 'mail');
+    for (const receipt of result.items) f.coordinator.readMail(f.root, receipt.id);
     const firstRun = toAgentResponseDto(child.runs[0]!);
     assert.equal(firstRun.input[0]?.source?.kind, 'model');
     assert.deepEqual(firstRun.output.flatMap((item) =>
@@ -394,7 +486,9 @@ test('running children get ordered user instructions in their timeline and idle 
     assert.ok(firstRun.output.some((item) => item.type === 'message' && item.role === 'assistant' && item.source?.kind === 'model'));
 
     await f.coordinator.send(f.root, rootRun, child.id, 'Actual new input', 'third', true);
-    assert.ok((await f.coordinator.waitForMail(f.root, child.id, 2000)).items.length);
+    const nextResult = await f.coordinator.wait(f.root, wait);
+    assert.equal(nextResult.mode, 'mail');
+    assert.ok(nextResult.items.length);
     assert.equal(child.runs.length, 2);
     const nextRun = toAgentResponseDto(child.runs[1]!);
     assert.deepEqual(nextRun.input[0]?.content, [{ type: 'input_text', text: 'Actual new input' }]);

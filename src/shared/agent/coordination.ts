@@ -51,6 +51,7 @@ export interface AgentMail extends AgentMailSummary {
 
 export interface AgentMailFilter {
   fromSessionId?: string | undefined;
+  kind?: AgentMailSummary['kind'] | undefined;
   unread?: boolean | undefined;
   beforeId?: string | undefined;
   limit: number;

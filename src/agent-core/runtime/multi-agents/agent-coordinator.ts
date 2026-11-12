@@ -1,6 +1,5 @@
-import { setTimeout as delay } from 'node:timers/promises';
 import { EventEmitter, once } from 'node:events';
-import type { AgentInboxMessage, AgentMail, AgentMailFilter, AgentTreeEvent, AgentTreeSnapshot, PlanItem } from '../../../shared/agent/coordination.js';
+import type { AgentInboxMessage, AgentMail, AgentMailFilter, AgentMailSummary, AgentTreeEvent, AgentTreeSnapshot, PlanItem } from '../../../shared/agent/coordination.js';
 import type { AgentCoordinationRepository } from '../../repositories/agent-coordination-repository.js';
 import type { ReasoningEffort } from '../../model/catalog-types.js';
 import type { AgentStreamEvent } from '../../../shared/agent/responses.js';
@@ -20,9 +19,21 @@ import { AgentEventHub } from './agent-event-hub.js';
 const MAX_ACTIVE_CHILDREN = 3;
 const MAX_CHILDREN = 12;
 
+function mailSummary({ id, fromSessionId, kind, subject, sentAt, read }: AgentMailSummary) {
+  return { id, fromSessionId, kind, subject, sentAt, read };
+}
+
+interface WaitAgentsOptions {
+  sessionIds: string[];
+  mode: 'status' | 'mail';
+  until: 'any' | 'all';
+  mailKind?: AgentMailSummary['kind'] | 'any' | undefined;
+  timeoutMs: number;
+}
+
 export class AgentCoordinator {
   private readonly events: AgentEventHub;
-  private readonly mailEvents = new EventEmitter();
+  private readonly waitEvents = new EventEmitter();
   private readonly executions = new Set<Promise<unknown>>();
   private readonly runtimes = new Map<string, SessionRuntime>();
   private readonly admission: ExecutionAdmission;
@@ -154,11 +165,13 @@ export class AgentCoordinator {
   }
 
   async list(session: Session) {
-    const snapshot = await this.snapshot(session);
-    return { rootSessionId: snapshot.rootSessionId, plan: snapshot.plan, agents: snapshot.members.map((member) => ({
-      sessionId: member.session.id, parentSessionId: member.session.parentSessionId, title: member.session.title,
-      runId: member.response?.id, status: member.response?.status ?? 'idle',
-    })) };
+    const agents = [];
+    for (const member of this.workspace.descendants(session.id)) {
+      if (member.parentSessionId !== session.id) continue;
+      const child = await this.workspace.getSession(member.id, session.ownerId);
+      if (child) agents.push({ sessionId: child.id, title: child.title, status: child.runs.at(-1)?.status ?? 'idle' });
+    }
+    return { agents, plan: this.state.plan(session.rootSessionId ?? session.id) };
   }
 
   async spawn(parent: Session, run: AgentRunRecord, callId: string, title: string, prompt: string) {
@@ -185,7 +198,7 @@ export class AgentCoordinator {
       return { sessionId: admitted.existing.id, status: admitted.existing.runs.at(-1)?.status ?? 'interrupted' };
     }
     const runStarted = await admitted.started;
-    return { sessionId: admitted.child.id, runId: runStarted.id, status: runStarted.status };
+    return { sessionId: admitted.child.id, status: runStarted.status };
   }
 
   async send(sender: Session, sourceRun: AgentRunRecord, targetId: string, text: string, callId: string, userFollowUp = false) {
@@ -226,7 +239,7 @@ export class AgentCoordinator {
   listMail(session: Session, filter: AgentMailFilter) {
     this.assertMailbox(session);
     const mail = this.state.listMail(session.id, { ...filter, limit: filter.limit + 1 });
-    const items = mail.slice(0, filter.limit);
+    const items = mail.slice(0, filter.limit).map(mailSummary);
     return { items, nextBeforeId: mail.length > filter.limit ? items.at(-1)?.id : undefined };
   }
 
@@ -234,49 +247,62 @@ export class AgentCoordinator {
     this.assertMailbox(session);
     const mail = this.state.readMail(session.id, id);
     if (!mail) throw new Error('Mail not found.');
-    return mail;
+    return { ...mailSummary(mail), body: mail.body };
   }
 
-  async waitForMail(session: Session, fromSessionId: string | undefined, timeoutMs: number, signal?: AbortSignal) {
-    this.assertMailbox(session);
-    if (fromSessionId) {
-      const child = await this.related(session, fromSessionId);
-      if (child.parentSessionId !== session.id) throw new Error('Only direct children can be awaited.');
+  async wait(parent: Session, { sessionIds, mode, until, mailKind = 'result', timeoutMs }: WaitAgentsOptions, signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    this.assertMailbox(parent);
+    const children: Session[] = [];
+    for (const id of new Set(sessionIds)) {
+      const child = await this.related(parent, id);
+      if (child.parentSessionId !== parent.id) throw new Error('Only direct children can be awaited.');
+      children.push(child);
     }
+
+    const check = () => {
+      const pendingSessionIds: string[] = [];
+      if (mode === 'mail') {
+        const items = [];
+        for (const child of children) {
+          const [mail] = this.state.listMail(parent.id, {
+            fromSessionId: child.id, kind: mailKind === 'any' ? undefined : mailKind, unread: true, limit: 1,
+          });
+          if (mail) items.push(mailSummary(mail));
+          else pendingSessionIds.push(child.id);
+        }
+        return { mode, items, pendingSessionIds };
+      }
+
+      const statuses = children.map((child) => {
+        const run = this.workspace.hasSession(child.id, parent.ownerId) ? child.runs.at(-1) : undefined;
+        if (run && !isTerminalRun(run)) pendingSessionIds.push(child.id);
+        return { sessionId: child.id, status: run?.status ?? 'idle' };
+      });
+      return { mode, statuses, pendingSessionIds };
+    };
+
     const timeout = new AbortController();
     const timer = setTimeout(() => timeout.abort(), timeoutMs);
     const waitSignal = signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal;
     try {
       for (;;) {
         signal?.throwIfAborted();
-        const { items } = this.listMail(session, { fromSessionId, unread: true, limit: 20 });
-        if (items.length) return { items, timedOut: false };
-        if (timeoutMs === 0 || timeout.signal.aborted) return { items, timedOut: true };
-        // The synchronous lookup and listener registration run in the same turn.
-        await once(this.mailEvents, session.id, { signal: waitSignal });
+        this.assertSessionExists(parent);
+        const snapshot = check();
+        const pending = snapshot.pendingSessionIds.length;
+        if (until === 'all' ? pending === 0 : pending < children.length) return { ...snapshot, timedOut: false };
+        if (timeoutMs === 0 || timeout.signal.aborted) return { ...snapshot, timedOut: true };
+        // Check and register the listener in the same turn so no notification is missed.
+        try {
+          await once(this.waitEvents, parent.id, { signal: waitSignal });
+        } catch (error) {
+          signal?.throwIfAborted();
+          if (!timeout.signal.aborted) throw error;
+        }
       }
-    } catch (error) {
-      signal?.throwIfAborted();
-      if (timeout.signal.aborted) return { items: [], timedOut: true };
-      throw error;
     } finally {
       clearTimeout(timer);
-    }
-  }
-
-  async wait(parent: Session, ids: string[], timeoutMs: number, signal?: AbortSignal) {
-    for (const id of ids) {
-      const child = await this.related(parent, id);
-      if (child.parentSessionId !== parent.id) throw new Error('Only direct children can be awaited.');
-    }
-    const deadline = Date.now() + timeoutMs;
-    for (;;) {
-      signal?.throwIfAborted();
-      const members = (await this.snapshot(parent)).members.filter((item) => ids.includes(item.session.id));
-      if (members.some((item) => item.response?.status !== 'in_progress') || Date.now() >= deadline) {
-        return members.map((item) => ({ sessionId: item.session.id, status: item.response?.status ?? 'idle' }));
-      }
-      await delay(Math.min(200, Math.max(1, deadline - Date.now())), undefined, signal ? { signal } : undefined);
     }
   }
 
@@ -501,8 +527,7 @@ export class AgentCoordinator {
       id: createRandomId('agent_mail'), fromSessionId: sender.id, toSessionId, sourceRunId: run.id,
       kind, subject, body, sentAt: kind === 'result' ? run.completedAt ?? run.updatedAt : nowIso(), read: false,
     }, dedupeKey);
-    // interrupt wait in AgentCoordinator.waitForMail
-    if (inserted) this.mailEvents.emit(toSessionId);
+    if (inserted) this.waitEvents.emit(toSessionId);
   }
 
   private assertMailbox(session: Session): void {
@@ -525,7 +550,10 @@ export class AgentCoordinator {
     return [text.slice(0, 16000), run.error?.message].filter(Boolean).join('\n');
   }
 
-  private changed(rootSessionId: string): void { this.events.publish({ type: 'changed', rootSessionId }); }
+  private changed(rootSessionId: string): void {
+    this.waitEvents.emit(rootSessionId);
+    this.events.publish({ type: 'changed', rootSessionId });
+  }
   
   private serialized<T>(root: string, operation: () => T | Promise<T>): Promise<T> {
     const result = (this.queues.get(root) ?? Promise.resolve()).catch(() => undefined).then(operation);

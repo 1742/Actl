@@ -7,7 +7,7 @@ import { loadSubagentHistory, runtimeResourceKey } from '../../composables/useAg
 import { desktopRequest } from '../../services/desktopTransport.ts';
 import { useAgentStore } from '../../stores/agent.ts';
 import MessagesArea from '../conversation/MessagesArea.vue';
-import AgentTeamPanel from '../conversation/AgentTeamPanel.vue';
+import AgentTeamPanel from './AgentTeamPanel.vue';
 
 const props = defineProps<{ visible: boolean; subagent?: AgentSession | undefined }>();
 defineEmits<{ openSubagent: [session: AgentSession] }>();

@@ -43,13 +43,15 @@ export class SqliteAgentCoordinationRepository implements AgentCoordinationRepos
 
   listMail(sessionId: string, filter: AgentMailFilter): AgentMailSummary[] {
     const sender = filter.fromSessionId ?? null;
+    const kind = filter.kind ?? null;
     const isRead = filter.unread === undefined ? null : Number(!filter.unread);
     return this.db.prepare(`SELECT id, from_session_id, to_session_id, source_run_id, kind, subject, sent_at, is_read
       FROM agent_mail WHERE to_session_id = ?
       AND (? IS NULL OR from_session_id = ?) AND (? IS NULL OR is_read = ?)
+      AND (? IS NULL OR kind = ?)
       AND (? IS NULL OR rowid < (SELECT rowid FROM agent_mail WHERE id = ? AND to_session_id = ?))
       ORDER BY rowid DESC LIMIT ?`)
-      .all(sessionId, sender, sender, isRead, isRead, filter.beforeId ?? null, filter.beforeId ?? null,
+      .all(sessionId, sender, sender, isRead, isRead, kind, kind, filter.beforeId ?? null, filter.beforeId ?? null,
         sessionId, filter.limit).map(mailSummary);
   }
 
