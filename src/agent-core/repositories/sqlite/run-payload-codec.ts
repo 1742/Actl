@@ -30,7 +30,11 @@ const messageSchema = z.object({
   source: z.union([
     z.object({ kind: z.enum(["user", "runtime"]) }).strict(),
     z.object({ kind: z.literal("model"), sessionId: z.string(), runId: z.string(), model: z.string().optional() }).strict(),
-    z.object({ kind: z.literal("mail"), subject: z.string() }).strict(),
+    z.object({
+      kind: z.literal("agent"), sessionId: z.string(), runId: z.string(), model: z.string().optional(),
+      relationship: z.enum(["parent", "child"]), purpose: z.enum(["task", "message", "progress", "clarification"]),
+      replyTo: z.string().optional(),
+    }).strict(),
   ]).optional(),
   content: z.array(contentPartSchema),
 }).strict();

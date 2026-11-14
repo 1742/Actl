@@ -27,7 +27,7 @@ async function startFixture(processCommands: Map<string, string>, explicitWorksp
       for await (const chunk of request) chunks.push(Buffer.from(chunk));
       const payload = JSON.parse(Buffer.concat(chunks).toString()) as { messages: FixtureMessage[] };
       const user = payload.messages.filter((message) => message.role === 'user').at(-1);
-      const text = typeof user?.content === 'string' ? user.content : JSON.stringify(user?.content);
+      const text = typeof user?.content === 'string' ? user.content : JSON.stringify(user?.content) ?? '';
       response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
       const id = `fixture-${randomUUID()}`;
       const emit = (delta: object, finishReason: string | null = null) => response.write(`data: ${JSON.stringify({
@@ -44,6 +44,17 @@ async function startFixture(processCommands: Map<string, string>, explicitWorksp
         emit({ tool_calls: [{ index: 0, id: `call-${randomUUID()}`, type: 'function', function: {
           name: 'spawn_agent', arguments: JSON.stringify({ title: 'Background reviewer', prompt: 'multi-child-fixture' }),
         } }] }, 'tool_calls');
+        done();
+      } else if (text.includes('wait-child-fixture:') && payload.messages.at(-1)?.role !== 'tool') {
+        const sessionId = /wait-child-fixture:([\w-]+)/.exec(text)?.[1];
+        assert.ok(sessionId);
+        emit({ tool_calls: [{ index: 0, id: `call-${randomUUID()}`, type: 'function', function: {
+          name: 'wait_agents', arguments: JSON.stringify({ sessionIds: [sessionId], until: 'all' }),
+        } }] }, 'tool_calls');
+        done();
+      } else if (text.includes('wait-child-fixture:')) {
+        assert.match(JSON.stringify(payload.messages.at(-1)?.content), /迁移验证通过/);
+        emit({ content: 'Child result received' }, 'stop');
         done();
       } else if (text.includes('workspace-shell-') && payload.messages.at(-1)?.role !== 'tool') {
         workspaceMessages = payload.messages;
@@ -389,7 +400,7 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
       await request({ operation: 'responses.cancel', params: { sessionId, responseId: next.id } });
       assert.equal(success(await next.running).status, 'cancelled');
     });
-    await step('Background agent tree subscription, detach, follow-up and restart persistence', async () => {
+    await step('Background agent tree, follow-up and direct result after restart', async () => {
       const rootSession = await request<{ id: string }>({ operation: 'sessions.create', body: { projectId } });
       const events: AgentTreeEvent[] = [];
       const subscription = randomUUID();
@@ -404,9 +415,18 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
       const tree = await request<AgentTreeSnapshot>({ operation: 'agents.tree', params: { sessionId: rootSession.id } });
       const child = tree.members.find((member) => member.session.parentSessionId === rootSession.id)!;
       assert.ok(child);
+      const task = child.response?.input[0];
+      assert.ok(task?.id && task.source?.kind === 'agent');
+      assert.equal(task.source.sessionId, rootSession.id);
+      assert.equal(task.source.purpose, 'task');
       host.detach(subscription);
       const count = events.length;
-      await request({ operation: 'agents.message', params: { sessionId: rootSession.id }, body: { targetSessionId: child.session.id, message: 'Continue with a short summary.' } });
+      const followUp = await request<{ sessionId: string; messageId: string; accepted: boolean }>({
+        operation: 'agents.message', params: { sessionId: rootSession.id },
+        body: { targetSessionId: child.session.id, message: 'Continue with a short summary.' },
+      });
+      assert.equal(followUp.sessionId, child.session.id);
+      assert.ok(followUp.accepted && followUp.messageId);
       await waitFor(async () => {
         const context = await request<{ responses: AgentResponseDto[] }>({ operation: 'sessions.context', params: { sessionId: child.session.id } });
         return context.responses.length === 2 && context.responses[1]?.status === 'completed';
@@ -418,6 +438,28 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
       const restored = await request<AgentTreeSnapshot>({ operation: 'agents.tree', params: { sessionId: rootSession.id } });
       assert.equal(restored.members.length, 2);
       assert.equal(restored.members.find((member) => member.session.id === child.session.id)?.session.parentSessionId, rootSession.id);
+      const history = await request<{ responses: AgentResponseDto[] }>({ operation: 'sessions.context', params: { sessionId: child.session.id } });
+      assert.deepEqual(history.responses[0]?.input[0], task);
+      assert.equal(history.responses[1]?.input[0]?.source?.kind, 'user');
+
+      const waitEvents: AgentStreamEvent[] = [];
+      const parentRun = success(await run(`wait-child-fixture:${child.session.id}`, (events) => waitEvents.push(...events), rootSession.id));
+      assert.equal(parentRun.status, 'completed');
+      const waitCall = parentRun.output.find((item) => item.type === 'function_call' && item.name === 'wait_agents');
+      assert.ok(waitCall?.type === 'function_call');
+      const waitResult = parentRun.output.find((item) => item.type === 'function_call_output' && item.call_id === waitCall.call_id);
+      assert.ok(waitResult?.type === 'function_call_output');
+      const envelope = JSON.parse(waitResult.output);
+      assert.equal(envelope.ok, true);
+      assert.deepEqual(envelope.output, {
+        statuses: [{ sessionId: child.session.id, runId: history.responses[1]?.id, status: 'completed', output: '迁移验证通过' }],
+        pendingSessionIds: [], timedOut: false,
+      });
+      const streamed = waitEvents.find((event) => event.type === 'agent.tool.completed' && event.call_id === waitCall.call_id);
+      assert.ok(streamed?.type === 'agent.tool.completed' && streamed.result.ok);
+      assert.deepEqual(streamed.result.output, envelope.output);
+      const parentHistory = await request<{ responses: AgentResponseDto[] }>({ operation: 'sessions.context', params: { sessionId: rootSession.id } });
+      assert.deepEqual(parentHistory.responses.at(-1)?.output.find((item) => item.id === waitResult.id), waitResult);
     });
     await step('Unexpected runtime exit fails in-flight calls and recovers history', async () => {
       const orphanPid = await launchOrphan('crash-orphan');

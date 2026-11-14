@@ -22,6 +22,9 @@ export type AgentTreeEvent =
   | { type: 'response'; rootSessionId: string; sessionId: string; events: AgentStreamEvent[] }
   | { type: 'changed'; rootSessionId: string };
 
+export type AgentMessageRelationship = 'parent' | 'child';
+export type AgentMessagePurpose = 'task' | 'message' | 'progress' | 'clarification';
+
 export interface AgentInboxMessage {
   id: string;
   fromSessionId: string;
@@ -30,29 +33,9 @@ export interface AgentInboxMessage {
   kind: 'message';
   author?: 'user' | 'model';
   model?: string;
+  relationship?: AgentMessageRelationship;
+  purpose?: AgentMessagePurpose;
+  replyTo?: string;
   text: string;
   wake: boolean;
-}
-
-export interface AgentMailSummary {
-  id: string;
-  fromSessionId: string;
-  toSessionId: string;
-  sourceRunId: string;
-  kind: 'message' | 'result';
-  subject: string;
-  sentAt: string | null;
-  read: boolean;
-}
-
-export interface AgentMail extends AgentMailSummary {
-  body: string;
-}
-
-export interface AgentMailFilter {
-  fromSessionId?: string | undefined;
-  kind?: AgentMailSummary['kind'] | undefined;
-  unread?: boolean | undefined;
-  beforeId?: string | undefined;
-  limit: number;
 }

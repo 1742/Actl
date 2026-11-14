@@ -9,9 +9,11 @@ flowchart TD
   C --> R[主会话 SessionRuntime / AgentLoop]
   C --> A[子会话 A SessionRuntime / AgentLoop]
   C --> B[子会话 B SessionRuntime / AgentLoop]
-  R --> T[分派、指令、邮箱和计划工具]
+  R --> T[分派、协作消息、等待结果和计划工具]
+  A --> T
+  B --> T
   T --> C
-  C <--> DB[(SQLite：父子关系、计划、指令和邮箱)]
+  C <--> DB[(SQLite：父子关系、计划、协作消息和 Run 历史)]
   R --> H[AgentEventHub]
   A --> H
   B --> H
@@ -21,8 +23,8 @@ flowchart TD
 ## 任务、会话与计划
 
 - `Session` 保存 parentSessionId、rootSessionId，以及创建来源 originRunId/originCallId；重复执行同一 spawn 工具调用返回同一个子会话。
-- 一个子任务对应一个子会话，首次任务说明放在输入消息中，后续追问继续该会话。当前没有独立的 Task 表或任务依赖图。
-- `Run` 是一次实际执行，承载 in_progress、waiting_permission、completed 等状态。普通发消息、分派和下行指令共用协调器的启动路径。执行 Promise 返回 waiting_permission 表示原 Run 等待审批。
+- 一个子任务对应一个子会话。首次任务说明以父代理发出的 `task` 消息写入收件队列，并作为子会话首个 Run 的输入。后续追问继续该会话。当前没有独立的 Task 表或任务依赖图。
+- `Run` 是一次实际执行，承载 in_progress、waiting_permission、completed 等状态。普通发消息、分派和空闲子代理接收追问共用协调器的启动路径。执行 Promise 返回 waiting_permission 表示原 Run 等待审批。
 - 根会话的 `AgentPlan` 独立持久化，包含 revision 和 `{id,text,status}` 条目。每次编译提示词都加入最新计划；主 Agent 显式维护状态，不根据子 Run 终态自动勾选。
 
 子 Agent 使用新上下文，只收到分派说明、会话身份、计划及通常的项目提示；不会复制主 Agent 的完整历史。首次执行继承发起 Run 的模型目标和 reasoningEffort，强制 plan 权限模式。
@@ -32,10 +34,8 @@ flowchart TD
 | 工具 | 行为 |
 | --- | --- |
 | spawn_agent | 根 Agent 创建子会话，启动后返回子会话的 sessionId 和状态，允许后台并行 |
-| send_message | 根 Agent 向直属子会话发送持久化指令，空闲子会话以实际指令启动下一 Run |
-| send_mail | 子 Agent 向直属父会话发送主题和正文 |
-| list_mail / read_mail | 根 Agent 列出邮箱内的邮件摘要，或按邮件 ID 读取正文并标记已读 |
-| wait_agents | 指定 1–12 个直属子代理，等待任一或全部运行结束（空闲也满足），或等待每个匹配子代理的未读邮件（默认结果邮件）。最长 60 秒，可取消，超时返回已有结果及仍未满足条件的子代理 ID |
+| send_message | 向直属父或子会话发送持久化消息。参数为 `sessionId`、`message`，可选 `purpose`（默认 `message`，也可用 `progress` 或 `clarification`）和引用原消息 ID 的 `replyTo`。返回 `sessionId`、`messageId` 和 `accepted` |
+| wait_agents | 用 `sessionIds` 指定 1–12 个直属子代理，`until` 选择等待任一或全部运行结束。返回 `statuses`、`pendingSessionIds` 和 `timedOut`。默认等任一子代理，`timeoutMs` 默认 30 秒，最长 1 小时，可取消 |
 | list_agents | 返回直属子代理的 sessionId、标题、状态及当前计划 |
 | interrupt_agent | 父 Agent 停止指定子会话及其后代 |
 | update_plan | 根 Agent 使用当前 revision 更新整个计划，拒绝过期 revision |
@@ -46,13 +46,13 @@ flowchart TD
 
 ## 消息、完成与恢复
 
-指令队列和邮箱分别存储在 SQLite。指令和主动邮件按来源 Run 和工具调用 ID 去重，完成回执按子 Run ID 去重。指令在写入子会话后确认投递，重启后通过消息 ID 检查避免重复写入。
+父子双方使用同一 SQLite 收件队列。运行时根据调用方写入真实发送者和来源 Run，并校验直属父子关系。`replyTo` 引用同一对代理之间从收件方发来的消息。重复执行同一个来源 Run 的工具调用会复用消息 ID。`accepted` 表示协调器已接受消息，收件方会话保存消息后才确认投递，重启后也按消息 ID 避免重复写入。
 
-子代理运行时，指令会在下次模型调用前作为带来源的 `user` 消息加入时间线。子代理空闲时，协调器用实际指令发起新 Run。等待审批或自动启动失败时，指令留在队列。
+收件方运行时，排队消息在下一次可执行的模型调用前按序加入时间线。空闲子代理可以由下行消息启动新 Run，空闲父代理在下一轮处理已排队的上行消息。等待审批或自动启动失败时，消息留在队列。协作消息使用模型协议的 `user` 角色，模型输入带有运行时生成的发送方归属、消息 ID 和用途。`purpose` 用于说明消息意图，调度依据收件方的身份和运行状态。
 
-子 Run 进入终态后，运行时自动发出回执邮件。来信只通知正在等待邮件的工具，父代理在当前或下一轮执行中按需读取。等待和列表返回邮件摘要。父代理调用 `read_mail` 后，用户可以在对话中展开对应工具卡片查看正文。
+父代理通过 `wait_agents` 从子会话的 Run 历史读取结果。每个状态带 `sessionId` 和 `status`，关联 Run 时带 `runId`。完成的 Run 可以附上最多 16000 字符的最终回复 `output`，失败的 Run 可以附上错误文本 `error`。可执行的追问已排队而新 Run 尚未建立时，状态是 `queued`，仍需等待。空闲且没有待执行工作的子会话满足等待条件。超时也会返回已有结果。进度与澄清消息会在等待返回后的下一模型步投递。
 
-停止根会话会取消整棵树，停止子会话只影响该子树。协调器会取消正在准备和执行的 Run，停止对应会话的后台进程，并抑制已排队消息的自动唤醒。明确的新用户输入或追问可以重新开始执行。退出时取消执行中的工作，保留待审批批次。重启恢复关系、计划和回执，等待显式输入再调用模型。
+停止根会话会取消整棵树，停止子会话只影响该子树。协调器会取消正在准备和执行的 Run，停止对应会话的后台进程，并抑制已排队消息的自动唤醒。明确的新用户输入或追问可以重新开始执行。退出时取消执行中的工作，保留待审批批次。重启后仍可读取会话关系、计划、排队消息和 Run 结果，等待显式输入再调用模型。
 
 ## 只读边界与工作目录
 
@@ -64,6 +64,6 @@ flowchart TD
 
 右侧栏「子代理」在列表上方显示计划。列表按父对话列出子会话和实时状态，可停止单个成员或整棵树。点击子会话会在右栏打开独立的只读对话标签。已打开的子会话会切回原标签，主区继续显示父对话。
 
-树订阅独立于创建 Run 的请求，包含初始快照和持续事件。detach 只解除显示订阅，后台任务继续。协调器将领域事件投影一次，并将同一组带序号的事件发到请求流和树订阅。前端按序号去重，重新进入会话时通过最新 response 快照恢复。
+树订阅独立于创建 Run 的请求，包含初始快照和持续事件。detach 只解除显示订阅，后台任务继续。协调器将领域事件投影一次，并将同一组带序号的事件发到请求流和树订阅。前端按序号去重，重新进入会话时通过最新 response 快照恢复。消息界面按来源标记真人、父代理和子代理，模型协议的 `role` 仍用于模型上下文。
 
 主要实现见[协调器](../../src/agent-core/runtime/multi-agents/agent-coordinator.ts)、[协调持久化](../../src/agent-core/repositories/sqlite/agent-coordination-repository.ts)、[工具](../../src/agent-core/tools/builtin/agent-team.ts)和[子代理右侧栏](../../src/renderer/src/agent/components/sub-agents/AgentSidebarSubagents.vue)。

@@ -88,7 +88,7 @@ test('migrates v20 without losing sessions, persists plans/messages, and rejects
       title TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
     ) STRICT;
     CREATE TABLE agent_runs(id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id));
-    CREATE TABLE timeline_items(run_id TEXT, item_id TEXT, item_type TEXT, payload_json TEXT);
+    CREATE TABLE timeline_items(run_id TEXT, item_order INTEGER NOT NULL, item_id TEXT, item_type TEXT, payload_json TEXT, PRIMARY KEY(run_id, item_order));
   `);
   db.prepare('INSERT INTO schema_metadata VALUES (1, ?, 20, ?)').run('multi-user-multi-model', 'now');
   db.prepare('INSERT INTO sessions VALUES (?, ?, NULL, ?, ?, ?)').run('root', owner, 'retained', 'now', 'now');
@@ -103,17 +103,19 @@ test('migrates v20 without losing sessions, persists plans/messages, and rejects
     assert.throws(() => coordination.updatePlan('root', 0, []), /revision/);
     assert.equal(coordination.updatePlan('root', 1, [{ id: 'a', text: 'Inspect', status: 'completed' }]).revision, 2);
     const message = { id: 'message', fromSessionId: 'root', toSessionId: 'root', sourceRunId: 'run', kind: 'message' as const, text: 'retained message', wake: false };
-    assert.equal(coordination.enqueue(message, 'key'), true);
-    assert.equal(coordination.enqueue({ ...message, id: 'duplicate' }, 'key'), false);
+    assert.equal(coordination.enqueue(message, 'key'), message.id);
+    assert.equal(coordination.enqueue({ ...message, id: 'duplicate' }, 'key'), message.id);
     database.close();
     database = await openWorkspaceDatabase(dbPath);
     const reopened = new SqliteAgentCoordinationRepository(database);
     assert.equal(reopened.plan('root').revision, 2);
     assert.equal(reopened.pending('root')[0]?.text, 'retained message');
     database.exec(`
-      DROP TABLE agent_mail;
       ALTER TABLE agent_messages DROP COLUMN author;
       ALTER TABLE agent_messages DROP COLUMN model;
+      ALTER TABLE agent_messages DROP COLUMN relationship;
+      ALTER TABLE agent_messages DROP COLUMN purpose;
+      ALTER TABLE agent_messages DROP COLUMN reply_to;
       UPDATE schema_metadata SET version = 21;
       INSERT INTO sessions(id, owner_id, title, created_at, updated_at, parent_session_id, root_session_id)
         VALUES ('child', 'developer:local', 'child', 'now', 'now', 'root', 'root');
@@ -121,17 +123,19 @@ test('migrates v20 without losing sessions, persists plans/messages, and rejects
         VALUES ('old-mail', 'child', 'root', 'child-run', 'result', 'legacy private body', 1, 1, 'result:child-run'),
                ('old-instruction', 'root', 'child', 'root-run', 'message', 'legacy instruction', 1, 0, 'instruction');
       INSERT INTO agent_runs VALUES ('root-run', 'root');
-      INSERT INTO timeline_items VALUES ('root-run', 'old-mail', 'message',
-        '{"type":"message","id":"old-mail","role":"user","content":[{"type":"text","text":"legacy private body"}]}');
+      INSERT INTO timeline_items VALUES
+        ('root-run', 0, 'old-mail', 'message', '{"type":"message","id":"old-mail","role":"user","content":[]}'),
+        ('root-run', 1, 'read', 'tool_call', '{"type":"tool_call","name":"read_mail","callId":"old-read"}'),
+        ('root-run', 2, 'result', 'tool_result', '{"type":"tool_result","callId":"old-read"}'),
+        ('root-run', 3, 'kept', 'message', '{"type":"message","id":"kept","role":"assistant","content":[]}');
     `);
     database.close();
     database = await openWorkspaceDatabase(dbPath);
     const migrated = new SqliteAgentCoordinationRepository(database);
-    assert.equal(migrated.listMail('root', { limit: 5 })[0]?.read, true);
-    assert.equal(migrated.listMail('root', { limit: 5 })[0]?.sentAt, null);
-    assert.equal(migrated.readMail('root', 'old-mail')?.body, 'legacy private body');
     assert.equal(migrated.pending('child')[0]?.id, 'old-instruction');
-    assert.equal(database.prepare("SELECT json_extract(payload_json, '$.source.kind') AS source FROM timeline_items").get()?.source, 'mail');
+    assert.equal(database.prepare("SELECT 1 FROM sqlite_master WHERE name = 'agent_mail'").get(), undefined);
+    assert.equal(database.prepare("SELECT 1 FROM agent_messages WHERE id = 'old-mail'").get(), undefined);
+    assert.deepEqual(database.prepare('SELECT item_id, item_order FROM timeline_items').all().map((row) => [row.item_id, row.item_order]), [['kept', 0]]);
   } finally { if (database.isOpen) database.close(); await rm(directory, { recursive: true, force: true }); }
 });
 
@@ -178,20 +182,30 @@ test('parallel fresh-context children deliver results; attempted edits are block
   } finally { await f.close(); }
 });
 
-test('child completion does not resume a parent through pending approval; plan remains in compiled context', async () => {
+test('child messages and completion preserve parent approval and deliver when it resumes', async () => {
+  const review = Promise.withResolvers<void>();
   const f = await fixture(async (request, signal) => {
-    if (isChild(request)) { await delay(50, undefined, { signal }); return [text('Review ready')]; }
+    if (isChild(request)) {
+      await review.promise;
+      signal?.throwIfAborted();
+      return calls(request, 'send_message').length ? [text('Review ready')] :
+        [call('send_message', { sessionId: f.root.id, message: 'Review progress', purpose: 'progress' })];
+    }
     if (!calls(request, 'spawn_agent').length) return [call('spawn_agent', { title: 'Review', prompt: 'Review' })];
     if (!calls(request, 'write_file').length) return [call('write_file', { path: 'approved.txt', content: 'approved' })];
+    assert.ok(request.transcript.some((item) => item.type === 'message' && item.source?.kind === 'agent' && item.source.purpose === 'progress'));
     return [text('Final')];
   });
   try {
     f.coordinator.updatePlan(f.root, 0, [{ id: 'review', text: 'Review and verify', status: 'in_progress' }]);
     const run = await f.coordinator.start(f.root, input('Start'), options);
     assert.equal(run.status, 'waiting_permission');
-    await delay(150);
+    const child = f.workspace.descendants(f.root.id).find((session) => session.parentSessionId)!;
+    const receipt = f.coordinator.wait(f.root, { sessionIds: [child.id], until: 'any', timeoutMs: 2000 });
+    review.resolve();
+    assert.equal((await receipt).statuses[0]?.output, 'Review ready');
     assert.equal(f.root.runs.length, 1); assert.equal(run.status, 'waiting_permission');
-    assert.ok(f.coordination.listMail(f.root.id, { limit: 10 }).some((message) => message.kind === 'result'));
+    assert.equal(f.coordination.pending(f.root.id)[0]?.text, 'Review progress');
     const batch = run.pendingToolBatch!;
     const completed = await f.coordinator.resume(f.root, run, batch.id, batch.permissions.map((permission) => ({ permissionId: permission.id, decision: 'approve' })));
     assert.equal(completed.status, 'completed');
@@ -199,7 +213,7 @@ test('child completion does not resume a parent through pending approval; plan r
     const compiled = await f.compiler.compile(f.root, []);
     assert.match(compiled.instructions, /Review and verify/);
     assert.equal(f.coordination.plan(f.root.id).items[0]?.status, 'in_progress');
-  } finally { await f.close(); }
+  } finally { review.resolve(); await f.close(); }
 });
 
 test('tree shares project admission; unrelated roots conflict; cancellation aborts waits and prevents auto-wake', async () => {
@@ -281,7 +295,7 @@ test('stopping a session aborts input preparation and releases its reservation',
   } finally { await f.close(); }
 });
 
-test('a running child keeps its project reserved and sends a receipt without waking its parent', { timeout: 5000 }, async () => {
+test('a running child keeps its project reserved and its result can be collected without waking the parent', { timeout: 5000 }, async () => {
   const finishChild = new AbortController();
   const f = await fixture(async (request, signal) => {
     if (isChild(request)) {
@@ -299,31 +313,30 @@ test('a running child keeps its project reserved and sends a receipt without wak
     const other = await f.workspace.createSession(owner, { projectId: f.project.id });
     await assert.rejects(f.coordinator.start(other, input('conflict'), options), { code: 'project_active_response_exists' });
     const child = f.workspace.descendants(f.root.id).find((session) => session.parentSessionId)!;
-    const waiting = f.coordinator.wait(f.root, { sessionIds: [child.id], mode: 'mail', until: 'any', timeoutMs: 2000 });
+    const waiting = f.coordinator.wait(f.root, { sessionIds: [child.id], until: 'any', timeoutMs: 2000 });
     finishChild.abort();
     const result = await waiting;
-    assert.equal(result.mode, 'mail');
-    const receipt = result.items[0]!;
-    assert.equal(receipt.kind, 'result');
-    assert.match(f.coordinator.readMail(f.root, receipt.id).body, /child findings/);
+    assert.deepEqual(result, {
+      statuses: [{ sessionId: child.id, runId: child.runs[0]?.id, status: 'completed', output: 'child findings' }],
+      pendingSessionIds: [], timedOut: false,
+    });
     await delay(30);
     assert.equal(f.root.runs.length, 1);
     assert.ok(!JSON.stringify(f.root.runs[0]?.timeline).includes('child findings'));
   } finally { await f.close(); }
 });
 
-test('read_mail delivers the body to the model, desktop streams and history', async () => {
-  const body = 'private findings 40c3';
+test('wait_agents delivers the latest completed result to the model, desktop streams and history', async () => {
+  const output = 'Review findings 40c3';
   const f = await fixture(async (request) => {
     if (isChild(request)) {
-      assert.ok(request.tools.some((tool) => tool.name === 'send_mail'));
-      assert.ok(!request.tools.some((tool) => tool.name === 'send_message' || tool.name === 'read_mail'));
-      if (!calls(request, 'send_mail').length) return [call('send_mail', { subject: 'Progress report', body })];
-      return [text('Child completed')];
+      assert.ok(request.tools.some((tool) => tool.name === 'send_message'));
+      assert.ok(!request.tools.some((tool) => tool.name === 'wait_agents'));
+      return [text(output)];
     }
-    assert.ok(!request.tools.some((tool) => tool.name === 'send_mail' || tool.name === 'wait_for_mail'));
-    function outputFor(name: string, index = -1) {
-      const callId = calls(request, name).at(index)?.callId;
+    assert.ok(!request.tools.some((tool) => tool.name.endsWith('_mail')));
+    function outputFor(name: string) {
+      const callId = calls(request, name).at(-1)?.callId;
       const result = request.transcript.find((item) => item.type === 'tool_result' && item.callId === callId);
       assert.ok(result?.type === 'tool_result' && !result.isError);
       const envelope = result.content[0];
@@ -333,89 +346,138 @@ test('read_mail delivers the body to the model, desktop streams and history', as
     if (!calls(request, 'spawn_agent').length) return [call('spawn_agent', { title: 'Review', prompt: 'Review' })];
     const child = outputFor('spawn_agent') as { sessionId: string; status: string };
     assert.deepEqual(Object.keys(child).sort(), ['sessionId', 'status']);
-    const waits = calls(request, 'wait_agents');
-    if (!waits.length) return [call('wait_agents', { sessionIds: [child.sessionId], mode: 'mail', mailKind: 'message', timeoutMs: 2000 })];
-    const waiting = outputFor('wait_agents', 0) as { items: Array<{ id: string; subject: string }>; timedOut: boolean };
-    assert.equal(waiting.timedOut, false);
-    const message = waiting.items.find((mail) => mail.subject === 'Progress report');
-    assert.ok(message);
-    const summaryKeys = ['fromSessionId', 'id', 'kind', 'read', 'sentAt', 'subject'];
-    assert.deepEqual(Object.keys(message).sort(), summaryKeys);
-    if (!calls(request, 'list_mail').length) return [call('list_mail', { fromSessionId: child.sessionId })];
-    const listed = outputFor('list_mail') as { items: unknown[] };
-    assert.ok(listed.items.length);
-    for (const item of listed.items) assert.deepEqual(Object.keys(item as object).sort(), summaryKeys);
-    if (!calls(request, 'read_mail').length) {
-      assert.ok(!JSON.stringify(request.transcript).includes(body));
-      return [call('read_mail', { mailId: message.id })];
-    }
-    assert.deepEqual(outputFor('read_mail'), { ...message, body, read: true });
-    if (waits.length === 1) return [call('wait_agents', { sessionIds: [child.sessionId], timeoutMs: 2000 })];
+    if (!calls(request, 'wait_agents').length) return [call('wait_agents', { sessionIds: [child.sessionId], timeoutMs: 2000 })];
+    const childSession = await f.workspace.getSession(child.sessionId);
     assert.deepEqual(outputFor('wait_agents'), {
-      mode: 'status', statuses: [{ sessionId: child.sessionId, status: 'completed' }], pendingSessionIds: [], timedOut: false,
+      statuses: [{ sessionId: child.sessionId, runId: childSession?.runs[0]?.id, status: 'completed', output }],
+      pendingSessionIds: [], timedOut: false,
     });
     if (!calls(request, 'list_agents').length) return [call('list_agents', {})];
     assert.deepEqual(outputFor('list_agents'), {
       agents: [{ sessionId: child.sessionId, title: 'Review', status: 'completed' }],
       plan: { revision: 0, items: [] },
     });
-    return [text('Reviewed the progress report')];
+    return [text('Reviewed the results')];
   });
   try {
     const streamed: AgentStreamEvent[] = [];
     const treeEvents: AgentStreamEvent[] = [];
-    const childEvents: AgentStreamEvent[] = [];
     const off = f.coordinator.subscribe((event) => {
-      if (event.type !== 'response') return;
-      (event.sessionId === f.root.id ? treeEvents : childEvents).push(...event.events);
+      if (event.type === 'response' && event.sessionId === f.root.id) treeEvents.push(...event.events);
     });
     const run = await f.coordinator.start(f.root, input('Review'), options, (event) => { streamed.push(event); });
     off();
     assert.equal(run.status, 'completed');
     for (const events of [streamed, treeEvents]) {
       const results = events.filter((event) => event.type === 'agent.tool.completed');
-      const read = results.find((event) => event.result.toolName === 'read_mail');
-      assert.ok(read?.result.ok);
-      assert.match(JSON.stringify(read.result.output), /private findings 40c3/);
-      assert.ok(!JSON.stringify(results.filter((event) => event !== read)).includes(body));
+      const wait = results.find((event) => event.result.toolName === 'wait_agents');
+      assert.ok(wait?.result.ok);
+      assert.match(JSON.stringify(wait.result.output), /Review findings 40c3/);
+      assert.ok(!JSON.stringify(results.filter((event) => event !== wait)).includes(output));
     }
-    assert.ok(!JSON.stringify(childEvents).includes(body));
     const response = toAgentResponseDto(run);
-    const readCall = response.output.find((item) => item.type === 'function_call' && item.name === 'read_mail');
-    assert.ok(readCall?.type === 'function_call');
-    const readOutput = response.output.find((item) => item.type === 'function_call_output' && item.call_id === readCall.call_id);
-    assert.ok(readOutput?.type === 'function_call_output');
-    assert.equal(JSON.parse(readOutput.output).output.body, body);
-    assert.match(JSON.stringify(await f.coordinator.snapshot(f.root)), /private findings 40c3/);
-    assert.ok(f.coordinator.listMail(f.root, { unread: true, kind: 'result', limit: 1 }).items.length);
-    const { items, nextBeforeId } = f.coordinator.listMail(f.root, { limit: 1 });
-    assert.equal(items.length, 1);
-    assert.ok(nextBeforeId);
-    assert.equal(f.coordinator.listMail(f.root, { beforeId: nextBeforeId, limit: 5 }).items.length, 1);
-    const message = f.coordinator.listMail(f.root, { unread: false, limit: 10 }).items[0]!;
-    assert.equal(f.coordinator.readMail(f.root, message.id).body, body);
+    const waitCall = response.output.find((item) => item.type === 'function_call' && item.name === 'wait_agents');
+    assert.ok(waitCall?.type === 'function_call');
+    const waitOutput = response.output.find((item) => item.type === 'function_call_output' && item.call_id === waitCall.call_id);
+    assert.ok(waitOutput?.type === 'function_call_output');
+    assert.equal(JSON.parse(waitOutput.output).output.statuses[0].output, output);
+    assert.match(JSON.stringify(await f.coordinator.snapshot(f.root)), /Review findings 40c3/);
     const other = await f.workspace.createSession(owner);
-    assert.throws(() => f.coordinator.readMail(other, message.id), /not found/);
+    const child = f.workspace.descendants(f.root.id).find((session) => session.parentSessionId)!;
+    await assert.rejects(f.coordinator.wait(other, { sessionIds: [child.id], until: 'any', timeoutMs: 0 }), /direct child/);
   } finally { await f.close(); }
 });
 
-test('mail waits time out and cancel without consuming messages', async () => {
-  const f = await fixture(async () => [text('Ready')]);
+test('wait_agents times out and cancels without consuming child work', async () => {
+  const f = await fixture(async (request, signal) => {
+    if (isChild(request)) await delay(60000, undefined, { signal });
+    return calls(request, 'spawn_agent').length ? [text('Delegated')] : [call('spawn_agent', { title: 'Review', prompt: 'Review' })];
+  });
   try {
-    const child = await f.workspace.createSession(owner, { projectId: f.project.id, parentSessionId: f.root.id });
-    const wait = { sessionIds: [child.id], mode: 'mail', until: 'any', timeoutMs: 15 } as const;
+    await f.coordinator.start(f.root, input('Delegate'), options);
+    const child = f.workspace.descendants(f.root.id).find((session) => session.parentSessionId)!;
+    const wait = { sessionIds: [child.id], until: 'any', timeoutMs: 15 } as const;
     assert.deepEqual(await f.coordinator.wait(f.root, wait), {
-      mode: 'mail', items: [], pendingSessionIds: [child.id], timedOut: true,
+      statuses: [{ sessionId: child.id, runId: child.runs[0]?.id, status: 'in_progress' }], pendingSessionIds: [child.id], timedOut: true,
     });
     const abort = new AbortController();
     const waiting = f.coordinator.wait(f.root, { ...wait, timeoutMs: 60000 }, abort.signal);
     abort.abort();
     await assert.rejects(waiting, { name: 'AbortError' });
-    assert.deepEqual(f.coordinator.listMail(f.root, { limit: 5 }).items, []);
+    assert.equal(child.runs[0]?.status, 'in_progress');
+    await f.coordinator.interrupt(f.root, child.id);
+    assert.deepEqual((await f.coordinator.wait(f.root, wait)).statuses,
+      [{ sessionId: child.id, runId: child.runs[0]?.id, status: 'cancelled' }]);
   } finally { await f.close(); }
 });
 
-test('wait_agents can return for any child or wait for all children in both modes', async () => {
+test('a child asks for clarification and the parent replies through the same durable inbox', { timeout: 8000 }, async () => {
+  const ask = Promise.withResolvers<void>();
+  const question = 'Which output should I inspect?';
+  const answer = 'Use the build log.';
+  const f = await fixture(async (request) => {
+    const incoming = request.transcript.filter((item) => item.type === 'message' && item.source?.kind === 'agent');
+    const latest = incoming.at(-1);
+    if (isChild(request)) {
+      assert.match(request.instructions, new RegExp(f.root.id));
+      assert.ok(incoming.some((item) => item.source?.kind === 'agent' && item.source.purpose === 'task'));
+      if (JSON.stringify(latest?.content).includes(answer)) {
+        assert.equal(latest?.source?.kind, 'agent');
+        assert.ok(latest.source.replyTo);
+        assert.match(JSON.stringify(latest.content), /Actl agent message/);
+        return [text('Build log findings')];
+      }
+      await ask.promise;
+      if (!calls(request, 'send_message').length) {
+        return [call('send_message', { sessionId: f.root.id, message: question, purpose: 'clarification', replyTo: latest?.id })];
+      }
+      return [text('Waiting for clarification')];
+    }
+    if (!calls(request, 'spawn_agent').length) return [call('spawn_agent', { title: 'Review', prompt: 'Inspect the output' })];
+    if (!latest || calls(request, 'send_message').length) return [text('Parent finished')];
+    assert.equal(latest.source?.kind, 'agent');
+    assert.equal(latest.source.relationship, 'child');
+    assert.equal(latest.source.purpose, 'clarification');
+    assert.match(JSON.stringify(latest.content), /Actl agent message/);
+    return [call('send_message', { sessionId: latest.source.sessionId, message: answer, replyTo: latest.id })];
+  });
+  try {
+    const original = await f.coordinator.start(f.root, input('Review'), options);
+    assert.equal(original.status, 'completed');
+    const child = f.workspace.descendants(f.root.id).find((session) => session.parentSessionId)!;
+    const wait = { sessionIds: [child.id], until: 'any', timeoutMs: 2000 } as const;
+    const receipt = f.coordinator.wait(f.root, wait);
+    ask.resolve();
+    const result = await receipt;
+    assert.equal(result.timedOut, false);
+    assert.equal(f.root.runs.length, 1);
+    const [pending] = f.coordination.pending(f.root.id);
+    assert.equal(pending?.text, question);
+    assert.equal(pending.replyTo, child.runs[0]?.input[0]?.id);
+    await assert.rejects(f.coordinator.send(f.root, original, child.id, answer, 'bad-reply', { replyTo: pending.replyTo }), /replyTo/);
+    await assert.rejects(f.coordinator.send(child, child.runs[0]!, child.id, question, 'self'), /direct child/);
+    await assert.rejects(f.coordinator.send(child, child.runs[0]!, f.root.id, question, 'human-up', { userFollowUp: true }), /direct child/);
+
+    const events: AgentStreamEvent[] = [];
+    const followUp = await f.coordinator.start(f.root, input('Continue review'), options, (event) => { events.push(event); });
+    assert.equal(followUp.status, 'completed');
+    const received = toAgentResponseDto(followUp).output.find((item) => item.type === 'message' && item.id === pending.id);
+    assert.ok(received?.type === 'message');
+    assert.deepEqual(received.content, [{ type: 'output_text', text: question, annotations: [] }]);
+    assert.deepEqual(received.source, { kind: 'agent', sessionId: child.id, runId: child.runs[0]?.id, model: 'Fake',
+      relationship: 'child', purpose: 'clarification', replyTo: pending.replyTo });
+    assert.ok(events.some((event) => event.type === 'response.output_item.done' && event.item.id === pending.id));
+    assert.deepEqual(f.coordination.pending(f.root.id), []);
+    assert.equal((await f.coordinator.wait(f.root, wait)).statuses[0]?.output, 'Build log findings');
+    assert.equal(child.runs.length, 2);
+    assert.equal(child.runs[1]?.input[0]?.source?.kind, 'agent');
+  } finally {
+    ask.resolve();
+    await f.close();
+  }
+});
+
+test('wait_agents can return for any child or wait for all children', async () => {
   const finishFirst = new AbortController();
   const finishSecond = new AbortController();
   const f = await fixture(async (request, signal) => {
@@ -437,30 +499,26 @@ test('wait_agents can return for any child or wait for all children in both mode
     const first = children.find((child) => child.title === 'First')!;
     const second = children.find((child) => child.title === 'Second')!;
     const wait = { sessionIds: [first.id, second.id], timeoutMs: 2000 };
-    await f.coordinator.sendMail(first, first.runs[0]!, 'Progress', 'Still working', 'progress');
-    const before = await f.coordinator.wait(f.root, { ...wait, mode: 'mail', until: 'any', timeoutMs: 0 });
+    await f.coordinator.send(first, first.runs[0]!, f.root.id, 'Still working', 'progress', { purpose: 'progress' });
+    const before = await f.coordinator.wait(f.root, { ...wait, until: 'any', timeoutMs: 0 });
     assert.deepEqual(before.pendingSessionIds, wait.sessionIds);
     assert.equal(before.timedOut, true);
 
-    const anyStatus = f.coordinator.wait(f.root, { ...wait, mode: 'status', until: 'any' });
-    const anyMail = f.coordinator.wait(f.root, { ...wait, mode: 'mail', until: 'any' });
-    const allStatus = f.coordinator.wait(f.root, { ...wait, mode: 'status', until: 'all' });
-    const allMail = f.coordinator.wait(f.root, { ...wait, mode: 'mail', until: 'all' });
+    const anyStatus = f.coordinator.wait(f.root, { ...wait, until: 'any' });
+    const allStatus = f.coordinator.wait(f.root, { ...wait, until: 'all' });
     finishFirst.abort();
-    for (const result of await Promise.all([anyStatus, anyMail])) {
-      assert.equal(result.timedOut, false);
-      assert.deepEqual(result.pendingSessionIds, [second.id]);
-    }
-    const partial = await f.coordinator.wait(f.root, { ...wait, mode: 'mail', until: 'all', timeoutMs: 0 });
-    assert.equal(partial.mode, 'mail');
-    assert.deepEqual(partial.items.map((item) => [item.fromSessionId, item.kind]), [[first.id, 'result']]);
+    const any = await anyStatus;
+    assert.equal(any.timedOut, false);
+    assert.deepEqual(any.pendingSessionIds, [second.id]);
+    const partial = await f.coordinator.wait(f.root, { ...wait, until: 'all', timeoutMs: 0 });
+    assert.deepEqual(partial.statuses.map((item) => [item.sessionId, item.status, item.output]),
+      [[first.id, 'completed', 'Finished'], [second.id, 'in_progress', undefined]]);
     assert.equal(partial.timedOut, true);
 
     finishSecond.abort();
-    for (const result of await Promise.all([allStatus, allMail])) {
-      assert.equal(result.timedOut, false);
-      assert.deepEqual(result.pendingSessionIds, []);
-    }
+    const all = await allStatus;
+    assert.equal(all.timedOut, false);
+    assert.deepEqual(all.pendingSessionIds, []);
   } finally {
     finishFirst.abort();
     finishSecond.abort();
@@ -483,27 +541,30 @@ test('running children get ordered user instructions in their timeline and idle 
   try {
     const rootRun = await f.coordinator.start(f.root, input('Start'), options);
     const child = f.workspace.descendants(f.root.id).find((session) => session.parentSessionId)!;
-    await f.coordinator.send(f.root, rootRun, child.id, 'First instruction', 'first');
-    await f.coordinator.send(f.root, rootRun, child.id, 'Duplicate instruction', 'first');
+    const first = await f.coordinator.send(f.root, rootRun, child.id, 'First instruction', 'first');
+    assert.deepEqual(await f.coordinator.send(f.root, rootRun, child.id, 'Duplicate instruction', 'first'), first);
     await f.coordinator.send(f.root, rootRun, child.id, 'Second instruction', 'second');
-    const wait = { sessionIds: [child.id], mode: 'mail', until: 'any', timeoutMs: 2000 } as const;
+    const wait = { sessionIds: [child.id], until: 'any', timeoutMs: 2000 } as const;
     const firstReceipt = f.coordinator.wait(f.root, wait);
     releaseChild();
     const result = await firstReceipt;
-    assert.equal(result.mode, 'mail');
-    for (const receipt of result.items) f.coordinator.readMail(f.root, receipt.id);
+    assert.equal(result.statuses[0]?.runId, child.runs[0]?.id);
     const firstRun = toAgentResponseDto(child.runs[0]!);
-    assert.equal(firstRun.input[0]?.source?.kind, 'model');
+    assert.deepEqual(firstRun.input[0]?.source, {
+      kind: 'agent', sessionId: f.root.id, runId: rootRun.id, model: 'Fake', relationship: 'parent', purpose: 'task',
+    });
     assert.deepEqual(firstRun.output.flatMap((item) =>
       item.type === 'message' && item.role === 'user' ? item.content : [],
     ).map((part) => part.type === 'output_text' ? part.text : ''), ['First instruction', 'Second instruction']);
     assert.ok(firstRun.output.some((item) => item.type === 'message' && item.role === 'assistant' && item.source?.kind === 'model'));
 
-    await f.coordinator.send(f.root, rootRun, child.id, 'Actual new input', 'third', true);
+    await f.coordinator.send(f.root, rootRun, child.id, 'Actual new input', 'third', { userFollowUp: true });
+    const queued = await f.coordinator.wait(f.root, { ...wait, timeoutMs: 0 });
+    assert.deepEqual(queued, { statuses: [{ sessionId: child.id, status: 'queued' }], pendingSessionIds: [child.id], timedOut: true });
     const nextResult = await f.coordinator.wait(f.root, wait);
-    assert.equal(nextResult.mode, 'mail');
-    assert.ok(nextResult.items.length);
+    assert.equal(nextResult.timedOut, false);
     assert.equal(child.runs.length, 2);
+    assert.equal(nextResult.statuses[0]?.runId, child.runs[1]?.id);
     const nextRun = toAgentResponseDto(child.runs[1]!);
     assert.deepEqual(nextRun.input[0]?.content, [{ type: 'input_text', text: 'Actual new input' }]);
     assert.equal(nextRun.input[0]?.source?.kind, 'user');

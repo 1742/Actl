@@ -123,7 +123,6 @@ async function assembleAppDependencies(
     mcp: mcpManager,
   });
   toolRegistry.registerProvider(new AgentTeamToolProvider(agentCoordinator));
-  await agentCoordinator.recover('developer:local');
 
   return {
     agentCoordinator,

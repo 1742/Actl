@@ -1,4 +1,5 @@
 import type { ReasoningEffort } from "./models.js";
+import type { AgentMessagePurpose, AgentMessageRelationship } from "./coordination.js";
 
 export const permissionModes = ["plan", "ask", "accept_edits", "full_access"] as const;
 export type PermissionMode = (typeof permissionModes)[number];
@@ -41,9 +42,10 @@ export type ResponseInputPartDto =
 export type MessageSource =
   | { kind: 'user' | 'runtime' }
   | { kind: 'model'; sessionId: string; runId: string; model?: string }
-  | { kind: 'mail'; subject: string };
+  | { kind: 'agent'; sessionId: string; runId: string; model?: string; relationship: AgentMessageRelationship; purpose: AgentMessagePurpose; replyTo?: string };
 
 export interface ResponseInputMessageDto {
+  id?: string;
   source?: MessageSource;
   type: "message";
   role: "user";
@@ -53,7 +55,7 @@ export interface ResponseInputMessageDto {
 type ResponseInputPart = Exclude<ResponseInputPartDto, { type: "input_file" }> | { type: "input_file"; file_id: string };
 
 export interface CreateResponseRequest {
-  input: Array<Omit<ResponseInputMessageDto, "content" | "source"> & { content: ResponseInputPart[] }>;
+  input: Array<Omit<ResponseInputMessageDto, "content" | "source" | "id"> & { content: ResponseInputPart[] }>;
   model: string;
   reasoningEffort?: ReasoningEffort | undefined;
   permissionMode?: PermissionMode;

@@ -4,10 +4,10 @@ import { computed, nextTick, ref, watch } from 'vue';
 import { ArrowDown } from '@lucide/vue';
 import type { SessionContextCompression } from '../../../../../shared/agent/sessions';
 import type { AIFileContent, AIMessageItem, AIResponseContext } from './types';
-import { readInputContentDisplayText } from '../../utils/aiResponse.ts';
+import { conversationMessageKind, isMessageItem, readInputContentDisplayText } from '../../utils/aiResponse.ts';
 import InputMessageContent from './InputMessageContent.vue';
 import MessageTools from './MessageTools.vue';
-import MessageAuthor from './MessageAuthor.vue';
+import MessageOutput from './MessageOutput.vue';
 import RunJumpSidebar from './RunJumpSidebar.vue';
 
 const props = withDefaults(
@@ -40,10 +40,6 @@ const activeResponseId = ref<string>();
 const isNearBottom = ref(true);
 const bottomPadding = computed(() => `${props.bottomInset + (props.displayMode === 'compact' ? 24 : 132)}px`);
 
-const inputMessages = (context: AIResponseContext) =>
-  context.input.filter(
-    (item): item is AIMessageItem => item.type === 'message' && item.role === 'user',
-  );
 const skillNames = (context: AIResponseContext) => {
   const skills = context.response.extensions?.skills;
   const responseSkillNames = !Array.isArray(skills)
@@ -129,29 +125,34 @@ watch(
       >
         <template v-for="(context, contextIndex) in contexts" :key="context.response.id">
           <section :data-response-id="context.response.id" class="flex scroll-mt-5 flex-col gap-4">
-            <div
-              v-for="(item, index) in inputMessages(context)"
+            <template
+              v-for="(item, index) in context.input.filter(isMessageItem)"
               :key="item.id || `${context.response.id}:input:${index}`"
-              class="flex justify-end"
             >
-              <div class="group/message flex max-w-[82%] flex-col items-end sm:max-w-[72%]">
-                <MessageAuthor :item="item" />
-                <div v-if="item.content.length" class="max-w-full">
-                  <InputMessageContent
-                    :parts="item.content"
-                    :skill-names="skillNames(context)"
-                    :session-id="context.sessionId"
-                    :load-file-preview="loadFilePreview"
-                    @download-file="emit('downloadFile', $event)"
+              <div v-if="conversationMessageKind(item) === 'user'" class="flex justify-end">
+                <div class="group/message flex max-w-[82%] flex-col items-end sm:max-w-[72%]">
+                  <div v-if="item.content.length" class="max-w-full">
+                    <InputMessageContent
+                      :parts="item.content"
+                      :skill-names="skillNames(context)"
+                      :session-id="context.sessionId"
+                      :load-file-preview="loadFilePreview"
+                      @download-file="emit('downloadFile', $event)"
+                    />
+                  </div>
+                  <MessageTools
+                    v-if="messageText(context, item)"
+                    :content="messageText(context, item)"
+                    :timestamp="context.createdAt"
                   />
                 </div>
-                <MessageTools
-                  v-if="messageText(context, item)"
-                  :content="messageText(context, item)"
-                  :timestamp="context.createdAt"
-                />
               </div>
-            </div>
+              <MessageOutput
+                v-else-if="['agent', 'runtime'].includes(conversationMessageKind(item))"
+                :item="item"
+                :timestamp="context.createdAt"
+              />
+            </template>
 
             <slot name="output" :context="context" />
           </section>

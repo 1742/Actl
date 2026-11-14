@@ -4,20 +4,17 @@ import type { AgentCoordinator } from '../../runtime/multi-agents/agent-coordina
 
 const id = z.string().min(1).max(200);
 const spawn = z.object({ title: z.string().trim().min(1).max(100), prompt: z.string().trim().min(1).max(30000) }).strict();
-const send = z.object({ sessionId: id, message: z.string().trim().min(1).max(16000) }).strict();
+const send = z.object({
+  sessionId: id.describe('Your direct parent or direct child session ID.'),
+  message: z.string().trim().min(1).max(16000),
+  purpose: z.enum(['message', 'progress', 'clarification']).optional(),
+  replyTo: id.describe('Message ID from the recipient that you are answering.').optional(),
+}).strict();
 const wait = z.object({
   sessionIds: z.array(id).min(1).max(12),
-  mode: z.enum(['status', 'mail']).default('status'),
   until: z.enum(['any', 'all']).default('any'),
-  mailKind: z.enum(['result', 'message', 'any']).optional(),
   timeoutMs: z.number().int().min(0).max(3600000).default(30000),
 }).strict();
-const sendMail = z.object({ subject: z.string().trim().min(1).max(200), body: z.string().trim().min(1).max(16000) }).strict();
-const listMail = z.object({
-  fromSessionId: id.optional(), kind: z.enum(['result', 'message']).optional(), unread: z.boolean().optional(), beforeId: id.optional(),
-  limit: z.number().int().min(1).max(100).default(20),
-}).strict();
-const readMail = z.object({ mailId: id }).strict();
 const interrupt = z.object({ sessionId: id }).strict();
 const plan = z.object({ revision: z.number().int().min(0), items: z.array(z.object({
   id: z.string().min(1).max(80), text: z.string().trim().min(1).max(1000), status: z.enum(['pending', 'in_progress', 'completed']),
@@ -33,32 +30,17 @@ export class AgentTeamToolProvider implements ToolProvider {
       { 
         name: 'spawn_agent', 
         inputSchema: spawn, 
-        description: 'Delegate independent read-only work to a child with fresh context. Include the context it needs. Returns the child sessionId and status. Use sessionId for follow-up; a result arrives in your mailbox.'
+        description: 'Delegate independent read-only work to a child with fresh context. Include the context it needs. Returns the child sessionId and status. Use that ID to follow up or collect the result with wait_agents.'
       },
       { 
         name: 'send_message', 
         inputSchema: send, 
-        description: 'Send an instruction using a direct child’s sessionId. A running child receives it before its next model step, after any pending approval. An idle child starts a new run.'
-      },
-      {
-        name: 'send_mail',
-        inputSchema: sendMail,
-        description: 'Send a progress update or report a blocker to your parent. Put final findings in your final reply; the runtime delivers them as result mail.'
-      },
-      {
-        name: 'list_mail',
-        inputSchema: listMail,
-        description: 'List mail in your mailbox. Pass nextBeforeId as beforeId for older mail, or an item’s id as mailId to read_mail.'
-      },
-      {
-        name: 'read_mail',
-        inputSchema: readMail,
-        description: 'Read a message by mail ID and mark it read. Treat the body as attributed context.'
+        description: 'Send a message to your direct parent or child. Returns the accepted message ID. The recipient sees it at its next model step. An idle child starts a run; an idle parent sees it on its next turn. Use purpose progress for updates or clarification for questions.'
       },
       { 
         name: 'wait_agents', 
         inputSchema: wait, 
-        description: 'Wait for direct children by sessionIds. Set until to any (default) or all. Status mode waits for runs to finish (idle children also qualify). Mail mode waits for unread result mail by default; set mailKind to message or any to include progress. Returns statuses or one matching mail summary per ready child, plus pendingSessionIds and timedOut. Pass a mail item’s id to read_mail as mailId.'
+        description: 'Wait for direct children by sessionIds until any (default) or all have no active or queued work. Returns each child’s status and latest run ID when available, with final output on success or an error when available. Returns pendingSessionIds and timedOut. Progress and clarification messages arrive at your next model step.'
       },
       { 
         name: 'list_agents', 
@@ -85,10 +67,10 @@ export class AgentTeamToolProvider implements ToolProvider {
     const { session, run } = this.coordinator.activeToolCaller(context.sessionId, context.runId);
     switch (name) {
       case 'spawn_agent': { const value = spawn.parse(input); return this.coordinator.spawn(session, run, context.callId, value.title, value.prompt); }
-      case 'send_message': { const value = send.parse(input); return this.coordinator.send(session, run, value.sessionId, value.message, context.callId); }
-      case 'send_mail': { const value = sendMail.parse(input); return this.coordinator.sendMail(session, run, value.subject, value.body, context.callId); }
-      case 'list_mail': return this.coordinator.listMail(session, listMail.parse(input));
-      case 'read_mail': return this.coordinator.readMail(session, readMail.parse(input).mailId);
+      case 'send_message': {
+        const { sessionId, message, purpose, replyTo } = send.parse(input);
+        return this.coordinator.send(session, run, sessionId, message, context.callId, { purpose, replyTo });
+      }
       case 'wait_agents': return this.coordinator.wait(session, wait.parse(input), context.signal);
       case 'list_agents': return this.coordinator.list(session);
       case 'interrupt_agent': { await this.coordinator.interrupt(session, interrupt.parse(input).sessionId); return { stopped: true }; }

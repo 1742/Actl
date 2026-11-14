@@ -4,8 +4,9 @@ import { createPinia, setActivePinia } from 'pinia';
 import { applyAgentTreeSnapshot, applyRuntimeEvent, loadSubagentHistory, resolveAgentPermissionBatch, selectAgentSession, stopAgentResponse } from '../../../src/renderer/src/agent/composables/useAgent';
 import { useAgentStore } from '../../../src/renderer/src/agent/stores/agent';
 import { localClient } from '../../../src/renderer/src/agent/services/localClient';
-import { normalizeResponseContext } from '../../../src/renderer/src/agent/utils/aiResponse';
-import type { AgentResponseDto, PendingPermissionBatchDto, AgentStreamEvent } from '../../../src/shared/agent/responses';
+import { conversationMessageKind, isMessageItem, normalizeResponseContext } from '../../../src/renderer/src/agent/utils/aiResponse';
+import { buildAgentOutputGroups } from '../../../src/renderer/src/agent/utils';
+import type { AgentResponseDto, PendingPermissionBatchDto, AgentStreamEvent, ResponseMessageItemDto } from '../../../src/shared/agent/responses';
 import type { SessionContext } from '../../../src/shared/agent/sessions';
 
 const pending = (id: string): PendingPermissionBatchDto => ({
@@ -96,6 +97,38 @@ test('loading subagent history keeps live output and the parent selection', asyn
   } finally {
     localClient.getContext = originalGet;
   }
+});
+
+test('conversation uses attribution for agent messages in history and live output', () => {
+  const id = 'local:session';
+  const store = setup(id);
+  const source = { kind: 'agent', relationship: 'child', purpose: 'progress', sessionId: 'child', runId: 'child-run' } as const;
+  const incoming: ResponseMessageItemDto = { id: 'peer-message', type: 'message', role: 'user', source, status: 'completed',
+    content: [{ type: 'output_text', text: 'Peer progress', annotations: [] }] };
+  const started = { ...response(), id: 'collaboration', status: 'in_progress' as const,
+    input: [{ type: 'message', role: 'user', source, content: [{ type: 'input_text', text: 'Peer follow-up' }] },
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Older human input' }] },
+      { type: 'message', role: 'user', source: { kind: 'model', sessionId: 'parent', runId: 'parent-run' },
+        content: [{ type: 'input_text', text: 'Older delegation' }] }] } satisfies AgentResponseDto;
+  applyRuntimeEvent(id, { type: 'response.created', response_id: started.id, sequence_number: 0, response: started });
+  applyRuntimeEvent(id, { type: 'response.output_item.done', response_id: started.id, sequence_number: 1,
+    output_index: 0, item: incoming });
+  const context = store.findResponse(id, started.id)!;
+  assert.deepEqual(context.input.filter(isMessageItem).map(conversationMessageKind), ['agent', 'user', 'agent']);
+  const groups = buildAgentOutputGroups(context);
+  assert.equal(groups.length, 1);
+  const message = groups[0];
+  assert.ok(message?.type === 'message');
+  assert.deepEqual(message.item.source, source);
+  assert.equal(conversationMessageKind(message.item), 'agent');
+  assert.equal(message.isFinal, false);
+
+  const replayed = normalizeResponseContext({ response: { ...started, status: 'completed', output: [
+    { ...incoming, id: 'final', role: 'assistant', source: { kind: 'model', sessionId: 'session', runId: started.id } },
+    { ...incoming, role: 'assistant' },
+  ] } });
+  const final = buildAgentOutputGroups(replayed).find((group) => group.type === 'message' && group.isFinal);
+  assert.equal(final?.key, 'final');
 });
 
 test('permission stream reply restores the next approval if its last IPC event is absent', async () => {

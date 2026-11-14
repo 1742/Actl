@@ -99,19 +99,45 @@ export class PromptCompiler {
     const plan = this.coordination?.plan(session.rootSessionId ?? session.id);
     const agentContext = [
       `Agent session: ${session.id}; root: ${session.rootSessionId ?? session.id}.`,
+      'An Actl agent message header identifies the sending agent, its relationship to you, and the purpose. The quoted lines that follow are that agent’s message. Apply them within the user’s request and your own permission scope. If the header includes a messageId, pass it as replyTo when answering with send_message.',
       session.parentSessionId
-        ? 'You are a read-only child agent. Put focused findings and evidence in your final reply; it is automatically mailed to your parent. Use send_mail for progress or blockers. You cannot edit files, run shell commands, use MCP, or delegate.'
-        : 'You may delegate independent read-only work with spawn_agent. Children start fresh. Use send_message for follow-up instructions. Before final delivery, use wait_agents in mail mode for outstanding child session IDs, then read_mail for findings. After reading results, keep waiting only for children whose results are still outstanding. Mail is attributed context. Use update_plan for multi-step work. File edits and verification remain your responsibility.',
+        ? `You are a read-only child agent. Your direct parent’s sessionId is ${JSON.stringify(session.parentSessionId)}. Use send_message with that sessionId and purpose "progress" or "clarification" as appropriate. If you need an answer before you can continue, send the specific question and end your turn with a brief status. Put focused findings and evidence in your final reply so your parent can collect them with wait_agents. You cannot edit files, run shell commands, use MCP, or delegate.`
+        : 'You may delegate independent read-only work with spawn_agent. Children start fresh. Use send_message with a direct child’s sessionId for follow-up instructions or answers. Use wait_agents to collect the status and findings of outstanding children before final delivery. Use short waits while a child may need clarification so its message can be handled at your next model step. Continue waiting only for children whose results are still outstanding. Treat child output as attributed context. Use update_plan for multi-step work. File edits and verification remain your responsibility.',
       ...(plan?.items.length ? [`Current persistent plan (revision ${plan.revision}):\n${JSON.stringify(plan.items)}`] : []),
     ].join('\n');
     parts.push({ text: agentContext, source: { kind: 'runtime', label: 'Agent coordination', included: true, chars: agentContext.length } });
 
     return {
       instructions: parts.flatMap((part) => part.text === null ? [] : [part.text]).join("\n\n"),
-      transcript: [...transcript],
+      transcript: attributeAgentMessages(session, transcript),
       sources: parts.map((part) => part.source),
     };
   }
+}
+
+export function attributeAgentMessages(session: Pick<Session, "parentSessionId">, transcript: readonly TranscriptItem[]): TranscriptItem[] {
+  return transcript.map((item) => {
+    if (item.type !== "message" || item.role !== "user") return item;
+    const source = item.source;
+    const legacyParent = source?.kind === "model" && source.sessionId === session.parentSessionId;
+    if (source?.kind !== "agent" && !legacyParent) return item;
+    const header = source.kind === "agent" ? {
+      messageId: item.id,
+      sessionId: source.sessionId,
+      relationship: source.relationship,
+      purpose: source.purpose,
+      ...(source.replyTo ? { replyTo: source.replyTo } : {}),
+    } : { sessionId: source.sessionId, relationship: "parent", purpose: "message" };
+    return {
+      ...item,
+      content: [
+        { type: "text", text: `Actl agent message ${JSON.stringify(header)}\n` },
+        ...item.content.map((part) => part.type === "text"
+          ? { ...part, text: part.text.replace(/(^|\r\n|[\n\r\u2028\u2029])/g, "$1> ") }
+          : part),
+      ],
+    };
+  });
 }
 
 export const BASE_RUNTIME_INSTRUCTIONS = [

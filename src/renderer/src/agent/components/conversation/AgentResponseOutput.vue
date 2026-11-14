@@ -6,6 +6,7 @@ import MessageOutput from '../responses/MessageOutput.vue';
 import MessageTools from '../responses/MessageTools.vue';
 import type { AIResponseContext } from '../responses/types';
 import { buildAgentOutputGroups, type AgentOutputGroup } from '../../utils';
+import { conversationMessageKind } from '../../utils/aiResponse';
 import { collectWebQueries, collectWebSources } from '../../utils/webSearch';
 import AgentActivityGroup from './AgentActivityGroup.vue';
 import AgentReasoningBlock from './AgentReasoningBlock.vue';
@@ -30,7 +31,11 @@ const finalWebSearch = computed(() => {
 const completedHistory = computed(() => {
   if (props.context.response.status !== 'completed' || finalMessageIndex.value <= 0) return [];
   const prefix = groups.value.slice(0, finalMessageIndex.value);
-  const firstIncoming = prefix.findIndex((group) => group.type === 'message' && group.item.role === 'user');
+  const firstIncoming = prefix.findIndex((group) => {
+    if (group.type !== 'message') return false;
+    const kind = conversationMessageKind(group.item);
+    return kind === 'user' || kind === 'agent';
+  });
   return firstIncoming < 0 ? prefix : prefix.slice(0, firstIncoming);
 });
 const displayedGroups = computed(() =>

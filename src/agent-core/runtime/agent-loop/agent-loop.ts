@@ -130,7 +130,7 @@ export class AgentLoop {
           continue;
         }
 
-        // Deliver queued child instructions before completing the run.
+        // Deliver queued collaboration messages before completing the run.
         if (!this.context.readyToComplete()) continue;
         
         return this.finalizer.completed(session, run, onEvent);

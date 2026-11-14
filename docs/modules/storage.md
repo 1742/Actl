@@ -38,15 +38,14 @@ WorkspaceStore 的 mutationQueue 串行化状态修改，touch 只 upsert 变化
 
 ## 3. 表与关系
 
-当前 [initial-schema.ts](../../src/agent-core/repositories/sqlite/initial-schema.ts) generation 为 multi-user-multi-model，version 为 **21**。
+当前 [initial-schema.ts](../../src/agent-core/repositories/sqlite/initial-schema.ts) generation 为 multi-user-multi-model，version 为 **24**。
 
 | 表                                            | 用途                                                                 |
 | --------------------------------------------- | -------------------------------------------------------------------- |
 | schema_metadata                               | generation、version、创建时间                                        |
 | projects / sessions                           | owner、目录、绑定和标题                                              |
 | agent_plans                                   | 根会话的结构化计划、revision 和 items JSON                            |
-| agent_messages                                | 下行指令、消息来源、去重键、投递状态和自动唤醒标记                     |
-| agent_mail                                    | 上行邮件和完成回执、收发会话、主题、正文、时间、已读状态和去重键       |
+| agent_messages                                | 父子协作消息、收发会话、来源 Run、发送方关系、用途、回复引用、去重键、投递状态和自动唤醒标记 |
 | agent_runs                                    | 状态、顺序、模型/权限快照、pending batch、错误、时间戳、事件序号     |
 | run_messages                                  | 每个 Run 输入消息 JSON                                               |
 | timeline_items                                | 消息/推理/工具/搜索/审批 JSON，按 item_order                         |
@@ -83,11 +82,15 @@ erDiagram
 
 ## 4. Schema 迁移
 
-[migrations/index.ts](../../src/agent-core/repositories/sqlite/migrations/index.ts) 注册 4→22 的逐步迁移，每一步事务中升级 metadata version。新库按业务分组建库。已有库只通过 migrations/ 升级。不存在 metadata、generation 不同、版本高于当前或没有可用迁移链会拒绝启动。初始化 SQL 异常也可能转换成 workspace_schema_incompatible。
+[migrations/index.ts](../../src/agent-core/repositories/sqlite/migrations/index.ts) 注册 4→24 的逐步迁移，每一步事务中升级 metadata version。新库按业务分组建库。已有库只通过 migrations/ 升级。不存在 metadata、generation 不同、版本高于当前或没有可用迁移链会拒绝启动。初始化 SQL 异常也可能转换成 workspace_schema_incompatible。
 
 20→21 为 sessions 增加 parent_session_id、root_session_id 与创建来源 run/call ID，保留原会话并把它们设为根会话，同时创建计划和消息表。父会话删除会级联删除子会话及协调数据。独立会话树共用根会话的工作目录，附件归属仍按各自 session 校验。详见[多 Agent 协作](multi-agent.md)。
 
-21→22 将已有上行消息和完成回执迁入邮箱，保留 ID、去重键、原有顺序和已读状态。已写入父对话时间线的邮件标记为邮件来源，桌面历史只显示元数据。下行指令保留原有投递状态。
+21→22 为协作消息增加发送者类型和模型字段。
+
+22→23 扩展协作消息表，记录发送方关系、用途和回复引用。根据现有父子关系为旧指令补充发送方关系。
+
+23→24 移除旧邮箱、历史邮件投影和旧版完成回执，子代理的最终回复继续保存在原有 Run 时间线中。协作工具直接从该 Run 读取结果。
 
 迁移并非全程无损：12→13 删除 agent_runs，13→14 和 14→15 重建 web_search_settings，会丢弃旧搜索设置；9→10 移除旧 memory 表。升级旧库前应保留副本，不能在文档承诺自动完整保留历史。
 

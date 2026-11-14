@@ -1,27 +1,21 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue';
-import type { AIResponseContext, AIResponseContent } from './types';
-import { readInputContentDisplayText } from '../../utils/aiResponse';
+import type { AIMessageItem, AIResponseContext } from './types';
+import { conversationMessageKind, isMessageItem, readInputContentDisplayText } from '../../utils/aiResponse';
 
 const props = defineProps<{ contexts: AIResponseContext[]; activeResponseId?: string | null }>();
 const emit = defineEmits<{ jump: [responseId: string] }>();
 const listRef = ref<HTMLElement>();
+const humanInput = (context: AIResponseContext) =>
+  context.input.find((item): item is AIMessageItem =>
+    isMessageItem(item) && conversationMessageKind(item) === 'user',
+  );
 const jumpContexts = computed(() =>
-  props.contexts.filter((context) =>
-    context.input.some((item) => item.type === 'message' && item.role === 'user'),
-  ),
+  props.contexts.filter(humanInput),
 );
 
-const title = (context: AIResponseContext, index: number) => {
-  const item = context.input.find(
-    (candidate) => candidate.type === 'message' && candidate.role === 'user',
-  );
-  if (!item || item.type !== 'message' || !('content' in item) || !Array.isArray(item.content))
-    return `Response ${index + 1}`;
-  return (
-    readInputContentDisplayText(item.content as AIResponseContent[]) || `Response ${index + 1}`
-  );
-};
+const title = (context: AIResponseContext, index: number) =>
+  readInputContentDisplayText(humanInput(context)?.content) || `Response ${index + 1}`;
 
 const scrollActiveIntoView = () => {
   requestAnimationFrame(() => {

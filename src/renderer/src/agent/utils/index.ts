@@ -1,6 +1,6 @@
 import { tr } from '../../i18n';
 import type { AIFunctionCallItem, AIFunctionCallOutputItem, AIMessageItem, AIReasoningItem, AIResponseContext, AIResponseOutputItem, AIWebSearchCallItem, AIUnknownOutputItem } from '../components/responses/types';
-import { normalizeResponseContext, readContentText } from './aiResponse';
+import { conversationMessageKind, normalizeResponseContext, readContentText } from './aiResponse';
 import type { AgentComposerDocument, ResolvedAgentComposer } from '../components/composer/types';
 import type { ResponseInputPartDto, AgentResponseDto, PermissionRequestItemDto } from '../../../../shared/agent/responses';
 import type { AgentOutputBlock, AgentToolPresentation, AgentToolResultEnvelope, AgentToolStatus, AgentToolTimelineBlock } from '../components/conversation/types';
@@ -29,10 +29,6 @@ const toolPresentations: Readonly<Record<string, AgentToolPresentation>> = {
   list_agents: 'agent_team',
   interrupt_agent: 'agent_team',
   update_plan: 'agent_team',
-  send_mail: 'agent_team',
-  wait_for_mail: 'agent_team',
-  list_mail: 'agent_team',
-  read_mail: 'agent_team',
 };
 
 const toolLabels: Record<AgentToolPresentation, string> = {
@@ -289,7 +285,7 @@ function agentTeamToolHeading(block: AgentToolTimelineBlock) {
       return '';
     case 'wait_agents':
       if (result?.timedOut === true) return 'Wait timed out';
-      return args?.mode === 'mail' && Array.isArray(result?.items) ? count(result.items, 'message') : count(args?.sessionIds, 'subagent');
+      return count(result?.statuses ?? args?.sessionIds, 'subagent');
     case 'list_agents': {
       const agents = result?.agents;
       const children = Array.isArray(agents) && typeof result?.rootSessionId === 'string'
@@ -301,20 +297,12 @@ function agentTeamToolHeading(block: AgentToolTimelineBlock) {
       return '';
     case 'update_plan':
       return count(args?.items, 'task');
-    case 'send_mail':
-      return text(args?.subject);
-    case 'wait_for_mail':
-      return result?.timedOut === true ? 'Wait timed out' : count(result?.items, 'message');
-    case 'list_mail':
-      return count(result?.items, 'message');
-    case 'read_mail':
-      return text(result?.subject);
     default:
       return block.call.name;
   }
 }
 
-/** Groups execution activity between assistant messages for compact rendering. */
+/** Groups execution activity between messages for compact rendering. */
 export function buildAgentOutputGroups(context: AIResponseContext): AgentOutputGroup[] {
   const groups: AgentOutputGroup[] = [];
   let activity: Exclude<AgentOutputBlock, { type: 'message' }>[] = [];
@@ -339,7 +327,7 @@ export function buildAgentOutputGroups(context: AIResponseContext): AgentOutputG
   flushActivity();
   for (let index = groups.length - 1; index >= 0; index -= 1) {
     const group = groups[index]!;
-    if (group.type === 'message' && group.item.role === 'assistant' && group.item.source?.kind !== 'runtime') {
+    if (group.type === 'message' && conversationMessageKind(group.item) === 'assistant') {
       group.isFinal = true;
       break;
     }

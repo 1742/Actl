@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
-import type { AgentInboxMessage, AgentMail, AgentMailFilter, AgentMailSummary, AgentPlan, PlanItem } from '../../../shared/agent/coordination.js';
+import type { AgentInboxMessage, AgentPlan, PlanItem } from '../../../shared/agent/coordination.js';
 import type { AgentCoordinationRepository } from '../agent-coordination-repository.js';
 
 export class SqliteAgentCoordinationRepository implements AgentCoordinationRepository {
@@ -18,57 +18,46 @@ export class SqliteAgentCoordinationRepository implements AgentCoordinationRepos
     return this.plan(rootId);
   }
 
-  enqueue(message: AgentInboxMessage, dedupeKey: string): boolean {
-    return Boolean(this.db.prepare(`INSERT OR IGNORE INTO agent_messages
-      (id, from_session_id, to_session_id, source_run_id, kind, text, wake, dedupe_key, author, model) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+  enqueue(message: AgentInboxMessage, dedupeKey: string): string {
+    const result = this.db.prepare(`INSERT INTO agent_messages
+      (id, from_session_id, to_session_id, source_run_id, kind, text, wake, dedupe_key, author, model, relationship, purpose, reply_to)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(dedupe_key) DO NOTHING`)
       .run(message.id, message.fromSessionId, message.toSessionId, message.sourceRunId, message.kind,
-        message.text, Number(message.wake), dedupeKey, message.author ?? null, message.model ?? null).changes);
+        message.text, Number(message.wake), dedupeKey, message.author ?? null, message.model ?? null,
+        message.relationship ?? null, message.purpose ?? null, message.replyTo ?? null);
+    if (result.changes) return message.id;
+    const existing = this.messageFromToolCall(dedupeKey);
+    if (!existing) throw new Error('Duplicate agent message could not be found.');
+    return existing.id;
+  }
+
+  messageFromToolCall(dedupeKey: string): AgentInboxMessage | undefined {
+    const row = this.db.prepare('SELECT * FROM agent_messages WHERE dedupe_key = ?').get(dedupeKey);
+    return row && inboxMessage(row);
+  }
+
+  hasMessage(id: string, fromSessionId: string, toSessionId: string): boolean {
+    return Boolean(this.db.prepare('SELECT 1 FROM agent_messages WHERE id = ? AND from_session_id = ? AND to_session_id = ?')
+      .get(id, fromSessionId, toSessionId));
   }
 
   pending(sessionId: string): AgentInboxMessage[] {
     return this.db.prepare('SELECT * FROM agent_messages WHERE to_session_id = ? AND consumed = 0 ORDER BY rowid').all(sessionId)
-      .map((row) => ({ id: String(row.id), fromSessionId: String(row.from_session_id), toSessionId: String(row.to_session_id),
-        sourceRunId: String(row.source_run_id), kind: 'message', text: String(row.text), wake: Boolean(row.wake),
-        ...(row.author ? { author: row.author as 'user' | 'model' } : {}),
-        ...(row.model ? { model: String(row.model) } : {}) }));
-  }
-
-  sendMail(mail: AgentMail, dedupeKey: string): boolean {
-    return Boolean(this.db.prepare(`INSERT INTO agent_mail
-      (id, from_session_id, to_session_id, source_run_id, kind, subject, body, sent_at, is_read, dedupe_key)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(dedupe_key) DO NOTHING`)
-      .run(mail.id, mail.fromSessionId, mail.toSessionId, mail.sourceRunId, mail.kind,
-        mail.subject, mail.body, mail.sentAt, Number(mail.read), dedupeKey).changes);
-  }
-
-  listMail(sessionId: string, filter: AgentMailFilter): AgentMailSummary[] {
-    const sender = filter.fromSessionId ?? null;
-    const kind = filter.kind ?? null;
-    const isRead = filter.unread === undefined ? null : Number(!filter.unread);
-    return this.db.prepare(`SELECT id, from_session_id, to_session_id, source_run_id, kind, subject, sent_at, is_read
-      FROM agent_mail WHERE to_session_id = ?
-      AND (? IS NULL OR from_session_id = ?) AND (? IS NULL OR is_read = ?)
-      AND (? IS NULL OR kind = ?)
-      AND (? IS NULL OR rowid < (SELECT rowid FROM agent_mail WHERE id = ? AND to_session_id = ?))
-      ORDER BY rowid DESC LIMIT ?`)
-      .all(sessionId, sender, sender, isRead, isRead, kind, kind, filter.beforeId ?? null, filter.beforeId ?? null,
-        sessionId, filter.limit).map(mailSummary);
-  }
-
-  readMail(sessionId: string, id: string): AgentMail | undefined {
-    const row = this.db.prepare('UPDATE agent_mail SET is_read = 1 WHERE id = ? AND to_session_id = ? RETURNING *').get(id, sessionId);
-    return row ? { ...mailSummary(row), body: String(row.body) } : undefined;
+      .map(inboxMessage);
   }
 
   acknowledge(id: string): void { this.db.prepare('UPDATE agent_messages SET consumed = 1 WHERE id = ?').run(id); }
   suppressWake(sessionId: string): void { this.db.prepare('UPDATE agent_messages SET wake = 0 WHERE to_session_id = ?').run(sessionId); }
 }
 
-function mailSummary(row: Record<string, unknown>): AgentMailSummary {
+function inboxMessage(row: Record<string, unknown>): AgentInboxMessage {
   return {
     id: String(row.id), fromSessionId: String(row.from_session_id), toSessionId: String(row.to_session_id),
-    sourceRunId: String(row.source_run_id), kind: row.kind as AgentMailSummary['kind'],
-    subject: String(row.subject), sentAt: typeof row.sent_at === 'string' ? row.sent_at : null,
-    read: Boolean(row.is_read),
+    sourceRunId: String(row.source_run_id), kind: 'message', text: String(row.text), wake: Boolean(row.wake),
+    ...(row.author ? { author: row.author as NonNullable<AgentInboxMessage['author']> } : {}),
+    ...(row.model ? { model: String(row.model) } : {}),
+    ...(row.relationship ? { relationship: row.relationship as NonNullable<AgentInboxMessage['relationship']> } : {}),
+    ...(row.purpose ? { purpose: row.purpose as NonNullable<AgentInboxMessage['purpose']> } : {}),
+    ...(row.reply_to ? { replyTo: String(row.reply_to) } : {}),
   };
 }

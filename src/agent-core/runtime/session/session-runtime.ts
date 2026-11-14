@@ -56,6 +56,7 @@ export class SessionRuntime {
   }
 
   get preparing(): boolean { return this.active?.preparing ?? false; }
+  get executing(): boolean { return this.active?.preparing === false; }
 
   start(
     prepareInput: PrepareRunInput,

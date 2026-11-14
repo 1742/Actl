@@ -73,7 +73,7 @@ Session 另含 `parentSessionId?`、`rootSessionId`。创建子会话由运行�
 | --- | --- | --- |
 | agents.tree | params.sessionId，树内任一会话 | `{rootSessionId,members,plan}`；成员含 session、最新 response 和 sequenceNumber |
 | agents.watch | 由桌面 watchTree 封装，params.sessionId | 订阅确认；事件持续至 detach 或运行时退出 |
-| agents.message | params.sessionId 为父会话；body=`{targetSessionId,message}` | `{sessionId,accepted:true}`，以用户来源向直属子会话排队发送指令 |
+| agents.message | params.sessionId 为父会话，body 为 `{targetSessionId,message}` | `{sessionId,messageId,accepted:true}`，以用户来源向直属子会话排队发送指令 |
 | agents.stop | params.sessionId | 停止该会话及后代，并抑制排队自动唤醒 |
 
 树事件包括初始 `snapshot`、带 sessionId 和 response 事件数组的 `response`、需刷新快照的 `changed`。旧请求流和树订阅共用 response 序号，客户端去重；切换页面后重新订阅通过快照恢复，不重放无限事件日志。计划更新由根 Agent 的 update_plan 工具执行，使用 revision 防止覆盖。当前工具与限制见[多 Agent 协作](modules/multi-agent.md)。

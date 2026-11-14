@@ -1,7 +1,9 @@
 import type { DatabaseSync } from "node:sqlite";
 import { migrateProjectWorkspaces } from "./v19-to-v20.js";
 import { migrateAgentCoordination } from "./v20-to-v21.js";
-import { migrateAgentMail } from "./v21-to-v22.js";
+import { migrateAgentMessageAuthor } from "./v21-to-v22.js";
+import { migrateAgentMessageAttribution } from "./v22-to-v23.js";
+import { removeAgentMail } from "./v23-to-v24.js";
 
 export interface SqliteMigration {
   from: number;
@@ -184,7 +186,9 @@ export const SQLITE_MIGRATIONS: readonly SqliteMigration[] = [
   },
   { from: 19, to: 20, up: migrateProjectWorkspaces },
   { from: 20, to: 21, up: migrateAgentCoordination },
-  { from: 21, to: 22, up: migrateAgentMail },
+  { from: 21, to: 22, up: migrateAgentMessageAuthor },
+  { from: 22, to: 23, up: migrateAgentMessageAttribution },
+  { from: 23, to: 24, up: removeAgentMail },
 ];
 
 export function runSqliteMigrations(
