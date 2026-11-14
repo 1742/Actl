@@ -11,8 +11,16 @@ const send = z.object({
   replyTo: id.describe('Message ID from the recipient that you are answering.').optional(),
 }).strict();
 const wait = z.object({
-  sessionIds: z.array(id).min(1).max(12),
+  targets: z.array(z.union([
+    z.object({ sessionId: id, runId: id }).strict(),
+    z.object({ sessionId: id, messageId: id }).strict(),
+  ])).min(1).max(12),
   until: z.enum(['any', 'all']).default('any'),
+  timeoutMs: z.number().int().min(0).max(3600000).default(30000),
+}).strict();
+const waitForMessage = z.object({
+  sessionId: id.describe('Your direct parent or direct child session ID.'),
+  replyTo: id.describe('ID of the message you sent if you are waiting for its specific reply.').optional(),
   timeoutMs: z.number().int().min(0).max(3600000).default(30000),
 }).strict();
 const interrupt = z.object({ sessionId: id }).strict();
@@ -30,7 +38,7 @@ export class AgentTeamToolProvider implements ToolProvider {
       { 
         name: 'spawn_agent', 
         inputSchema: spawn, 
-        description: 'Delegate independent read-only work to a child with fresh context. Include the context it needs. Returns the child sessionId and status. Use that ID to follow up or collect the result with wait_agents.'
+        description: 'Delegate independent read-only work to a child with fresh context. Include the context it needs. Returns sessionId, runId, and status. Use sessionId to send follow-ups and both IDs to collect this run with wait_agents.'
       },
       { 
         name: 'send_message', 
@@ -40,12 +48,19 @@ export class AgentTeamToolProvider implements ToolProvider {
       { 
         name: 'wait_agents', 
         inputSchema: wait, 
-        description: 'Wait for direct children by sessionIds until any (default) or all have no active or queued work. Returns each child’s status and latest run ID when available, with final output on success or an error when available. Returns pendingSessionIds and timedOut. Progress and clarification messages arrive at your next model step.'
+        execution: { concurrency: 'exclusive', standalone: true },
+        description: 'Call on its own. Wait for an exact run per direct child. Each target takes sessionId and either the runId from spawn_agent or the messageId from send_message. Set until to any (default) or all. Returns statuses with final output or error, pendingSessionIds, needsInput, and timedOut. An unanswered clarification in needsInput ends the wait early; its message is available in your timeline.'
+      },
+      {
+        name: 'wait_for_message',
+        inputSchema: waitForMessage,
+        execution: { concurrency: 'exclusive', standalone: true },
+        description: 'Call on its own. Wait for a pending message from your direct parent or child. Set replyTo to a message ID you sent to wait for its specific reply, including one already delivered. Returns messageId on a match; its body is delivered in the conversation. The current run continues after a match or timeout.'
       },
       { 
         name: 'list_agents', 
         inputSchema: z.object({}).strict(), 
-        description: 'List your direct children with their session IDs, titles, and statuses, plus the current plan.'
+        description: 'List your direct children with their session IDs, titles, statuses, and latest run IDs when available, plus the current plan.'
       },
       { 
         name: 'interrupt_agent', 
@@ -57,7 +72,7 @@ export class AgentTeamToolProvider implements ToolProvider {
         inputSchema: plan, 
         description: 'Replace the root chat todo list using its current revision (initially 0). The plan persists across restart and context compaction. Mark work complete only after verification; child run completion alone is not task completion.' 
       },
-    ].map((definition) => ({ ...definition, execution: { concurrency: 'exclusive' as const } }));
+    ];
   }
 
   async getPermissionRequirement() { return { capability: 'agent.coordinate', action: 'coordinate' }; }
@@ -72,6 +87,7 @@ export class AgentTeamToolProvider implements ToolProvider {
         return this.coordinator.send(session, run, sessionId, message, context.callId, { purpose, replyTo });
       }
       case 'wait_agents': return this.coordinator.wait(session, wait.parse(input), context.signal);
+      case 'wait_for_message': return this.coordinator.waitForMessage(session, waitForMessage.parse(input), context.signal);
       case 'list_agents': return this.coordinator.list(session);
       case 'interrupt_agent': { await this.coordinator.interrupt(session, interrupt.parse(input).sessionId); return { stopped: true }; }
       case 'update_plan': {

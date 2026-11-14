@@ -26,6 +26,7 @@ const toolPresentations: Readonly<Record<string, AgentToolPresentation>> = {
   spawn_agent: 'agent_team',
   send_message: 'agent_team',
   wait_agents: 'agent_team',
+  wait_for_message: 'agent_team',
   list_agents: 'agent_team',
   interrupt_agent: 'agent_team',
   update_plan: 'agent_team',
@@ -261,9 +262,13 @@ export function agentToolHeading(block: AgentToolTimelineBlock, view: 'row' | 'a
         : '';
       break;
     }
-    case 'agent_team':
-      detail = agentTeamToolHeading(block);
-      break;
+    case 'agent_team': {
+      const name = block.call.name;
+      const title = name === 'wait_agents' ? tr('agents.waitForAgents')
+        : name === 'wait_for_message' ? tr('agents.waitForMessage')
+        : toolLabels.agent_team;
+      return { title, detail: agentTeamToolDetail(block) };
+    }
     case 'generic':
       detail = block.call.name || (view === 'row' ? 'tool' : '');
       break;
@@ -271,7 +276,7 @@ export function agentToolHeading(block: AgentToolTimelineBlock, view: 'row' | 'a
   return { title: toolLabels[presentation], detail };
 }
 
-function agentTeamToolHeading(block: AgentToolTimelineBlock) {
+function agentTeamToolDetail(block: AgentToolTimelineBlock) {
   const args = block.arguments;
   const result = asRecord(block.result?.output);
   const text = (value: unknown) => typeof value === 'string' ? value : '';
@@ -283,9 +288,15 @@ function agentTeamToolHeading(block: AgentToolTimelineBlock) {
       return text(args?.title);
     case 'send_message':
       return '';
-    case 'wait_agents':
-      if (result?.timedOut === true) return 'Wait timed out';
-      return count(result?.statuses ?? args?.sessionIds, 'subagent');
+    case 'wait_agents': {
+      if (Array.isArray(result?.needsInput) && result.needsInput.length) return tr('agents.clarificationRequested');
+      if (result?.timedOut === true) return tr('agents.waitTimedOut');
+      const targets = result?.statuses ?? args?.targets;
+      return Array.isArray(targets) ? tr('agents.waitTargetCount', { count: targets.length }) : '';
+    }
+    case 'wait_for_message':
+      if (result?.timedOut === true) return tr('agents.waitTimedOut');
+      return text(result?.messageId) ? tr('agents.messageReceived') : '';
     case 'list_agents': {
       const agents = result?.agents;
       const children = Array.isArray(agents) && typeof result?.rootSessionId === 'string'

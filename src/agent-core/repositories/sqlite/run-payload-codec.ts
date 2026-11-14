@@ -109,7 +109,7 @@ const toolResultValueSchema = z.discriminatedUnion("ok", [
   z.object({ toolCallId: z.string(), toolName: z.string(), ok: z.literal(true), output: z.unknown().optional() }).strict(),
   z.object({ toolCallId: z.string(), toolName: z.string(), ok: z.literal(false), error: z.string() }).strict(),
 ]);
-const executionPolicySchema = z.object({ concurrency: z.enum(["parallel", "exclusive"]) }).strict();
+const executionPolicySchema = z.object({ concurrency: z.enum(["parallel", "exclusive"]), standalone: z.boolean().optional() }).strict();
 const pendingPermissionSchema = z.object({
   id: z.string(), responseId: z.string(), itemId: z.string(), toolCall: runtimeToolCallSchema,
   capability: z.string(), resource: z.string().optional(), action: z.string().optional(),

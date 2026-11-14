@@ -36,9 +36,27 @@ export class SqliteAgentCoordinationRepository implements AgentCoordinationRepos
     return row && inboxMessage(row);
   }
 
-  hasMessage(id: string, fromSessionId: string, toSessionId: string): boolean {
-    return Boolean(this.db.prepare('SELECT 1 FROM agent_messages WHERE id = ? AND from_session_id = ? AND to_session_id = ?')
-      .get(id, fromSessionId, toSessionId));
+  getMessage(id: string, fromSessionId: string, toSessionId: string): AgentInboxMessage | undefined {
+    const row = this.db.prepare('SELECT * FROM agent_messages WHERE id = ? AND from_session_id = ? AND to_session_id = ?')
+      .get(id, fromSessionId, toSessionId);
+    return row && inboxMessage(row);
+  }
+
+  findReply(id: string, fromSessionId: string, toSessionId: string): AgentInboxMessage | undefined {
+    const row = this.db.prepare(`SELECT * FROM agent_messages
+      WHERE reply_to = ? AND from_session_id = ? AND to_session_id = ? ORDER BY rowid LIMIT 1`)
+      .get(id, fromSessionId, toSessionId);
+    return row && inboxMessage(row);
+  }
+
+  unansweredClarifications(fromSessionId: string, toSessionId: string, sourceRunId: string): AgentInboxMessage[] {
+    return this.db.prepare(`SELECT question.* FROM agent_messages question
+      WHERE question.from_session_id = ? AND question.to_session_id = ? AND question.source_run_id = ?
+        AND question.purpose = 'clarification' AND NOT EXISTS (
+          SELECT 1 FROM agent_messages reply WHERE reply.reply_to = question.id
+            AND reply.from_session_id = question.to_session_id AND reply.to_session_id = question.from_session_id
+        )
+      ORDER BY question.rowid`).all(fromSessionId, toSessionId, sourceRunId).map(inboxMessage);
   }
 
   pending(sessionId: string): AgentInboxMessage[] {

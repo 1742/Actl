@@ -31,6 +31,7 @@ type AnyToolDefinition = ToolDefinition | ExternalToolDefinition;
 
 export interface ToolExecutionPolicy {
   concurrency: "parallel" | "exclusive";
+  standalone?: boolean; // Cant parallel call
 }
 
 export interface ToolPermissionRequirement {

@@ -86,7 +86,7 @@ export class SessionModelContext {
     for (const message of this.inbox.pending(session.id)) {
       signal.throwIfAborted();
       // The transcript write and acknowledgment can be interrupted by a restart.
-      if (!instructionDelivered(session, message.id)) {
+      if (!instructionRun(session, message.id)) {
         const item = instructionInput(message);
         const outputIndex = run.timeline.push(item) - 1;
         await this.workspaceStore.touch(session, run);
@@ -196,17 +196,13 @@ export class SessionModelContext {
   }
 }
 
-/**
- * check item whether existed in session context by item id.
- */
-export function instructionDelivered(session: Session, id: string): boolean {
-  return session.runs.some((run) =>
+/** Match the input or timeline receipt written with the inbox message's ID. */
+export function instructionRun(session: Session, id: string): AgentRunRecord | undefined {
+  return session.runs.find((run) =>
     run.input.some((item) => item.id === id) || run.timeline.some((item) => item.id === id));
 }
 
-/**
- * Transfer inbox message into a user transcript message. They use same id.
- */
+/** Transfer inbox message into a user transcript message. They use same id. */
 export function instructionInput(message: AgentInboxMessage): TranscriptMessage {
   const source = message.author === "model" ? {
     kind: "agent" as const, sessionId: message.fromSessionId, runId: message.sourceRunId,

@@ -6,7 +6,9 @@ export interface AgentCoordinationRepository {
   updatePlan(rootId: string, revision: number, items: PlanItem[]): AgentPlan;
   enqueue(message: AgentInboxMessage, dedupeKey: string): string;
   messageFromToolCall(dedupeKey: string): AgentInboxMessage | undefined;
-  hasMessage(id: string, fromSessionId: string, toSessionId: string): boolean;
+  getMessage(id: string, fromSessionId: string, toSessionId: string): AgentInboxMessage | undefined;
+  findReply(id: string, fromSessionId: string, toSessionId: string): AgentInboxMessage | undefined;
+  unansweredClarifications(fromSessionId: string, toSessionId: string, sourceRunId: string): AgentInboxMessage[];
   pending(sessionId: string): AgentInboxMessage[];
   acknowledge(id: string): void;
   suppressWake(sessionId: string): void;

@@ -33,10 +33,11 @@ flowchart TD
 
 | 工具 | 行为 |
 | --- | --- |
-| spawn_agent | 根 Agent 创建子会话，启动后返回子会话的 sessionId 和状态，允许后台并行 |
+| spawn_agent | 根 Agent 创建子会话并启动首个 Run，返回 `sessionId`、`runId` 和 `status`，允许后台并行 |
 | send_message | 向直属父或子会话发送持久化消息。参数为 `sessionId`、`message`，可选 `purpose`（默认 `message`，也可用 `progress` 或 `clarification`）和引用原消息 ID 的 `replyTo`。返回 `sessionId`、`messageId` 和 `accepted` |
-| wait_agents | 用 `sessionIds` 指定 1–12 个直属子代理，`until` 选择等待任一或全部运行结束。返回 `statuses`、`pendingSessionIds` 和 `timedOut`。默认等任一子代理，`timeoutMs` 默认 30 秒，最长 1 小时，可取消 |
-| list_agents | 返回直属子代理的 sessionId、标题、状态及当前计划 |
+| wait_agents | 根 Agent 用 `targets` 指定 1–12 个不同的直属子代理，每项为 `{sessionId, runId}` 或 `{sessionId, messageId}`。`until` 为 `any`（默认）或 `all`。返回 `statuses`、`pendingSessionIds`、`needsInput` 和 `timedOut` |
+| wait_for_message | 父子 Agent 都能用 `sessionId` 等待该直属对方发来的待投递消息，或通过 `replyTo` 等待某条已发送消息的回复。返回 `messageId`（匹配时）和 `timedOut` |
+| list_agents | 返回直属子代理的 `sessionId`、标题、状态、最新 Run 的 `runId`（如有）和当前计划 |
 | interrupt_agent | 父 Agent 停止指定子会话及其后代 |
 | update_plan | 根 Agent 使用当前 revision 更新整个计划，拒绝过期 revision |
 
@@ -50,7 +51,11 @@ flowchart TD
 
 收件方运行时，排队消息在下一次可执行的模型调用前按序加入时间线。空闲子代理可以由下行消息启动新 Run，空闲父代理在下一轮处理已排队的上行消息。等待审批或自动启动失败时，消息留在队列。协作消息使用模型协议的 `user` 角色，模型输入带有运行时生成的发送方归属、消息 ID 和用途。`purpose` 用于说明消息意图，调度依据收件方的身份和运行状态。
 
-父代理通过 `wait_agents` 从子会话的 Run 历史读取结果。每个状态带 `sessionId` 和 `status`，关联 Run 时带 `runId`。完成的 Run 可以附上最多 16000 字符的最终回复 `output`，失败的 Run 可以附上错误文本 `error`。可执行的追问已排队而新 Run 尚未建立时，状态是 `queued`，仍需等待。空闲且没有待执行工作的子会话满足等待条件。超时也会返回已有结果。进度与澄清消息会在等待返回后的下一模型步投递。
+父代理用 `wait_agents` 按 `runId` 读取指定执行的结果，或按 `send_message` 返回的 `messageId` 等待实际接收该消息的 Run。运行中的子代理可以在同一 Run 接收追问，空闲子代理可以由追问启动新 Run。消息尚未投递时，状态为 `queued`。状态项含 `sessionId` 和 `status`，并按已知信息附 `runId` 或 `messageId`。完成的 Run 可以附上最多 16000 字符的最终回复 `output`，失败的 Run 可以附上错误文本 `error`。超时也会返回已有结果。
+
+等待目标 Run 中出现未回复的澄清时，`wait_agents` 提前返回，`needsInput` 列出 `{sessionId, runId, messageId}`。按消息等待时，若子代理当前 Run 的澄清阻碍这条追问投递，也会提前返回。澄清正文在下一模型步进入时间线，父代理可用 `send_message` 并把原消息 ID 填入 `replyTo`。子代理在同一个 Run 内用 `wait_for_message` 等待回复。指定 `replyTo` 时，已投递到当前会话历史的匹配回复也可以满足等待，工具结果只返回关联元数据。待投递消息仍走正常的时间线投递。
+
+两个等待工具一次模型步骤只能单独调用，默认 `timeoutMs` 为 30 秒，最长 1 小时，可取消。等待期间当前 Run 和执行名额保持占用。
 
 停止根会话会取消整棵树，停止子会话只影响该子树。协调器会取消正在准备和执行的 Run，停止对应会话的后台进程，并抑制已排队消息的自动唤醒。明确的新用户输入或追问可以重新开始执行。退出时取消执行中的工作，保留待审批批次。重启后仍可读取会话关系、计划、排队消息和 Run 结果，等待显式输入再调用模型。
 

@@ -44,6 +44,24 @@ const isChild = (request: ModelTurnRequest) => request.instructions.includes('Yo
 const calls = (request: ModelTurnRequest, name: string) => request.transcript.filter((item) => item.type === 'tool_call' && item.name === name);
 const options = { model: 'fake', permissionMode: 'ask' as const };
 
+function toolResult(request: ModelTurnRequest, callId: string | undefined) {
+  const result = request.transcript.find((item) => item.type === 'tool_result' && item.callId === callId);
+  assert.ok(result?.type === 'tool_result');
+  const envelope = result.content[0];
+  assert.ok(envelope?.type === 'json' && envelope.value && typeof envelope.value === 'object');
+  return { result, envelope: envelope.value as { output?: unknown; error?: string } };
+}
+
+function toolOutput<T>(request: ModelTurnRequest, name: string): T {
+  const { result, envelope } = toolResult(request, calls(request, name).at(-1)?.callId);
+  assert.ok(!result.isError && 'output' in envelope, `${name}: ${envelope.error}`);
+  return envelope.output as T;
+}
+
+function runTarget(session: { id: string; runs: AgentRunRecord[] }) {
+  return { sessionId: session.id, runId: session.runs[0]!.id };
+}
+
 async function fixture(handler: (request: ModelTurnRequest, signal?: AbortSignal) => Promise<TranscriptItem[]>) {
   const directory = await mkdtemp(path.join(tmpdir(), 'actl-multi-'));
   const projectPath = path.join(directory, 'project'); await mkdir(projectPath);
@@ -155,7 +173,8 @@ test('parallel fresh-context children deliver results; attempted edits are block
     }
     if (!calls(request, 'spawn_agent').length) return [call('spawn_agent', { title: 'One', prompt: 'Read one' }), call('spawn_agent', { title: 'Two', prompt: 'Read two' })];
     const children = f.workspace.descendants(f.root.id).filter((member) => member.parentSessionId);
-    if (children.some((member) => member.runs.at(-1)?.status === 'in_progress')) return [call('wait_agents', { sessionIds: children.filter((member) => member.runs.at(-1)?.status === 'in_progress').map((member) => member.id), timeoutMs: 1000 })];
+    const active = children.filter((member) => member.runs[0]?.status === 'in_progress');
+    if (active.length) return [call('wait_agents', { targets: active.map(runTarget), until: 'all', timeoutMs: 1000 })];
     return [text('All findings received')];
   });
   try {
@@ -201,7 +220,7 @@ test('child messages and completion preserve parent approval and deliver when it
     const run = await f.coordinator.start(f.root, input('Start'), options);
     assert.equal(run.status, 'waiting_permission');
     const child = f.workspace.descendants(f.root.id).find((session) => session.parentSessionId)!;
-    const receipt = f.coordinator.wait(f.root, { sessionIds: [child.id], until: 'any', timeoutMs: 2000 });
+    const receipt = f.coordinator.wait(f.root, { targets: [runTarget(child)], until: 'any', timeoutMs: 2000 });
     review.resolve();
     assert.equal((await receipt).statuses[0]?.output, 'Review ready');
     assert.equal(f.root.runs.length, 1); assert.equal(run.status, 'waiting_permission');
@@ -223,7 +242,7 @@ test('tree shares project admission; unrelated roots conflict; cancellation abor
     if (isChild(request)) { started(); await delay(10000, undefined, { signal }); return [text('Should not finish')]; }
     if (!calls(request, 'spawn_agent').length) return [call('spawn_agent', { title: 'Slow', prompt: 'Slow review' })];
     const child = f.workspace.descendants(f.root.id).find((item) => item.parentSessionId)!;
-    return [call('wait_agents', { sessionIds: [child.id], timeoutMs: 60000 })];
+    return [call('wait_agents', { targets: [runTarget(child)], timeoutMs: 60000 })];
   });
   try {
     const execution = f.coordinator.start(f.root, input('Start'), options);
@@ -234,7 +253,7 @@ test('tree shares project admission; unrelated roots conflict; cancellation abor
     const rootRun = f.root.runs[0]!;
     const child = f.workspace.descendants(f.root.id).find((item) => item.parentSessionId)!;
     const duplicate = await f.coordinator.spawn(f.root, rootRun, child.originCallId!, 'Duplicate', 'Duplicate');
-    assert.equal(duplicate.sessionId, child.id);
+    assert.deepEqual(duplicate, { ...runTarget(child), status: 'in_progress' });
     await f.coordinator.stopTree(f.root);
     assert.equal((await execution).status, 'cancelled');
     await delay(60);
@@ -313,12 +332,12 @@ test('a running child keeps its project reserved and its result can be collected
     const other = await f.workspace.createSession(owner, { projectId: f.project.id });
     await assert.rejects(f.coordinator.start(other, input('conflict'), options), { code: 'project_active_response_exists' });
     const child = f.workspace.descendants(f.root.id).find((session) => session.parentSessionId)!;
-    const waiting = f.coordinator.wait(f.root, { sessionIds: [child.id], until: 'any', timeoutMs: 2000 });
+    const waiting = f.coordinator.wait(f.root, { targets: [runTarget(child)], until: 'any', timeoutMs: 2000 });
     finishChild.abort();
     const result = await waiting;
     assert.deepEqual(result, {
       statuses: [{ sessionId: child.id, runId: child.runs[0]?.id, status: 'completed', output: 'child findings' }],
-      pendingSessionIds: [], timedOut: false,
+      pendingSessionIds: [], needsInput: [], timedOut: false,
     });
     await delay(30);
     assert.equal(f.root.runs.length, 1);
@@ -326,35 +345,30 @@ test('a running child keeps its project reserved and its result can be collected
   } finally { await f.close(); }
 });
 
-test('wait_agents delivers the latest completed result to the model, desktop streams and history', async () => {
+test('wait_agents delivers the selected run result to the model, desktop streams and history', async () => {
   const output = 'Review findings 40c3';
   const f = await fixture(async (request) => {
     if (isChild(request)) {
       assert.ok(request.tools.some((tool) => tool.name === 'send_message'));
+      assert.ok(request.tools.some((tool) => tool.name === 'wait_for_message'));
       assert.ok(!request.tools.some((tool) => tool.name === 'wait_agents'));
       return [text(output)];
     }
     assert.ok(!request.tools.some((tool) => tool.name.endsWith('_mail')));
-    function outputFor(name: string) {
-      const callId = calls(request, name).at(-1)?.callId;
-      const result = request.transcript.find((item) => item.type === 'tool_result' && item.callId === callId);
-      assert.ok(result?.type === 'tool_result' && !result.isError);
-      const envelope = result.content[0];
-      assert.ok(envelope?.type === 'json' && envelope.value && typeof envelope.value === 'object' && 'output' in envelope.value);
-      return envelope.value.output;
-    }
+    assert.ok(request.tools.some((tool) => tool.name === 'wait_for_message'));
     if (!calls(request, 'spawn_agent').length) return [call('spawn_agent', { title: 'Review', prompt: 'Review' })];
-    const child = outputFor('spawn_agent') as { sessionId: string; status: string };
-    assert.deepEqual(Object.keys(child).sort(), ['sessionId', 'status']);
-    if (!calls(request, 'wait_agents').length) return [call('wait_agents', { sessionIds: [child.sessionId], timeoutMs: 2000 })];
-    const childSession = await f.workspace.getSession(child.sessionId);
-    assert.deepEqual(outputFor('wait_agents'), {
-      statuses: [{ sessionId: child.sessionId, runId: childSession?.runs[0]?.id, status: 'completed', output }],
-      pendingSessionIds: [], timedOut: false,
+    const { status, ...target } = toolOutput<{ sessionId: string; runId: string; status: string }>(request, 'spawn_agent');
+    assert.ok(status);
+    const childSession = await f.workspace.getSession(target.sessionId);
+    assert.deepEqual(target, runTarget(childSession!));
+    if (!calls(request, 'wait_agents').length) return [call('wait_agents', { targets: [target], timeoutMs: 2000 })];
+    assert.deepEqual(toolOutput(request, 'wait_agents'), {
+      statuses: [{ ...target, status: 'completed', output }],
+      pendingSessionIds: [], needsInput: [], timedOut: false,
     });
     if (!calls(request, 'list_agents').length) return [call('list_agents', {})];
-    assert.deepEqual(outputFor('list_agents'), {
-      agents: [{ sessionId: child.sessionId, title: 'Review', status: 'completed' }],
+    assert.deepEqual(toolOutput(request, 'list_agents'), {
+      agents: [{ ...target, title: 'Review', status: 'completed' }],
       plan: { revision: 0, items: [] },
     });
     return [text('Reviewed the results')];
@@ -384,7 +398,7 @@ test('wait_agents delivers the latest completed result to the model, desktop str
     assert.match(JSON.stringify(await f.coordinator.snapshot(f.root)), /Review findings 40c3/);
     const other = await f.workspace.createSession(owner);
     const child = f.workspace.descendants(f.root.id).find((session) => session.parentSessionId)!;
-    await assert.rejects(f.coordinator.wait(other, { sessionIds: [child.id], until: 'any', timeoutMs: 0 }), /direct child/);
+    await assert.rejects(f.coordinator.wait(other, { targets: [runTarget(child)], until: 'any', timeoutMs: 0 }), /direct child/);
   } finally { await f.close(); }
 });
 
@@ -396,9 +410,9 @@ test('wait_agents times out and cancels without consuming child work', async () 
   try {
     await f.coordinator.start(f.root, input('Delegate'), options);
     const child = f.workspace.descendants(f.root.id).find((session) => session.parentSessionId)!;
-    const wait = { sessionIds: [child.id], until: 'any', timeoutMs: 15 } as const;
+    const wait = { targets: [runTarget(child)], until: 'any', timeoutMs: 15 } as const;
     assert.deepEqual(await f.coordinator.wait(f.root, wait), {
-      statuses: [{ sessionId: child.id, runId: child.runs[0]?.id, status: 'in_progress' }], pendingSessionIds: [child.id], timedOut: true,
+      statuses: [{ ...runTarget(child), status: 'in_progress' }], pendingSessionIds: [child.id], needsInput: [], timedOut: true,
     });
     const abort = new AbortController();
     const waiting = f.coordinator.wait(f.root, { ...wait, timeoutMs: 60000 }, abort.signal);
@@ -407,75 +421,161 @@ test('wait_agents times out and cancels without consuming child work', async () 
     assert.equal(child.runs[0]?.status, 'in_progress');
     await f.coordinator.interrupt(f.root, child.id);
     assert.deepEqual((await f.coordinator.wait(f.root, wait)).statuses,
-      [{ sessionId: child.id, runId: child.runs[0]?.id, status: 'cancelled' }]);
+      [{ ...runTarget(child), status: 'cancelled' }]);
   } finally { await f.close(); }
 });
 
-test('a child asks for clarification and the parent replies through the same durable inbox', { timeout: 8000 }, async () => {
-  const ask = Promise.withResolvers<void>();
-  const question = 'Which output should I inspect?';
-  const answer = 'Use the build log.';
+test('wait tools return an error when batched and allow the other calls to finish', { timeout: 5000 }, async () => {
   const f = await fixture(async (request) => {
-    const incoming = request.transcript.filter((item) => item.type === 'message' && item.source?.kind === 'agent');
-    const latest = incoming.at(-1);
-    if (isChild(request)) {
-      assert.match(request.instructions, new RegExp(f.root.id));
-      assert.ok(incoming.some((item) => item.source?.kind === 'agent' && item.source.purpose === 'task'));
-      if (JSON.stringify(latest?.content).includes(answer)) {
-        assert.equal(latest?.source?.kind, 'agent');
-        assert.ok(latest.source.replyTo);
-        assert.match(JSON.stringify(latest.content), /Actl agent message/);
-        return [text('Build log findings')];
+    if (isChild(request)) return [text('Child finished')];
+    const spawned = calls(request, 'spawn_agent');
+    if (!spawned.length) return [call('spawn_agent', { title: 'Review', prompt: 'Review' })];
+    const { sessionId, runId } = toolOutput<{ sessionId: string; runId: string }>(request, 'spawn_agent');
+    const waits = calls(request, 'wait_agents');
+    if (!waits.length) return [
+      call('wait_for_message', { sessionId, timeoutMs: 60000 }),
+      call('wait_agents', { targets: [{ sessionId, runId }], timeoutMs: 60000 }),
+      call('send_message', { sessionId, message: 'Proceed with the review' }),
+    ];
+    if (waits.length === 1) {
+      for (const name of ['wait_agents', 'wait_for_message']) {
+        const { result, envelope } = toolResult(request, calls(request, name)[0]?.callId);
+        assert.equal(result.isError, true);
+        assert.match(envelope.error ?? '', /on its own/);
       }
-      await ask.promise;
-      if (!calls(request, 'send_message').length) {
-        return [call('send_message', { sessionId: f.root.id, message: question, purpose: 'clarification', replyTo: latest?.id })];
-      }
-      return [text('Waiting for clarification')];
+      const sent = toolOutput<{ messageId: string }>(request, 'send_message');
+      assert.ok(sent.messageId);
+      return [call('wait_agents', { targets: [{ sessionId, messageId: sent.messageId }], timeoutMs: 2000 })];
     }
-    if (!calls(request, 'spawn_agent').length) return [call('spawn_agent', { title: 'Review', prompt: 'Inspect the output' })];
-    if (!latest || calls(request, 'send_message').length) return [text('Parent finished')];
-    assert.equal(latest.source?.kind, 'agent');
-    assert.equal(latest.source.relationship, 'child');
-    assert.equal(latest.source.purpose, 'clarification');
-    assert.match(JSON.stringify(latest.content), /Actl agent message/);
-    return [call('send_message', { sessionId: latest.source.sessionId, message: answer, replyTo: latest.id })];
+    assert.equal(toolOutput<{ timedOut: boolean }>(request, 'wait_agents').timedOut, false);
+    return [text('Done')];
   });
   try {
-    const original = await f.coordinator.start(f.root, input('Review'), options);
-    assert.equal(original.status, 'completed');
-    const child = f.workspace.descendants(f.root.id).find((session) => session.parentSessionId)!;
-    const wait = { sessionIds: [child.id], until: 'any', timeoutMs: 2000 } as const;
-    const receipt = f.coordinator.wait(f.root, wait);
-    ask.resolve();
-    const result = await receipt;
-    assert.equal(result.timedOut, false);
-    assert.equal(f.root.runs.length, 1);
-    const [pending] = f.coordination.pending(f.root.id);
-    assert.equal(pending?.text, question);
-    assert.equal(pending.replyTo, child.runs[0]?.input[0]?.id);
-    await assert.rejects(f.coordinator.send(f.root, original, child.id, answer, 'bad-reply', { replyTo: pending.replyTo }), /replyTo/);
-    await assert.rejects(f.coordinator.send(child, child.runs[0]!, child.id, question, 'self'), /direct child/);
-    await assert.rejects(f.coordinator.send(child, child.runs[0]!, f.root.id, question, 'human-up', { userFollowUp: true }), /direct child/);
-
-    const events: AgentStreamEvent[] = [];
-    const followUp = await f.coordinator.start(f.root, input('Continue review'), options, (event) => { events.push(event); });
-    assert.equal(followUp.status, 'completed');
-    const received = toAgentResponseDto(followUp).output.find((item) => item.type === 'message' && item.id === pending.id);
-    assert.ok(received?.type === 'message');
-    assert.deepEqual(received.content, [{ type: 'output_text', text: question, annotations: [] }]);
-    assert.deepEqual(received.source, { kind: 'agent', sessionId: child.id, runId: child.runs[0]?.id, model: 'Fake',
-      relationship: 'child', purpose: 'clarification', replyTo: pending.replyTo });
-    assert.ok(events.some((event) => event.type === 'response.output_item.done' && event.item.id === pending.id));
-    assert.deepEqual(f.coordination.pending(f.root.id), []);
-    assert.equal((await f.coordinator.wait(f.root, wait)).statuses[0]?.output, 'Build log findings');
-    assert.equal(child.runs.length, 2);
-    assert.equal(child.runs[1]?.input[0]?.source?.kind, 'agent');
-  } finally {
-    ask.resolve();
-    await f.close();
-  }
+    const run = await f.coordinator.start(f.root, input('Review'), options);
+    assert.equal(run.status, 'completed', run.error?.message);
+  } finally { await f.close(); }
 });
+
+for (const replyBeforeWait of [false, true]) {
+  test(`clarification interrupts the parent's wait and resumes the same child run (${replyBeforeWait ? 'reply queued first' : 'child waits first'})`, { timeout: 8000 }, async () => {
+    const parentWaiting = Promise.withResolvers<void>();
+    const childWaiting = Promise.withResolvers<void>();
+    const parentAnswered = Promise.withResolvers<void>();
+    const independentFinished = new AbortController();
+    const question = 'Which output should I inspect?';
+    const answer = 'Use the build log.';
+    let questionId: string | undefined;
+    const f = await fixture(async (request, signal) => {
+      const incoming = request.transcript.filter((item) => item.type === 'message' && item.source?.kind === 'agent');
+      if (isChild(request)) {
+        assert.match(request.instructions, new RegExp(f.root.id));
+        const task = incoming.find((item) => item.source?.kind === 'agent' && item.source.purpose === 'task');
+        assert.ok(task);
+        if (task.content.some((part) => part.type === 'text' && part.text.includes('Independent check'))) {
+          try { await delay(60000, undefined, { signal: AbortSignal.any([signal!, independentFinished.signal]) }); }
+          catch (error) { if (!independentFinished.signal.aborted) throw error; }
+          return [text('Independent findings')];
+        }
+        if (!calls(request, 'send_message').length) {
+          await parentWaiting.promise;
+          return [call('send_message', { sessionId: f.root.id, message: question, purpose: 'clarification', replyTo: task.id })];
+        }
+        questionId = toolOutput<{ messageId: string }>(request, 'send_message').messageId;
+        if (!calls(request, 'wait_for_message').length) {
+          if (replyBeforeWait) await parentAnswered.promise;
+          return [call('wait_for_message', { sessionId: f.root.id, replyTo: questionId, timeoutMs: 4000 })];
+        }
+        const receipt = toolOutput<{ messageId: string; timedOut: boolean }>(request, 'wait_for_message');
+        assert.equal(receipt.timedOut, false);
+        const received = incoming.filter((item) => item.id === receipt.messageId);
+        assert.equal(received.length, 1);
+        assert.equal(received[0]?.source?.kind, 'agent');
+        assert.equal(received[0].source.replyTo, questionId);
+        assert.match(JSON.stringify(received[0].content), /Use the build log/);
+        independentFinished.abort();
+        return [text('Build log findings')];
+      }
+
+      if (!calls(request, 'spawn_agent').length) return [
+        call('spawn_agent', { title: 'Review', prompt: 'Inspect the output' }),
+        call('spawn_agent', { title: 'Independent', prompt: 'Independent check' }),
+      ];
+      const children = f.workspace.descendants(f.root.id).filter((session) => session.parentSessionId);
+      const review = children.find((session) => session.title === 'Review')!;
+      const wait = { targets: children.map(runTarget), until: 'all', timeoutMs: 4000 };
+      const waits = calls(request, 'wait_agents');
+      if (!waits.length) return [call('wait_agents', wait)];
+      if (!calls(request, 'send_message').length) {
+        const clarification = incoming.find((item) => item.source?.kind === 'agent' && item.source.purpose === 'clarification');
+        assert.ok(clarification?.source?.kind === 'agent');
+        const interrupted = toolOutput<{ needsInput: unknown[]; pendingSessionIds: string[]; timedOut: boolean }>(request, 'wait_agents');
+        assert.equal(interrupted.timedOut, false);
+        assert.deepEqual(interrupted.needsInput, [{ ...runTarget(review), messageId: clarification.id }]);
+        assert.ok(interrupted.pendingSessionIds.includes(children.find((session) => session.title === 'Independent')!.id));
+        assert.equal(clarification.source.replyTo, review.runs[0]?.input[0]?.id);
+        assert.match(JSON.stringify(clarification.content), /Actl agent message/);
+        if (!replyBeforeWait) {
+          await childWaiting.promise;
+          const sent = await f.coordinator.send(f.root, f.root.runs[0]!, review.id, 'Review the first failure.', 'queued-before-answer');
+          const target = { sessionId: review.id, messageId: sent.messageId };
+          const queued = await f.coordinator.wait(f.root, { targets: [target], until: 'all', timeoutMs: 0 });
+          assert.deepEqual(queued, {
+            statuses: [{ ...target, status: 'queued' }], pendingSessionIds: [review.id],
+            needsInput: interrupted.needsInput, timedOut: false,
+          });
+        }
+        return [call('send_message', { sessionId: review.id, message: answer, replyTo: clarification.id })];
+      }
+      parentAnswered.resolve();
+      if (waits.length === 1) return [call('wait_agents', wait)];
+      const completed = toolOutput<{ statuses: Array<{ output?: string }>; pendingSessionIds: string[] }>(request, 'wait_agents');
+      assert.deepEqual(completed.pendingSessionIds, []);
+      assert.deepEqual(completed.statuses.map(({ output }) => output).sort(), ['Build log findings', 'Independent findings']);
+      return [text('Parent finished')];
+    });
+
+    const wait = f.coordinator.wait.bind(f.coordinator);
+    f.coordinator.wait = (...args) => {
+      const waiting = wait(...args);
+      parentWaiting.resolve();
+      return waiting;
+    };
+    const waitForMessage = f.coordinator.waitForMessage.bind(f.coordinator);
+    f.coordinator.waitForMessage = (...args) => {
+      const waiting = waitForMessage(...args);
+      childWaiting.resolve();
+      return waiting;
+    };
+
+    try {
+      const events: AgentStreamEvent[] = [];
+      const run = await f.coordinator.start(f.root, input('Review'), options, (event) => { events.push(event); });
+      assert.equal(run.status, 'completed', run.error?.message);
+      const child = f.workspace.descendants(f.root.id).find((session) => session.title === 'Review')!;
+      assert.equal(child.runs.length, 1);
+      assert.equal(child.runs[0]?.status, 'completed', child.runs[0]?.error?.message);
+      const received = toAgentResponseDto(run).output.filter((item) => item.type === 'message' && item.id === questionId);
+      assert.equal(received.length, 1);
+      assert.ok(received[0]?.type === 'message');
+      assert.deepEqual(received[0].content, [{ type: 'output_text', text: question, annotations: [] }]);
+      assert.deepEqual(received[0].source, { kind: 'agent', sessionId: child.id, runId: child.runs[0]?.id, model: 'Fake',
+        relationship: 'child', purpose: 'clarification', replyTo: child.runs[0]?.input[0]?.id });
+      assert.ok(events.some((event) => event.type === 'response.output_item.done' && event.item.id === questionId));
+      assert.deepEqual(f.coordination.pending(f.root.id), []);
+      assert.deepEqual(f.coordination.pending(child.id), []);
+      await assert.rejects(f.coordinator.waitForMessage(child, { sessionId: f.root.id, replyTo: child.runs[0]?.input[0]?.id, timeoutMs: 0 }), /replyTo/);
+      await assert.rejects(f.coordinator.send(f.root, run, child.id, answer, 'bad-reply', { replyTo: child.runs[0]?.input[0]?.id }), /replyTo/);
+      await assert.rejects(f.coordinator.send(child, child.runs[0]!, child.id, question, 'self'), /direct child/);
+      await assert.rejects(f.coordinator.send(child, child.runs[0]!, f.root.id, question, 'human-up', { userFollowUp: true }), /direct child/);
+    } finally {
+      parentWaiting.resolve();
+      childWaiting.resolve();
+      parentAnswered.resolve();
+      independentFinished.abort();
+      await f.close();
+    }
+  });
+}
 
 test('wait_agents can return for any child or wait for all children', async () => {
   const finishFirst = new AbortController();
@@ -498,10 +598,10 @@ test('wait_agents can return for any child or wait for all children', async () =
     const children = f.workspace.descendants(f.root.id);
     const first = children.find((child) => child.title === 'First')!;
     const second = children.find((child) => child.title === 'Second')!;
-    const wait = { sessionIds: [first.id, second.id], timeoutMs: 2000 };
+    const wait = { targets: [runTarget(first), runTarget(second)], timeoutMs: 2000 };
     await f.coordinator.send(first, first.runs[0]!, f.root.id, 'Still working', 'progress', { purpose: 'progress' });
     const before = await f.coordinator.wait(f.root, { ...wait, until: 'any', timeoutMs: 0 });
-    assert.deepEqual(before.pendingSessionIds, wait.sessionIds);
+    assert.deepEqual(before.pendingSessionIds, [first.id, second.id]);
     assert.equal(before.timedOut, true);
 
     const anyStatus = f.coordinator.wait(f.root, { ...wait, until: 'any' });
@@ -526,17 +626,25 @@ test('wait_agents can return for any child or wait for all children', async () =
   }
 });
 
-test('running children get ordered user instructions in their timeline and idle children start with the actual input', async () => {
+test('message waits resolve to the run that delivered the instruction while exact run waits keep the original result', { timeout: 8000 }, async () => {
   let releaseChild!: () => void;
   const gate = new Promise<void>((resolve) => { releaseChild = resolve; });
+  const followUpStarted = Promise.withResolvers<void>();
+  const releaseFollowUp = Promise.withResolvers<void>();
   const f = await fixture(async (request) => {
     if (!isChild(request)) {
       return calls(request, 'spawn_agent').length
         ? [text('Parent ready')]
         : [call('spawn_agent', { title: 'Review', prompt: 'Initial assignment' })];
     }
+    const actualInput = request.transcript.some((item) => item.type === 'message' && item.content.some((part) => part.type === 'text' && part.text === 'Actual new input'));
+    if (actualInput) {
+      followUpStarted.resolve();
+      await releaseFollowUp.promise;
+      return [text('New child result')];
+    }
     await gate;
-    return [text('Child ready')];
+    return [text('Original child result')];
   });
   try {
     const rootRun = await f.coordinator.start(f.root, input('Start'), options);
@@ -544,11 +652,11 @@ test('running children get ordered user instructions in their timeline and idle 
     const first = await f.coordinator.send(f.root, rootRun, child.id, 'First instruction', 'first');
     assert.deepEqual(await f.coordinator.send(f.root, rootRun, child.id, 'Duplicate instruction', 'first'), first);
     await f.coordinator.send(f.root, rootRun, child.id, 'Second instruction', 'second');
-    const wait = { sessionIds: [child.id], until: 'any', timeoutMs: 2000 } as const;
-    const firstReceipt = f.coordinator.wait(f.root, wait);
+    const controls = { until: 'any', timeoutMs: 2000 } as const;
+    const firstReceipt = f.coordinator.wait(f.root, { ...controls, targets: [{ sessionId: child.id, messageId: first.messageId }] });
     releaseChild();
     const result = await firstReceipt;
-    assert.equal(result.statuses[0]?.runId, child.runs[0]?.id);
+    assert.deepEqual(result.statuses, [{ ...runTarget(child), messageId: first.messageId, status: 'completed', output: 'Original child result' }]);
     const firstRun = toAgentResponseDto(child.runs[0]!);
     assert.deepEqual(firstRun.input[0]?.source, {
       kind: 'agent', sessionId: f.root.id, runId: rootRun.id, model: 'Fake', relationship: 'parent', purpose: 'task',
@@ -558,13 +666,26 @@ test('running children get ordered user instructions in their timeline and idle 
     ).map((part) => part.type === 'output_text' ? part.text : ''), ['First instruction', 'Second instruction']);
     assert.ok(firstRun.output.some((item) => item.type === 'message' && item.role === 'assistant' && item.source?.kind === 'model'));
 
-    await f.coordinator.send(f.root, rootRun, child.id, 'Actual new input', 'third', { userFollowUp: true });
-    const queued = await f.coordinator.wait(f.root, { ...wait, timeoutMs: 0 });
-    assert.deepEqual(queued, { statuses: [{ sessionId: child.id, status: 'queued' }], pendingSessionIds: [child.id], timedOut: true });
-    const nextResult = await f.coordinator.wait(f.root, wait);
+    const { messageId } = await f.coordinator.send(f.root, rootRun, child.id, 'Actual new input', 'third', { userFollowUp: true });
+    const nextTarget = { sessionId: child.id, messageId };
+    const queued = await f.coordinator.wait(f.root, { ...controls, targets: [nextTarget], timeoutMs: 0 });
+    assert.deepEqual(queued, { statuses: [{ ...nextTarget, status: 'queued' }], pendingSessionIds: [child.id], needsInput: [], timedOut: true });
+
+    await followUpStarted.promise;
+    const earlierResult = await f.coordinator.wait(f.root, { ...controls, targets: [runTarget(child)], timeoutMs: 0 });
+    assert.equal(earlierResult.timedOut, false);
+    assert.deepEqual(earlierResult.statuses, [{ ...runTarget(child), status: 'completed', output: 'Original child result' }]);
+    const retry = await f.coordinator.spawn(f.root, rootRun, child.originCallId!, 'Retry', 'Retry');
+    assert.deepEqual(retry, { ...runTarget(child), status: 'completed' });
+    await assert.rejects(f.coordinator.wait(f.root, { ...controls, targets: [{ sessionId: child.id, runId: rootRun.id }] }), /run/i);
+    await assert.rejects(f.coordinator.wait(f.root, { ...controls, targets: [{ sessionId: child.id, messageId: 'unknown-message' }] }), /message/i);
+
+    const next = f.coordinator.wait(f.root, { ...controls, targets: [nextTarget] });
+    releaseFollowUp.resolve();
+    const nextResult = await next;
     assert.equal(nextResult.timedOut, false);
     assert.equal(child.runs.length, 2);
-    assert.equal(nextResult.statuses[0]?.runId, child.runs[1]?.id);
+    assert.deepEqual(nextResult.statuses, [{ ...nextTarget, runId: child.runs[1]?.id, status: 'completed', output: 'New child result' }]);
     const nextRun = toAgentResponseDto(child.runs[1]!);
     assert.deepEqual(nextRun.input[0]?.content, [{ type: 'input_text', text: 'Actual new input' }]);
     assert.equal(nextRun.input[0]?.source?.kind, 'user');
@@ -572,6 +693,7 @@ test('running children get ordered user instructions in their timeline and idle 
     assert.equal(f.coordination.pending(child.id).length, 0);
   } finally {
     releaseChild();
+    releaseFollowUp.resolve();
     await f.close();
   }
 });

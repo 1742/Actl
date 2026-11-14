@@ -46,14 +46,15 @@ async function startFixture(processCommands: Map<string, string>, explicitWorksp
         } }] }, 'tool_calls');
         done();
       } else if (text.includes('wait-child-fixture:') && payload.messages.at(-1)?.role !== 'tool') {
-        const sessionId = /wait-child-fixture:([\w-]+)/.exec(text)?.[1];
-        assert.ok(sessionId);
+        const match = /wait-child-fixture:([\w-]+):([\w-]+)/.exec(text);
+        assert.ok(match);
+        const [, sessionId, runId] = match;
         emit({ tool_calls: [{ index: 0, id: `call-${randomUUID()}`, type: 'function', function: {
-          name: 'wait_agents', arguments: JSON.stringify({ sessionIds: [sessionId], until: 'all' }),
+          name: 'wait_agents', arguments: JSON.stringify({ targets: [{ sessionId, runId }], until: 'all' }),
         } }] }, 'tool_calls');
         done();
       } else if (text.includes('wait-child-fixture:')) {
-        assert.match(JSON.stringify(payload.messages.at(-1)?.content), /迁移验证通过/);
+        assert.match(JSON.stringify(payload.messages.at(-1)?.content), /child running child result ready/);
         emit({ content: 'Child result received' }, 'stop');
         done();
       } else if (text.includes('workspace-shell-') && payload.messages.at(-1)?.role !== 'tool') {
@@ -400,7 +401,7 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
       await request({ operation: 'responses.cancel', params: { sessionId, responseId: next.id } });
       assert.equal(success(await next.running).status, 'cancelled');
     });
-    await step('Background agent tree, follow-up and direct result after restart', async () => {
+    await step('Background agent tree, follow-up and exact result after restart', async () => {
       const rootSession = await request<{ id: string }>({ operation: 'sessions.create', body: { projectId } });
       const events: AgentTreeEvent[] = [];
       const subscription = randomUUID();
@@ -439,11 +440,13 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
       assert.equal(restored.members.length, 2);
       assert.equal(restored.members.find((member) => member.session.id === child.session.id)?.session.parentSessionId, rootSession.id);
       const history = await request<{ responses: AgentResponseDto[] }>({ operation: 'sessions.context', params: { sessionId: child.session.id } });
-      assert.deepEqual(history.responses[0]?.input[0], task);
+      const firstRun = history.responses[0];
+      assert.ok(firstRun);
+      assert.deepEqual(firstRun.input[0], task);
       assert.equal(history.responses[1]?.input[0]?.source?.kind, 'user');
 
       const waitEvents: AgentStreamEvent[] = [];
-      const parentRun = success(await run(`wait-child-fixture:${child.session.id}`, (events) => waitEvents.push(...events), rootSession.id));
+      const parentRun = success(await run(`wait-child-fixture:${child.session.id}:${firstRun.id}`, (events) => waitEvents.push(...events), rootSession.id));
       assert.equal(parentRun.status, 'completed');
       const waitCall = parentRun.output.find((item) => item.type === 'function_call' && item.name === 'wait_agents');
       assert.ok(waitCall?.type === 'function_call');
@@ -452,8 +455,8 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
       const envelope = JSON.parse(waitResult.output);
       assert.equal(envelope.ok, true);
       assert.deepEqual(envelope.output, {
-        statuses: [{ sessionId: child.session.id, runId: history.responses[1]?.id, status: 'completed', output: '迁移验证通过' }],
-        pendingSessionIds: [], timedOut: false,
+        statuses: [{ sessionId: child.session.id, runId: firstRun.id, status: 'completed', output: 'child running child result ready' }],
+        pendingSessionIds: [], needsInput: [], timedOut: false,
       });
       const streamed = waitEvents.find((event) => event.type === 'agent.tool.completed' && event.call_id === waitCall.call_id);
       assert.ok(streamed?.type === 'agent.tool.completed' && streamed.result.ok);

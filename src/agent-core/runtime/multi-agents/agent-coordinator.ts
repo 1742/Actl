@@ -8,7 +8,7 @@ import { toSessionJson } from '../../contracts/common/presenters.js';
 import { toAgentResponseDto } from '../../contracts/agent-responses/presenter.js';
 import { createRandomId } from '../../utils.js';
 import { isTerminalRun, type AgentDomainEventHandler, type AgentRunRecord, type AgentRunStatus, type PermissionResolution } from '../agent-domain.js';
-import { instructionDelivered, instructionInput } from '../session/session-model-context.js';
+import { instructionInput, instructionRun } from '../session/session-model-context.js';
 import { AgentLoopError } from '../agent-loop/agent-loop-error.js';
 import { ExecutionAdmission, ResponseScopeConflictError } from '../execution-admission.js';
 import { SessionRuntime, mapSessionConcurrencyError, type AgentRunOptions, type PrepareRunInput, type SessionRuntimeServices } from '../session/session-runtime.js';
@@ -19,16 +19,19 @@ import { AgentEventHub } from './agent-event-hub.js';
 const MAX_ACTIVE_CHILDREN = 3;
 const MAX_CHILDREN = 12;
 
+type AgentWaitTarget = { sessionId: string; runId: string } | { sessionId: string; messageId: string };
+
 interface WaitAgentsOptions {
-  sessionIds: string[];
+  targets: AgentWaitTarget[];
   until: 'any' | 'all';
   timeoutMs: number;
 }
 
 interface ChildStatus {
   sessionId: string;
-  status: AgentRunStatus | 'idle' | 'queued';
+  status: AgentRunStatus | 'queued';
   runId?: string;
+  messageId?: string;
   output?: string;
   error?: string;
 }
@@ -50,6 +53,7 @@ export class AgentCoordinator {
   private readonly stoppedSessions = new Set<string>();
   private readonly queues = new Map<string, Promise<void>>();
   private readonly wakeTimers = new Map<string, NodeJS.Timeout>();
+  private readonly childStarts = new Map<string, Promise<AgentRunRecord>>();
   private closing = false;
 
   constructor(
@@ -167,7 +171,9 @@ export class AgentCoordinator {
     for (const member of this.workspace.descendants(session.id)) {
       if (member.parentSessionId !== session.id) continue;
       const child = await this.workspace.getSession(member.id, session.ownerId);
-      if (child) agents.push({ sessionId: child.id, title: child.title, status: child.runs.at(-1)?.status ?? 'idle' });
+      if (!child) continue;
+      const run = child.runs.at(-1);
+      agents.push({ sessionId: child.id, title: child.title, status: run?.status ?? 'idle', ...(run ? { runId: run.id } : {}) });
     }
     return { agents, plan: this.state.plan(session.rootSessionId ?? session.id) };
   }
@@ -178,9 +184,16 @@ export class AgentCoordinator {
       this.assertSessionExists(parent);
       this.assertOpen(parent);
       const children = this.workspace.descendants(parent.id).filter((item) => item.id !== parent.id);
-      const existing = children.find((item) => item.originRunId === run.id && item.originCallId === callId);
-      if (existing && (existing.runs.length || this.runtimes.get(existing.id)?.preparing)) return { existing };
-      if (!existing && children.length >= MAX_CHILDREN) throw new Error(`At most ${MAX_CHILDREN} child sessions per chat. Continue an existing child instead.`);
+      const match = children.find((item) => item.originRunId === run.id && item.originCallId === callId);
+      const existing = match && await this.workspace.getSession(match.id, parent.ownerId);
+      if (existing) {
+        const first = existing.runs[0];
+        if (first) return { started: Promise.resolve(first) };
+        const started = this.childStarts.get(existing.id);
+        if (started) return { started };
+      } else if (children.length >= MAX_CHILDREN) {
+        throw new Error(`At most ${MAX_CHILDREN} child sessions per chat. Continue an existing child instead.`);
+      }
       this.assertCapacity(parent);
       const child = existing ?? await this.workspace.createSession(parent.ownerId, {
         ...(parent.projectId ? { projectId: parent.projectId } : {}), title,
@@ -201,13 +214,13 @@ export class AgentCoordinator {
       const started = new Promise<AgentRunRecord>((resolve, reject) => {
         void this.startWithInput(child, async () => [input], run, resolve).then(resolve, reject);
       });
-      return { child, started };
+      this.childStarts.set(child.id, started);
+      const clearStart = () => { this.childStarts.delete(child.id); };
+      void started.then(clearStart, clearStart);
+      return { started };
     });
-    if (admitted.existing) {
-      return { sessionId: admitted.existing.id, status: admitted.existing.runs.at(-1)?.status ?? 'in_progress' };
-    }
     const runStarted = await admitted.started;
-    return { sessionId: admitted.child.id, status: runStarted.status };
+    return { sessionId: runStarted.sessionId, runId: runStarted.id, status: runStarted.status };
   }
 
   async send(sender: Session, sourceRun: AgentRunRecord, targetId: string, text: string, callId: string, options: SendAgentMessageOptions = {}) {
@@ -225,7 +238,8 @@ export class AgentCoordinator {
         if (existing.wake) this.scheduleWake(target.id);
         return { sessionId: target.id, messageId: existing.id, accepted: true };
       }
-      if (options.replyTo && !this.state.hasMessage(options.replyTo, target.id, sender.id)) {
+      // Verify whether the message being replied to exists; for the message being replied to, the sender and recipient are the reverse of those in the reply message.
+      if (options.replyTo && !this.state.getMessage(options.replyTo, target.id, sender.id)) {
         throw new Error('replyTo must identify a message received from the target agent.');
       }
       if (options.userFollowUp) this.allowUserTurn(sender);
@@ -250,56 +264,104 @@ export class AgentCoordinator {
     });
   }
 
-  async wait(parent: Session, { sessionIds, until, timeoutMs }: WaitAgentsOptions, signal?: AbortSignal) {
+  /** parent agent wait children */
+  async wait(parent: Session, { targets, until, timeoutMs }: WaitAgentsOptions, signal?: AbortSignal) {
     signal?.throwIfAborted();
     this.assertSessionExists(parent);
-    const children: Session[] = [];
-    for (const id of new Set(sessionIds)) {
-      const child = await this.related(parent, id);
-      if (child.parentSessionId !== parent.id) throw new Error('Only direct children can be awaited.');
-      children.push(child);
+    if (new Set(targets.map((target) => target.sessionId)).size !== targets.length) {
+      throw new Error('Wait targets must specify distinct child sessions.');
     }
+    const children = await Promise.all(targets.map(async (target) => {
+      const child = await this.related(parent, target.sessionId);
+      if (child.parentSessionId !== parent.id) throw new Error('Only direct children can be awaited.');
+      if ('runId' in target) {
+        const run = child.runs.find((item) => item.id === target.runId);
+        if (!run) throw new Error('Run does not belong to the target child.');
+        return { child, run };
+      }
+      if (!this.state.getMessage(target.messageId, parent.id, child.id)) {
+        throw new Error('Message was not sent to the target child by this caller.');
+      }
+      return { child, messageId: target.messageId };
+    }));
 
-    const check = () => {
+    return this.waitForChange(parent, timeoutMs, signal, () => {
       const pendingSessionIds: string[] = [];
-      const statuses = children.map((child): ChildStatus => {
+      const needsInput: Array<{ sessionId: string; runId: string; messageId: string }> = [];
+      const statuses = children.map(({ child, run: selected, messageId }): ChildStatus => {
         const sessionId = child.id;
-        if (!this.workspace.hasSession(sessionId, parent.ownerId)) return { sessionId, status: 'idle' };
-        const runtime = this.runtimes.get(sessionId);
-        const run = child.runs.at(-1);
-        if (run && (!isTerminalRun(run) || runtime?.executing || this.stops.has(sessionId))) {
-          pendingSessionIds.push(child.id);
-          // Terminal status is assigned in memory before the final write and lease release.
-          return { sessionId, runId: run.id, status: isTerminalRun(run) ? 'in_progress' : run.status };
+        const target = { sessionId, ...(messageId ? { messageId } : {}) };
+        const run = messageId ? instructionRun(child, messageId) : selected;
+        if (!this.workspace.hasSession(sessionId, parent.ownerId)) {
+          return { ...target, ...(run ? { runId: run.id } : {}), status: 'cancelled' };
         }
-        const queued = !this.stoppedSessions.has(sessionId) && this.state.pending(sessionId)
-          .some((message) => message.wake && !instructionDelivered(child, message.id));
-        if (runtime?.preparing || queued) {
+
+        // A child waiting for clarification can also prevent a new follow-up from being delivered.
+        const active = child.runs.at(-1);
+        const questionRun = run ?? (active?.status === 'in_progress' ? active : undefined);
+        if (questionRun?.status === 'in_progress' || questionRun?.status === 'completed') {
+          for (const question of this.state.unansweredClarifications(sessionId, parent.id, questionRun.id)) {
+            needsInput.push({ sessionId, runId: questionRun.id, messageId: question.id });
+          }
+        }
+
+        if (!run) {
+          if (!messageId || !this.state.getMessage(messageId, parent.id, sessionId)?.wake) {
+            return { ...target, status: 'cancelled' };
+          }
           pendingSessionIds.push(sessionId);
-          return { sessionId, status: 'queued' };
+          return { ...target, status: 'queued' };
         }
-        if (!run) return { sessionId, status: 'idle' };
+
+        const current = run === active;
+        // The current run's terminal status is assigned before its final write and lease release.
+        if (!isTerminalRun(run) || (current && (this.runtimes.get(sessionId)?.executing || this.stops.has(sessionId)))) {
+          pendingSessionIds.push(sessionId);
+          return { ...target, runId: run.id, status: isTerminalRun(run) ? 'in_progress' : run.status };
+        }
+
         const output = run.status === 'completed' ? this.resultText(run) : '';
-        return { sessionId, runId: run.id, status: run.status,
+        return { ...target, runId: run.id, status: run.status,
           ...(output ? { output } : {}), ...(run.error ? { error: run.error.message } : {}) };
       });
-      return { statuses, pendingSessionIds };
-    };
+      const finished = until === 'all' ? pendingSessionIds.length === 0 : pendingSessionIds.length < children.length;
+      return { ready: needsInput.length > 0 || finished, value: { statuses, pendingSessionIds, needsInput } };
+    });
+  }
 
+  async waitForMessage(session: Session, { sessionId, replyTo, timeoutMs }: {
+    sessionId: string;
+    replyTo?: string | undefined;
+    timeoutMs: number;
+  }, signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    const peer = await this.related(session, sessionId);
+    if (replyTo && !this.state.getMessage(replyTo, session.id, peer.id)) {
+      throw new Error('replyTo must identify a message you sent to the target agent.');
+    }
+    return this.waitForChange<{ messageId?: string }>(session, timeoutMs, signal, () => {
+      this.assertSessionExists(peer);
+      const message = replyTo ? this.state.findReply(replyTo, peer.id, session.id) : this.state.pending(session.id)
+        .find((item) => item.fromSessionId === peer.id && !instructionRun(session, item.id));
+      return { ready: !!message, value: message ? { messageId: message.id } : {} };
+    });
+  }
+
+  private async waitForChange<T extends object>(session: Session, timeoutMs: number, signal: AbortSignal | undefined, check: () => { ready: boolean; value: T }) {
+    const root = session.rootSessionId ?? session.id;
     const timeout = new AbortController();
     const timer = setTimeout(() => timeout.abort(), timeoutMs);
     const waitSignal = signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal;
     try {
       for (;;) {
         signal?.throwIfAborted();
-        this.assertSessionExists(parent);
-        const snapshot = check();
-        const pending = snapshot.pendingSessionIds.length;
-        if (until === 'all' ? pending === 0 : pending < children.length) return { ...snapshot, timedOut: false };
-        if (timeoutMs === 0 || timeout.signal.aborted) return { ...snapshot, timedOut: true };
+        this.assertSessionExists(session);
+        const { ready, value } = check();
+        if (ready) return { ...value, timedOut: false };
+        if (timeoutMs === 0 || timeout.signal.aborted) return { ...value, timedOut: true };
         // Check and register the listener in the same turn so no notification is missed.
         try {
-          await once(this.waitEvents, parent.id, { signal: waitSignal });
+          await once(this.waitEvents, root, { signal: waitSignal });
         } catch (error) {
           signal?.throwIfAborted();
           if (!timeout.signal.aborted) throw error;
@@ -466,7 +528,7 @@ export class AgentCoordinator {
       }
       if (!previous) return;
       const input = pending.flatMap((message) => {
-        if (!instructionDelivered(session, message.id)) return [instructionInput(message)];
+        if (!instructionRun(session, message.id)) return [instructionInput(message)];
         this.state.acknowledge(message.id);
         return [];
       });

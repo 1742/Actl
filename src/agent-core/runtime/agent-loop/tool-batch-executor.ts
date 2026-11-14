@@ -317,6 +317,15 @@ export class ToolBatchExecutor {
     for (const [index, outcome] of outcomes.entries()) {
       signal.throwIfAborted();
       if (outcome.kind === "result") completed[index] = outcome;
+      else if (outcome.execution.standalone && outcomes.length > 1) {
+        const { toolCall } = outcome;
+        completed[index] = {
+          toolCall,
+          result: { toolCallId: toolCall.id, toolName: toolCall.name, ok: false,
+            error: `Call ${toolCall.name} on its own, after other tool calls have finished.` },
+          emitPostToolUse: false,
+        };
+      }
       else if (outcome.execution.concurrency === "parallel") parallelGroup.push({ index, outcome });
       else {
         await flushParallelGroup();
