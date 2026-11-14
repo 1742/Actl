@@ -1,5 +1,6 @@
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import type { AgentRunRecord } from "../../runtime/agent-domain.js";
+import { agentProfileSchema } from "../../runtime/multi-agents/agent-profile-catalog.js";
 import { nowIso } from "../../utils.js";
 import type {
   ContextCompressionRecord, FileChangeRecord, ModelInvocationUsageRecord, SessionContentRecord,
@@ -16,11 +17,13 @@ import {
 
 function toSessionMetadata(row: SqliteRow): SessionRecord {
   const title = nullableStringColumn(row, "title");
+  const profile = nullableStringColumn(row, "agent_profile_json");
   return {
     ...(row.parent_session_id ? { parentSessionId: stringColumn(row, 'parent_session_id') } : {}),
     rootSessionId: nullableStringColumn(row, 'root_session_id') ?? stringColumn(row, 'id'),
     ...(row.origin_run_id ? { originRunId: stringColumn(row, 'origin_run_id') } : {}),
     ...(row.origin_call_id ? { originCallId: stringColumn(row, 'origin_call_id') } : {}),
+    ...(profile ? { profile: agentProfileSchema.parse(JSON.parse(profile)) } : {}),
     id: stringColumn(row, "id"), ownerId: stringColumn(row, "owner_id"), projectId: nullableStringColumn(row, "project_id"),
     ...(title ? { title } : {}), created_at: stringColumn(row, "created_at"), updated_at: stringColumn(row, "updated_at"),
   };
@@ -63,9 +66,11 @@ export class SqliteSessionRepository implements SessionRepository {
   }
 
   async createSession(session: SessionRecord): Promise<void> {
-    this.db.prepare("INSERT INTO sessions(id, owner_id, project_id, title, created_at, updated_at, parent_session_id, root_session_id, origin_run_id, origin_call_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    this.db.prepare(`INSERT INTO sessions(id, owner_id, project_id, title, created_at, updated_at,
+      parent_session_id, root_session_id, origin_run_id, origin_call_id, agent_profile_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(session.id, session.ownerId, session.projectId, session.title ?? null, session.created_at, session.updated_at,
-        session.parentSessionId ?? null, session.rootSessionId ?? session.id, session.originRunId ?? null, session.originCallId ?? null);
+        session.parentSessionId ?? null, session.rootSessionId ?? session.id, session.originRunId ?? null, session.originCallId ?? null,
+        session.profile ? JSON.stringify(session.profile) : null);
   }
 
   async updateSession(session: SessionRecord): Promise<void> {

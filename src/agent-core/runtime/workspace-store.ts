@@ -1,6 +1,7 @@
 import { mkdir, realpath, rmdir, stat } from "node:fs/promises";
 import path from "node:path";
 import type { ProjectSettings } from "../../shared/agent/sessions.js";
+import type { AgentProfile } from "../../shared/agent/profiles.js";
 import { workspaceDirectoryName, workspacePathKey } from "../tools/path-security.js";
 import type {
   FileChangeRecord,
@@ -263,7 +264,14 @@ export class WorkspaceStore {
   }
 
   //创建会话
-  async createSession(ownerId: string, input: { projectId?: string; title?: string; parentSessionId?: string; originRunId?: string; originCallId?: string } = {}): Promise<Session> {
+  async createSession(ownerId: string, input: {
+    projectId?: string;
+    title?: string;
+    parentSessionId?: string;
+    originRunId?: string;
+    originCallId?: string;
+    profile?: AgentProfile;
+  } = {}): Promise<Session> {
     let created!: Session;
     await this.enqueue(async () => {
       if (input.projectId !== undefined && !this.projects.some((item) => item.id === input.projectId && item.ownerId === ownerId)) {
@@ -272,6 +280,7 @@ export class WorkspaceStore {
       const now = nowIso();
       const parent = input.parentSessionId ? this.requireOwnedSessionRecord(input.parentSessionId, ownerId) : undefined;
       if (parent && parent.projectId !== (input.projectId ?? null)) throw new Error('Child project must match its parent.');
+      if (input.profile && !parent) throw new Error('Agent profiles apply to child sessions.');
       const id = createRandomId('session');
       const metadata: SessionRecord = {
         id,
@@ -279,6 +288,7 @@ export class WorkspaceStore {
         ...(parent ? { parentSessionId: parent.id } : {}),
         ...(input.originRunId ? { originRunId: input.originRunId } : {}),
         ...(input.originCallId ? { originCallId: input.originCallId } : {}),
+        ...(input.profile ? { profile: structuredClone(input.profile) } : {}),
         ownerId,
         projectId: input.projectId ?? null,
         ...(input.title === undefined ? {} : { title: input.title }),

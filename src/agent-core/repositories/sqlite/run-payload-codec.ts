@@ -33,8 +33,9 @@ const messageSchema = z.object({
     z.object({
       kind: z.literal("agent"), sessionId: z.string(), runId: z.string(), model: z.string().optional(),
       relationship: z.enum(["parent", "child"]), purpose: z.enum(["task", "message", "progress", "clarification"]),
-      replyTo: z.string().optional(),
+      replyTo: z.string().optional(), taskId: z.string().optional(), assignmentId: z.string().optional(),
     }).strict(),
+    z.object({ kind: z.literal("user"), taskId: z.string(), assignmentId: z.string() }).strict(),
   ]).optional(),
   content: z.array(contentPartSchema),
 }).strict();

@@ -8,8 +8,13 @@ export default {
     waitTargetCount: '1 target | {count} targets', waitTimedOut: 'Wait timed out',
     clarificationRequested: 'Clarification requested', messageReceived: 'Message received',
     team: 'Agents and plan', readOnly: 'Read-only subagents', back: 'Back to main chat', stopAll: 'Stop all',
+    tasks: 'Tasks', taskOwner: 'Owner', taskDependencies: 'Depends on', acceptanceCriteria: 'Acceptance criteria',
+    taskStatus: { ready: 'Ready to claim', blocked: 'Blocked', inProgress: 'Assigned', completed: 'Accepted' },
+    listProfiles: 'List agent roles', createTask: 'Create task', listTasks: 'List tasks', delegateTask: 'Delegate task',
+    claimTask: 'Claim task', releaseTask: 'Release task', completeTask: 'Accept task result',
+    profileCount: '1 role | {count} roles', taskCount: '1 task | {count} tasks',
     running: 'Running', approval: 'Needs approval', stopping: 'Stopping', failed: 'Incomplete', cancelled: 'Stopped', done: 'Finished',
-    followup: 'Follow up', followupHint: 'Add instructions or a new task for this agent', send: 'Send', stop: 'Stop',
+    followup: 'Follow up', followupHint: 'Add instructions for the current task', send: 'Send', stop: 'Stop',
   },
   settings: {
     sections: {

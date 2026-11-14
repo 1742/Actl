@@ -40,10 +40,19 @@ async function startFixture(processCommands: Map<string, string>, explicitWorksp
         emit({ content: 'child running' });
         const timer = setTimeout(() => { emit({ content: ' child result ready' }, 'stop'); done(); }, 350);
         response.once('close', () => clearTimeout(timer));
-      } else if (text.includes('multi-root-fixture') && payload.messages.at(-1)?.role !== 'tool') {
-        emit({ tool_calls: [{ index: 0, id: `call-${randomUUID()}`, type: 'function', function: {
-          name: 'spawn_agent', arguments: JSON.stringify({ title: 'Background reviewer', prompt: 'multi-child-fixture' }),
-        } }] }, 'tool_calls');
+      } else if (text.includes('multi-root-fixture')) {
+        const last = payload.messages.at(-1);
+        const envelope = last?.role === 'tool' ? JSON.parse(String(last.content)) : undefined;
+        const created = envelope?.output?.id && envelope?.output?.revision === 1;
+        if (!envelope || created) {
+          const name = created ? 'delegate_task' : 'create_task';
+          const input = created ? { taskId: envelope.output.id, expectedRevision: 1, target: { profileId: 'review' } }
+            : { title: 'Background reviewer', instructions: 'multi-child-fixture', acceptanceCriteria: 'Return review findings.' };
+          emit({ tool_calls: [{ index: 0, id: `call-${randomUUID()}`, type: 'function', function: { name, arguments: JSON.stringify(input) } }] }, 'tool_calls');
+        } else {
+          assert.ok(envelope.ok && envelope.output?.runId);
+          emit({ content: 'Review delegated' }, 'stop');
+        }
         done();
       } else if (text.includes('wait-child-fixture:') && payload.messages.at(-1)?.role !== 'tool') {
         const match = /wait-child-fixture:([\w-]+):([\w-]+)/.exec(text);
@@ -416,10 +425,17 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
       const tree = await request<AgentTreeSnapshot>({ operation: 'agents.tree', params: { sessionId: rootSession.id } });
       const child = tree.members.find((member) => member.session.parentSessionId === rootSession.id)!;
       assert.ok(child);
+      assert.deepEqual(child.session.profile, { id: 'review', name: 'Review' });
       const task = child.response?.input[0];
       assert.ok(task?.id && task.source?.kind === 'agent');
       assert.equal(task.source.sessionId, rootSession.id);
       assert.equal(task.source.purpose, 'task');
+      const taskId = task.source.taskId;
+      const assignment = tree.tasks?.find(({ id }) => id === taskId);
+      assert.ok(assignment?.assignmentId);
+      assert.equal(assignment.assignmentId, task.source.assignmentId);
+      assert.equal(assignment.ownerSessionId, child.session.id);
+      assert.equal(assignment.status, 'in_progress');
       host.detach(subscription);
       const count = events.length;
       const followUp = await request<{ sessionId: string; messageId: string; accepted: boolean }>({
@@ -438,6 +454,7 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
       await host.close(); host = new AgentProcessHost(options); await host.ready();
       const restored = await request<AgentTreeSnapshot>({ operation: 'agents.tree', params: { sessionId: rootSession.id } });
       assert.equal(restored.members.length, 2);
+      assert.deepEqual(restored.tasks, tree.tasks);
       assert.equal(restored.members.find((member) => member.session.id === child.session.id)?.session.parentSessionId, rootSession.id);
       const history = await request<{ responses: AgentResponseDto[] }>({ operation: 'sessions.context', params: { sessionId: child.session.id } });
       const firstRun = history.responses[0];

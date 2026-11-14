@@ -62,6 +62,17 @@ function runTarget(session: { id: string; runs: AgentRunRecord[] }) {
   return { sessionId: session.id, runId: session.runs[0]!.id };
 }
 
+const taskDraft = (title: string, instructions: string) => ({ title, instructions, acceptanceCriteria: 'Report findings with evidence.' });
+
+function delegateFixture(request: ModelTurnRequest, ...assignments: Array<[string, string]>): TranscriptItem[] {
+  const creates = calls(request, 'create_task');
+  if (!creates.length) return assignments.map(([title, instructions]) => call('create_task', taskDraft(title, instructions)));
+  return creates.map(({ callId }) => {
+    const task = toolResult(request, callId).envelope.output as { id: string; revision: number };
+    return call('delegate_task', { taskId: task.id, expectedRevision: task.revision, target: { profileId: 'review' } });
+  });
+}
+
 async function fixture(handler: (request: ModelTurnRequest, signal?: AbortSignal) => Promise<TranscriptItem[]>) {
   const directory = await mkdtemp(path.join(tmpdir(), 'actl-multi-'));
   const projectPath = path.join(directory, 'project'); await mkdir(projectPath);
@@ -129,6 +140,12 @@ test('migrates v20 without losing sessions, persists plans/messages, and rejects
     assert.equal(reopened.plan('root').revision, 2);
     assert.equal(reopened.pending('root')[0]?.text, 'retained message');
     database.exec(`
+      DROP TABLE agent_task_assignments;
+      DROP TABLE agent_tasks;
+      DROP INDEX agent_messages_assignment_idx;
+      ALTER TABLE sessions DROP COLUMN agent_profile_json;
+      ALTER TABLE agent_messages DROP COLUMN assignment_id;
+      ALTER TABLE agent_messages DROP COLUMN task_id;
       ALTER TABLE agent_messages DROP COLUMN author;
       ALTER TABLE agent_messages DROP COLUMN model;
       ALTER TABLE agent_messages DROP COLUMN relationship;
@@ -150,7 +167,8 @@ test('migrates v20 without losing sessions, persists plans/messages, and rejects
     database.close();
     database = await openWorkspaceDatabase(dbPath);
     const migrated = new SqliteAgentCoordinationRepository(database);
-    assert.equal(migrated.pending('child')[0]?.id, 'old-instruction');
+    assert.deepEqual(migrated.pending('child'), []);
+    assert.equal(migrated.getMessage('old-instruction', 'root', 'child')?.wake, false);
     assert.equal(database.prepare("SELECT 1 FROM sqlite_master WHERE name = 'agent_mail'").get(), undefined);
     assert.equal(database.prepare("SELECT 1 FROM agent_messages WHERE id = 'old-mail'").get(), undefined);
     assert.deepEqual(database.prepare('SELECT item_id, item_order FROM timeline_items').all().map((row) => [row.item_id, row.item_order]), [['kept', 0]]);
@@ -162,7 +180,7 @@ test('parallel fresh-context children deliver results; attempted edits are block
   const f = await fixture(async (request, signal) => {
     if (isChild(request)) {
       assert.ok(!JSON.stringify(request.transcript).includes('ROOT_ONLY_CONTEXT'));
-      assert.ok(!request.tools.some((tool) => ['shell', 'write_file', 'spawn_agent', 'call_mcp_tool'].includes(tool.name)));
+      assert.ok(!request.tools.some((tool) => ['shell', 'write_file', 'delegate_task', 'spawn_agent', 'call_mcp_tool'].includes(tool.name)));
       if (!calls(request, 'write_file').length) {
         simultaneous++; peak = Math.max(peak, simultaneous);
         await delay(70, undefined, { signal }); simultaneous--;
@@ -171,7 +189,7 @@ test('parallel fresh-context children deliver results; attempted edits are block
       assert.ok(request.transcript.some((item) => item.type === 'tool_result' && item.isError));
       return [text('Child findings')];
     }
-    if (!calls(request, 'spawn_agent').length) return [call('spawn_agent', { title: 'One', prompt: 'Read one' }), call('spawn_agent', { title: 'Two', prompt: 'Read two' })];
+    if (!calls(request, 'delegate_task').length) return delegateFixture(request, ['One', 'Read one'], ['Two', 'Read two']);
     const children = f.workspace.descendants(f.root.id).filter((member) => member.parentSessionId);
     const active = children.filter((member) => member.runs[0]?.status === 'in_progress');
     if (active.length) return [call('wait_agents', { targets: active.map(runTarget), until: 'all', timeoutMs: 1000 })];
@@ -201,6 +219,58 @@ test('parallel fresh-context children deliver results; attempted edits are block
   } finally { await f.close(); }
 });
 
+test('task ownership, dependencies and result acceptance survive delegation and reassignment', async () => {
+  const f = await fixture(async (request) => {
+    if (isChild(request)) {
+      assert.ok(request.tools.some((tool) => tool.name === 'claim_task'));
+      assert.ok(!request.tools.some((tool) => ['delegate_task', 'complete_task', 'write_file'].includes(tool.name)));
+      assert.match(request.instructions, /Review/);
+      return [text('Findings')];
+    }
+    assert.ok(!request.tools.some((tool) => tool.name === 'spawn_agent'));
+    return [text('Ready')];
+  });
+  try {
+    const rootRun = await f.coordinator.start(f.root, input('Plan work'), options);
+    const review = await f.coordinator.createTask(f.root, rootRun, 'review', taskDraft('Review', 'Review the migration'));
+    assert.deepEqual(await f.coordinator.createTask(f.root, rootRun, 'review', taskDraft('Duplicate', 'Duplicate')), review);
+    const fix = await f.coordinator.createTask(f.root, rootRun, 'fix', { ...taskDraft('Fix', 'Repair findings'), blockedBy: [review.id] });
+    assert.equal(fix.ready, false);
+    await assert.rejects(f.coordinator.claimTask(f.root, rootRun, 'early', fix.id, fix.revision), /not ready/);
+
+    const initial = await f.coordinator.delegateTask(f.root, rootRun, 'delegate', review.id, review.revision, { profileId: 'review' });
+    const child = (await f.workspace.getSession(initial.sessionId))!;
+    assert.equal(child.profile?.id, 'review');
+    const targets = [{ sessionId: child.id, messageId: initial.messageId }];
+    assert.equal((await f.coordinator.wait(f.root, { targets, until: 'all', timeoutMs: 2000 })).statuses[0]?.output, 'Findings');
+    assert.equal(f.coordination.task(f.root.id, review.id)?.status, 'in_progress');
+    assert.equal(f.coordination.task(f.root.id, fix.id)?.ready, false);
+    assert.throws(() => f.coordinator.completeTask(child, child.runs[0]!, review.id, 2, child.runs[0]!.id), /root agent/);
+    const released = await f.coordinator.releaseTask(f.root, review.id, 2);
+    assert.equal(released.status, 'pending');
+    await assert.rejects(f.coordinator.send(f.root, rootRun, child.id, 'Unassigned work', 'unassigned'), /assigned task/);
+
+    const next = await f.coordinator.delegateTask(f.root, rootRun, 'reassign', review.id, released.revision, { sessionId: child.id });
+    assert.notEqual(next.assignmentId, initial.assignmentId);
+    const nextResult = await f.coordinator.wait(f.root, { targets: [{ sessionId: child.id, messageId: next.messageId }], until: 'all', timeoutMs: 2000 });
+    assert.ok(nextResult.statuses[0]?.runId);
+    await assert.rejects(f.coordinator.completeTask(f.root, rootRun, review.id, 4, child.runs[0]!.id), /current task assignment/);
+    const accepted = await f.coordinator.completeTask(f.root, rootRun, review.id, 4, nextResult.statuses[0].runId);
+    assert.deepEqual(accepted.result, { sessionId: child.id, runId: child.runs[1]?.id });
+    assert.equal(f.coordination.task(f.root.id, fix.id)?.ready, true);
+
+    const claims = await Promise.allSettled([
+      f.coordinator.claimTask(f.root, rootRun, 'claim-a', fix.id, fix.revision),
+      f.coordinator.claimTask(child, child.runs[1]!, 'claim-b', fix.id, fix.revision),
+    ]);
+    assert.equal(claims.filter(({ status }) => status === 'fulfilled').length, 1);
+    assert.equal(f.coordination.task(f.root.id, fix.id)?.ownerSessionId, f.root.id);
+    const own = await f.coordinator.completeTask(f.root, rootRun, fix.id, 2, rootRun.id);
+    assert.equal(own.status, 'completed');
+    assert.deepEqual((await f.coordinator.snapshot(f.root)).tasks?.map(({ status }) => status), ['completed', 'completed']);
+  } finally { await f.close(); }
+});
+
 test('child messages and completion preserve parent approval and deliver when it resumes', async () => {
   const review = Promise.withResolvers<void>();
   const f = await fixture(async (request, signal) => {
@@ -210,7 +280,7 @@ test('child messages and completion preserve parent approval and deliver when it
       return calls(request, 'send_message').length ? [text('Review ready')] :
         [call('send_message', { sessionId: f.root.id, message: 'Review progress', purpose: 'progress' })];
     }
-    if (!calls(request, 'spawn_agent').length) return [call('spawn_agent', { title: 'Review', prompt: 'Review' })];
+    if (!calls(request, 'delegate_task').length) return delegateFixture(request, ['Review', 'Review']);
     if (!calls(request, 'write_file').length) return [call('write_file', { path: 'approved.txt', content: 'approved' })];
     assert.ok(request.transcript.some((item) => item.type === 'message' && item.source?.kind === 'agent' && item.source.purpose === 'progress'));
     return [text('Final')];
@@ -240,7 +310,7 @@ test('tree shares project admission; unrelated roots conflict; cancellation abor
   const ready = new Promise<void>((resolve) => { started = resolve; });
   const f = await fixture(async (request, signal) => {
     if (isChild(request)) { started(); await delay(10000, undefined, { signal }); return [text('Should not finish')]; }
-    if (!calls(request, 'spawn_agent').length) return [call('spawn_agent', { title: 'Slow', prompt: 'Slow review' })];
+    if (!calls(request, 'delegate_task').length) return delegateFixture(request, ['Slow', 'Slow review']);
     const child = f.workspace.descendants(f.root.id).find((item) => item.parentSessionId)!;
     return [call('wait_agents', { targets: [runTarget(child)], timeoutMs: 60000 })];
   });
@@ -252,8 +322,10 @@ test('tree shares project admission; unrelated roots conflict; cancellation abor
     await assert.rejects(f.coordinator.start(f.root, input('Duplicate run'), options), /active response/);
     const rootRun = f.root.runs[0]!;
     const child = f.workspace.descendants(f.root.id).find((item) => item.parentSessionId)!;
-    const duplicate = await f.coordinator.spawn(f.root, rootRun, child.originCallId!, 'Duplicate', 'Duplicate');
-    assert.deepEqual(duplicate, { ...runTarget(child), status: 'in_progress' });
+    const task = f.coordination.activeTask(f.root.id, child.id)!;
+    const duplicate = await f.coordinator.delegateTask(f.root, rootRun, child.originCallId!, task.id, 1, { profileId: 'review' });
+    assert.deepEqual(duplicate, { ...runTarget(child), taskId: task.id, assignmentId: task.assignmentId,
+      messageId: task.dispatchMessageId, status: 'in_progress' });
     await f.coordinator.stopTree(f.root);
     assert.equal((await execution).status, 'cancelled');
     await delay(60);
@@ -323,7 +395,7 @@ test('a running child keeps its project reserved and its result can be collected
       catch (error) { if (!finishChild.signal.aborted) throw error; }
       return [text('child findings')];
     }
-    if (!calls(request, 'spawn_agent').length) return [call('spawn_agent', { title: 'Review', prompt: 'Review' })];
+    if (!calls(request, 'delegate_task').length) return delegateFixture(request, ['Review', 'Review']);
     return [text('parent done')];
   });
   try {
@@ -356,8 +428,9 @@ test('wait_agents delivers the selected run result to the model, desktop streams
     }
     assert.ok(!request.tools.some((tool) => tool.name.endsWith('_mail')));
     assert.ok(request.tools.some((tool) => tool.name === 'wait_for_message'));
-    if (!calls(request, 'spawn_agent').length) return [call('spawn_agent', { title: 'Review', prompt: 'Review' })];
-    const { status, ...target } = toolOutput<{ sessionId: string; runId: string; status: string }>(request, 'spawn_agent');
+    if (!calls(request, 'delegate_task').length) return delegateFixture(request, ['Review', 'Review']);
+    const { status, sessionId, runId } = toolOutput<{ sessionId: string; runId: string; status: string }>(request, 'delegate_task');
+    const target = { sessionId, runId };
     assert.ok(status);
     const childSession = await f.workspace.getSession(target.sessionId);
     assert.deepEqual(target, runTarget(childSession!));
@@ -368,7 +441,7 @@ test('wait_agents delivers the selected run result to the model, desktop streams
     });
     if (!calls(request, 'list_agents').length) return [call('list_agents', {})];
     assert.deepEqual(toolOutput(request, 'list_agents'), {
-      agents: [{ ...target, title: 'Review', status: 'completed' }],
+      agents: [{ ...target, title: 'Review', status: 'completed', profile: { id: 'review', name: 'Review' } }],
       plan: { revision: 0, items: [] },
     });
     return [text('Reviewed the results')];
@@ -405,7 +478,7 @@ test('wait_agents delivers the selected run result to the model, desktop streams
 test('wait_agents times out and cancels without consuming child work', async () => {
   const f = await fixture(async (request, signal) => {
     if (isChild(request)) await delay(60000, undefined, { signal });
-    return calls(request, 'spawn_agent').length ? [text('Delegated')] : [call('spawn_agent', { title: 'Review', prompt: 'Review' })];
+    return calls(request, 'delegate_task').length ? [text('Delegated')] : delegateFixture(request, ['Review', 'Review']);
   });
   try {
     await f.coordinator.start(f.root, input('Delegate'), options);
@@ -428,9 +501,9 @@ test('wait_agents times out and cancels without consuming child work', async () 
 test('wait tools return an error when batched and allow the other calls to finish', { timeout: 5000 }, async () => {
   const f = await fixture(async (request) => {
     if (isChild(request)) return [text('Child finished')];
-    const spawned = calls(request, 'spawn_agent');
-    if (!spawned.length) return [call('spawn_agent', { title: 'Review', prompt: 'Review' })];
-    const { sessionId, runId } = toolOutput<{ sessionId: string; runId: string }>(request, 'spawn_agent');
+    const spawned = calls(request, 'delegate_task');
+    if (!spawned.length) return delegateFixture(request, ['Review', 'Review']);
+    const { sessionId, runId } = toolOutput<{ sessionId: string; runId: string }>(request, 'delegate_task');
     const waits = calls(request, 'wait_agents');
     if (!waits.length) return [
       call('wait_for_message', { sessionId, timeoutMs: 60000 }),
@@ -496,10 +569,7 @@ for (const replyBeforeWait of [false, true]) {
         return [text('Build log findings')];
       }
 
-      if (!calls(request, 'spawn_agent').length) return [
-        call('spawn_agent', { title: 'Review', prompt: 'Inspect the output' }),
-        call('spawn_agent', { title: 'Independent', prompt: 'Independent check' }),
-      ];
+      if (!calls(request, 'delegate_task').length) return delegateFixture(request, ['Review', 'Inspect the output'], ['Independent', 'Independent check']);
       const children = f.workspace.descendants(f.root.id).filter((session) => session.parentSessionId);
       const review = children.find((session) => session.title === 'Review')!;
       const wait = { targets: children.map(runTarget), until: 'all', timeoutMs: 4000 };
@@ -558,8 +628,9 @@ for (const replyBeforeWait of [false, true]) {
       assert.equal(received.length, 1);
       assert.ok(received[0]?.type === 'message');
       assert.deepEqual(received[0].content, [{ type: 'output_text', text: question, annotations: [] }]);
+      const task = f.coordination.activeTask(f.root.id, child.id)!;
       assert.deepEqual(received[0].source, { kind: 'agent', sessionId: child.id, runId: child.runs[0]?.id, model: 'Fake',
-        relationship: 'child', purpose: 'clarification', replyTo: child.runs[0]?.input[0]?.id });
+        relationship: 'child', purpose: 'clarification', replyTo: child.runs[0]?.input[0]?.id, taskId: task.id, assignmentId: task.assignmentId });
       assert.ok(events.some((event) => event.type === 'response.output_item.done' && event.item.id === questionId));
       assert.deepEqual(f.coordination.pending(f.root.id), []);
       assert.deepEqual(f.coordination.pending(child.id), []);
@@ -582,10 +653,7 @@ test('wait_agents can return for any child or wait for all children', async () =
   const finishSecond = new AbortController();
   const f = await fixture(async (request, signal) => {
     if (!isChild(request)) {
-      return calls(request, 'spawn_agent').length ? [text('Delegated')] : [
-        call('spawn_agent', { title: 'First', prompt: 'First assignment' }),
-        call('spawn_agent', { title: 'Second', prompt: 'Second assignment' }),
-      ];
+      return calls(request, 'delegate_task').length ? [text('Delegated')] : delegateFixture(request, ['First', 'First assignment'], ['Second', 'Second assignment']);
     }
     const first = JSON.stringify(request.transcript).includes('First assignment');
     const finish = first ? finishFirst.signal : finishSecond.signal;
@@ -633,9 +701,9 @@ test('message waits resolve to the run that delivered the instruction while exac
   const releaseFollowUp = Promise.withResolvers<void>();
   const f = await fixture(async (request) => {
     if (!isChild(request)) {
-      return calls(request, 'spawn_agent').length
+      return calls(request, 'delegate_task').length
         ? [text('Parent ready')]
-        : [call('spawn_agent', { title: 'Review', prompt: 'Initial assignment' })];
+        : delegateFixture(request, ['Review', 'Initial assignment']);
     }
     const actualInput = request.transcript.some((item) => item.type === 'message' && item.content.some((part) => part.type === 'text' && part.text === 'Actual new input'));
     if (actualInput) {
@@ -658,8 +726,9 @@ test('message waits resolve to the run that delivered the instruction while exac
     const result = await firstReceipt;
     assert.deepEqual(result.statuses, [{ ...runTarget(child), messageId: first.messageId, status: 'completed', output: 'Original child result' }]);
     const firstRun = toAgentResponseDto(child.runs[0]!);
+    const task = f.coordination.activeTask(f.root.id, child.id)!;
     assert.deepEqual(firstRun.input[0]?.source, {
-      kind: 'agent', sessionId: f.root.id, runId: rootRun.id, model: 'Fake', relationship: 'parent', purpose: 'task',
+      kind: 'agent', sessionId: f.root.id, runId: rootRun.id, model: 'Fake', relationship: 'parent', purpose: 'task', taskId: task.id, assignmentId: task.assignmentId,
     });
     assert.deepEqual(firstRun.output.flatMap((item) =>
       item.type === 'message' && item.role === 'user' ? item.content : [],
@@ -675,8 +744,9 @@ test('message waits resolve to the run that delivered the instruction while exac
     const earlierResult = await f.coordinator.wait(f.root, { ...controls, targets: [runTarget(child)], timeoutMs: 0 });
     assert.equal(earlierResult.timedOut, false);
     assert.deepEqual(earlierResult.statuses, [{ ...runTarget(child), status: 'completed', output: 'Original child result' }]);
-    const retry = await f.coordinator.spawn(f.root, rootRun, child.originCallId!, 'Retry', 'Retry');
-    assert.deepEqual(retry, { ...runTarget(child), status: 'completed' });
+    const retry = await f.coordinator.delegateTask(f.root, rootRun, child.originCallId!, task.id, 1, { profileId: 'review' });
+    assert.deepEqual(retry, { ...runTarget(child), taskId: task.id, assignmentId: task.assignmentId,
+      messageId: task.dispatchMessageId, status: 'completed' });
     await assert.rejects(f.coordinator.wait(f.root, { ...controls, targets: [{ sessionId: child.id, runId: rootRun.id }] }), /run/i);
     await assert.rejects(f.coordinator.wait(f.root, { ...controls, targets: [{ sessionId: child.id, messageId: 'unknown-message' }] }), /message/i);
 

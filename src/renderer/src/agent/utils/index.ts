@@ -24,12 +24,31 @@ const toolPresentations: Readonly<Record<string, AgentToolPresentation>> = {
   web_search: 'web_search',
   web_fetch: 'web_fetch',
   spawn_agent: 'agent_team',
+  list_agent_profiles: 'agent_team',
+  create_task: 'agent_team',
+  list_tasks: 'agent_team',
+  delegate_task: 'agent_team',
+  claim_task: 'agent_team',
+  release_task: 'agent_team',
+  complete_task: 'agent_team',
   send_message: 'agent_team',
   wait_agents: 'agent_team',
   wait_for_message: 'agent_team',
   list_agents: 'agent_team',
   interrupt_agent: 'agent_team',
   update_plan: 'agent_team',
+};
+
+const agentTeamToolTitles: Readonly<Record<string, string>> = {
+  list_agent_profiles: 'agents.listProfiles',
+  create_task: 'agents.createTask',
+  list_tasks: 'agents.listTasks',
+  delegate_task: 'agents.delegateTask',
+  claim_task: 'agents.claimTask',
+  release_task: 'agents.releaseTask',
+  complete_task: 'agents.completeTask',
+  wait_agents: 'agents.waitForAgents',
+  wait_for_message: 'agents.waitForMessage',
 };
 
 const toolLabels: Record<AgentToolPresentation, string> = {
@@ -263,11 +282,8 @@ export function agentToolHeading(block: AgentToolTimelineBlock, view: 'row' | 'a
       break;
     }
     case 'agent_team': {
-      const name = block.call.name;
-      const title = name === 'wait_agents' ? tr('agents.waitForAgents')
-        : name === 'wait_for_message' ? tr('agents.waitForMessage')
-        : toolLabels.agent_team;
-      return { title, detail: agentTeamToolDetail(block) };
+      const title = agentTeamToolTitles[block.call.name];
+      return { title: title ? tr(title) : toolLabels.agent_team, detail: agentTeamToolDetail(block) };
     }
     case 'generic':
       detail = block.call.name || (view === 'row' ? 'tool' : '');
@@ -286,6 +302,17 @@ function agentTeamToolDetail(block: AgentToolTimelineBlock) {
   switch (block.call.name) {
     case 'spawn_agent':
       return text(args?.title);
+    case 'list_agent_profiles':
+      return Array.isArray(block.result?.output) ? tr('agents.profileCount', { count: block.result.output.length }) : '';
+    case 'list_tasks':
+      return Array.isArray(block.result?.output) ? tr('agents.taskCount', { count: block.result.output.length }) : '';
+    case 'create_task':
+      return text(args?.title);
+    case 'delegate_task':
+    case 'claim_task':
+    case 'release_task':
+    case 'complete_task':
+      return text(asRecord(result?.task)?.title) || text(result?.title) || text(args?.taskId);
     case 'send_message':
       return '';
     case 'wait_agents': {

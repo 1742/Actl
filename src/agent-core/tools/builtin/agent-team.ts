@@ -3,7 +3,18 @@ import type { ToolProvider, ToolDefinition, ToolCallContext } from '../registry.
 import type { AgentCoordinator } from '../../runtime/multi-agents/agent-coordinator.js';
 
 const id = z.string().min(1).max(200);
-const spawn = z.object({ title: z.string().trim().min(1).max(100), prompt: z.string().trim().min(1).max(30000) }).strict();
+const revision = z.number().int().positive();
+const taskChange = z.object({ taskId: id, expectedRevision: revision }).strict();
+const taskCreate = z.object({
+  title: z.string().trim().min(1).max(100),
+  instructions: z.string().trim().min(1).max(20000),
+  acceptanceCriteria: z.string().trim().min(1).max(6000),
+  blockedBy: z.array(id).max(32).optional(),
+}).strict();
+const delegate = taskChange.extend({
+  target: z.union([z.object({ profileId: id }).strict(), z.object({ sessionId: id }).strict()]),
+});
+const complete = taskChange.extend({ runId: id });
 const send = z.object({
   sessionId: id.describe('Your direct parent or direct child session ID.'),
   message: z.string().trim().min(1).max(16000),
@@ -35,10 +46,33 @@ export class AgentTeamToolProvider implements ToolProvider {
 
   async listTools(): Promise<ToolDefinition[]> {
     return [
-      { 
-        name: 'spawn_agent', 
-        inputSchema: spawn, 
-        description: 'Delegate independent read-only work to a child with fresh context. Include the context it needs. Returns sessionId, runId, and status. Use sessionId to send follow-ups and both IDs to collect this run with wait_agents.'
+      {
+        name: 'list_agent_profiles', inputSchema: z.object({}).strict(),
+        description: 'List the role profiles available for delegation. Use a profile ID with delegate_task to start a child with fresh context.',
+      },
+      {
+        name: 'create_task', inputSchema: taskCreate,
+        description: 'Create a tracked task with instructions and acceptance criteria. blockedBy optionally lists existing tasks that must first be accepted. Returns the task ID and revision.',
+      },
+      {
+        name: 'list_tasks', inputSchema: z.object({}).strict(),
+        description: 'Read the shared tasks, owners, revisions, readiness and accepted results in this conversation.',
+      },
+      {
+        name: 'delegate_task', inputSchema: delegate,
+        description: 'Assign a ready task to a child. Choose an available profileId to create a child or an idle direct child sessionId. Returns assignmentId, sessionId, messageId and runId when started. Collect that work with wait_agents.',
+      },
+      {
+        name: 'claim_task', inputSchema: taskChange,
+        description: 'Claim a ready task for yourself using its current revision. You may hold one task at a time. Continue its instructions in this run.',
+      },
+      {
+        name: 'release_task', inputSchema: taskChange,
+        description: 'Release an assigned task back to the ready queue. The task owner or the root can release it. For another active child, stop it or wait for it first.',
+      },
+      {
+        name: 'complete_task', inputSchema: complete,
+        description: 'Accept a task after verification. Provide the current task revision and a result runId from its current assignment. For work you claimed and verified yourself, use your own run ID.',
       },
       { 
         name: 'send_message', 
@@ -49,7 +83,7 @@ export class AgentTeamToolProvider implements ToolProvider {
         name: 'wait_agents', 
         inputSchema: wait, 
         execution: { concurrency: 'exclusive', standalone: true },
-        description: 'Call on its own. Wait for an exact run per direct child. Each target takes sessionId and either the runId from spawn_agent or the messageId from send_message. Set until to any (default) or all. Returns statuses with final output or error, pendingSessionIds, needsInput, and timedOut. An unanswered clarification in needsInput ends the wait early; its message is available in your timeline.'
+        description: 'Call on its own. Wait for an exact run per direct child. Each target takes sessionId and either runId or messageId from delegation or follow-up. Set until to any (default) or all. Returns statuses with final output or error, pendingSessionIds, needsInput, and timedOut. An unanswered clarification in needsInput ends the wait early; its message is available in your timeline.'
       },
       {
         name: 'wait_for_message',
@@ -81,7 +115,25 @@ export class AgentTeamToolProvider implements ToolProvider {
     context.signal?.throwIfAborted();
     const { session, run } = this.coordinator.activeToolCaller(context.sessionId, context.runId);
     switch (name) {
-      case 'spawn_agent': { const value = spawn.parse(input); return this.coordinator.spawn(session, run, context.callId, value.title, value.prompt); }
+      case 'list_agent_profiles': return this.coordinator.listProfiles(session);
+      case 'list_tasks': return this.coordinator.tasks(session);
+      case 'create_task': return this.coordinator.createTask(session, run, context.callId, taskCreate.parse(input));
+      case 'delegate_task': {
+        const value = delegate.parse(input);
+        return this.coordinator.delegateTask(session, run, context.callId, value.taskId, value.expectedRevision, value.target);
+      }
+      case 'claim_task': {
+        const value = taskChange.parse(input);
+        return this.coordinator.claimTask(session, run, context.callId, value.taskId, value.expectedRevision);
+      }
+      case 'release_task': {
+        const value = taskChange.parse(input);
+        return this.coordinator.releaseTask(session, value.taskId, value.expectedRevision);
+      }
+      case 'complete_task': {
+        const value = complete.parse(input);
+        return this.coordinator.completeTask(session, run, value.taskId, value.expectedRevision, value.runId);
+      }
       case 'send_message': {
         const { sessionId, message, purpose, replyTo } = send.parse(input);
         return this.coordinator.send(session, run, sessionId, message, context.callId, { purpose, replyTo });

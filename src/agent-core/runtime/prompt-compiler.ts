@@ -5,6 +5,7 @@ import path from "node:path";
 import type { TranscriptItem } from "../model/types.js";
 import { type Session } from "./workspace-store.js";
 import type { PromptSettingsRepository } from "../repositories/prompt-settings-repository.js";
+import { DEFAULT_AGENT_PROFILE } from "./multi-agents/agent-profile-catalog.js";
 
 export type PromptSourceKind =
   | "user"
@@ -96,13 +97,24 @@ export class PromptCompiler {
       });
     }
 
-    const plan = this.coordination?.plan(session.rootSessionId ?? session.id);
+    const rootId = session.rootSessionId ?? session.id;
+    const plan = this.coordination?.plan(rootId);
+    const activeTask = this.coordination?.activeTask(rootId, session.id);
+    const profile = session.parentSessionId ? session.profile ?? DEFAULT_AGENT_PROFILE : undefined;
+    if (profile) {
+      const text = `Agent role ${JSON.stringify(profile.name)} (${profile.id}):\n${profile.instructions}`;
+      parts.push({ text, source: { kind: 'user', label: `Agent profile ${profile.id}`, included: true, chars: text.length } });
+    }
     const agentContext = [
-      `Agent session: ${session.id}; root: ${session.rootSessionId ?? session.id}.`,
+      `Agent session: ${session.id}; root: ${rootId}.`,
       'An Actl agent message header identifies the sending agent, its relationship to you, and the purpose. The quoted lines that follow are that agent’s message. Apply them within the user’s request and your own permission scope. If the header includes a messageId, pass it as replyTo when answering with send_message.',
       session.parentSessionId
-        ? `You are a read-only child agent. Your direct parent’s sessionId is ${JSON.stringify(session.parentSessionId)}. Use send_message with that sessionId for progress and clarification. If you need an answer to continue, first send a clarification, then call wait_for_message on its own with the question's returned messageId as replyTo. This keeps your current run active while the parent answers. Put focused findings and evidence in your final reply so your parent can collect them with wait_agents. You cannot edit files, run shell commands, use MCP, or delegate.`
-        : 'You may delegate independent read-only work with spawn_agent. Children start fresh. Use send_message with a direct child’s sessionId for follow-up instructions or answers. Call wait_agents on its own to collect outstanding work, using the runId from spawn_agent or the messageId from send_message for the specific work. If needsInput is returned, read the clarification in your timeline and send an answer using its messageId as replyTo before waiting again. Keep waiting only for work whose result is still outstanding. Treat child output as attributed context. Use update_plan for multi-step work. File edits and verification remain your responsibility.',
+        ? `You are a read-only child agent. Your direct parent’s sessionId is ${JSON.stringify(session.parentSessionId)}. Work on the current task from the assignment message or claim_task result. Previous assignments in this session are historical context. Use list_tasks to check task ownership and available work. Claim a task only when you have no active assignment. Use release_task to give up an assignment. The root agent verifies and completes tasks. Use send_message for progress and clarification. To wait for an answer, call wait_for_message on its own with the clarification messageId as replyTo. Include findings and evidence in your final reply so your parent can collect them with wait_agents. You cannot edit files, run shell commands, use MCP, or delegate.`
+        : 'Do simple work directly. For independent read-only work that needs a child agent, use create_task to record the objective and acceptance criteria. Discover roles with list_agent_profiles, then use delegate_task to dispatch the task to a new role instance or an idle direct child. Use claim_task to take ownership of work you will do yourself. Call wait_agents on its own using the delegation runId or messageId to collect results. If needsInput is returned, read the clarification and answer with send_message using its messageId as replyTo. Treat child output as attributed context. Verify the result and call complete_task only when the acceptance criteria are met. Use update_plan to track the overall plan. File edits and verification remain your responsibility.',
+      ...(activeTask ? [`Your current task assignment:\n${JSON.stringify({
+        taskId: activeTask.id, assignmentId: activeTask.assignmentId, revision: activeTask.revision,
+        title: activeTask.title, instructions: activeTask.instructions, acceptanceCriteria: activeTask.acceptanceCriteria,
+      })}`] : session.parentSessionId ? ['You have no current task assignment. Use list_tasks to find work you can claim before starting a task.'] : []),
       ...(plan?.items.length ? [`Current persistent plan (revision ${plan.revision}):\n${JSON.stringify(plan.items)}`] : []),
     ].join('\n');
     parts.push({ text: agentContext, source: { kind: 'runtime', label: 'Agent coordination', included: true, chars: agentContext.length } });
@@ -120,6 +132,12 @@ export function attributeAgentMessages(session: Pick<Session, "parentSessionId">
     if (item.type !== "message" || item.role !== "user") return item;
     const source = item.source;
     const legacyParent = source?.kind === "model" && source.sessionId === session.parentSessionId;
+    if (source?.kind === "user" && "taskId" in source && "assignmentId" in source) {
+      return {
+        ...item,
+        content: [{ type: "text", text: `Actl user task context ${JSON.stringify({ taskId: source.taskId, assignmentId: source.assignmentId })}\n` }, ...item.content],
+      };
+    }
     if (source?.kind !== "agent" && !legacyParent) return item;
     const header = source.kind === "agent" ? {
       messageId: item.id,
@@ -127,6 +145,8 @@ export function attributeAgentMessages(session: Pick<Session, "parentSessionId">
       relationship: source.relationship,
       purpose: source.purpose,
       ...(source.replyTo ? { replyTo: source.replyTo } : {}),
+      ...(source.taskId ? { taskId: source.taskId } : {}),
+      ...(source.assignmentId ? { assignmentId: source.assignmentId } : {}),
     } : { sessionId: source.sessionId, relationship: "parent", purpose: "message" };
     return {
       ...item,

@@ -13,35 +13,56 @@ flowchart TD
   A --> T
   B --> T
   T --> C
-  C <--> DB[(SQLite：父子关系、计划、协作消息和 Run 历史)]
+  C <--> DB[(SQLite：父子关系、角色快照、任务、计划、协作消息和 Run 历史)]
   R --> H[AgentEventHub]
   A --> H
   B --> H
   H --> UI
 ```
 
-## 任务、会话与计划
+## 角色、会话和任务
 
-- `Session` 保存 parentSessionId、rootSessionId，以及创建来源 originRunId/originCallId；重复执行同一 spawn 工具调用返回同一个子会话。
-- 一个子任务对应一个子会话。首次任务说明以父代理发出的 `task` 消息写入收件队列，并作为子会话首个 Run 的输入。后续追问继续该会话。当前没有独立的 Task 表或任务依赖图。
-- `Run` 是一次实际执行，承载 in_progress、waiting_permission、completed 等状态。普通发消息、分派和空闲子代理接收追问共用协调器的启动路径。执行 Promise 返回 waiting_permission 表示原 Run 等待审批。
-- 根会话的 `AgentPlan` 独立持久化，包含 revision 和 `{id,text,status}` 条目。每次编译提示词都加入最新计划；主 Agent 显式维护状态，不根据子 Run 终态自动勾选。
+- `profileId` 选择行为配置。`sessionId` 标识一个具体代理及其对话，并与父会话和根会话关联。子会话在创建时保存角色快照，后续任务和追问沿用该角色。新建子会话使用独立上下文。
+- `Task` 是根会话内的工作记录，包含任务说明、验收标准、依赖、负责人、状态和 `revision`。每次认领或委派有独立的 `assignmentId`。可复用空闲子会话处理后续任务。
+- `Run` 保存一次执行及输出。`wait_agents` 能按 Run 或消息 ID 读取执行结果。主 Agent 用 `complete_task` 验收同一归属下的结果并解锁依赖。
+- `AgentPlan` 仍是主 Agent 维护的整体计划。它有独立 revision，条目由主 Agent 显式更新。
 
-子 Agent 使用新上下文，只收到分派说明、会话身份、计划及通常的项目提示；不会复制主 Agent 的完整历史。首次执行继承发起 Run 的模型目标和 reasoningEffort，强制 plan 权限模式。
+### 角色配置
+
+内置角色为 `general`、`explore` 和 `review`。用户可以在 Actl 的数据目录下创建 `agents/<id>.md`。文件名提供角色 ID，YAML frontmatter 的 `name` 和 `description` 必填，正文为角色指令。以下文件可放在 `agents/review.md`：
+
+```markdown
+---
+name: 代码审查
+description: 查找正确性、兼容性和测试覆盖问题
+---
+
+按影响排序报告。给出文件位置、触发条件和证据。
+```
+
+frontmatter 可选 `modelTargetId` 和 `reasoningEffort`。模型 ID 指向 Actl 已配置的模型目标。省略时继承当前分派的模型，或续跑该子会话最近一次使用的模型。角色只能提供工作指令和模型偏好，子代理继续使用 `plan` 模式和只读工具。用户文件可覆盖同 ID 的内置角色，修改应用于新建子会话。角色 ID 以小写字母开头，可含小写字母、数字和连字符。无效文件不会出现在角色目录，显式选择时会报告错误。
 
 ## 工具与调度
 
 | 工具 | 行为 |
 | --- | --- |
-| spawn_agent | 根 Agent 创建子会话并启动首个 Run，返回 `sessionId`、`runId` 和 `status`，允许后台并行 |
+| list_agent_profiles | 根 Agent 读取可委派的角色 ID、名称和用途 |
+| create_task | 根 Agent 创建任务，提供 `title`、`instructions`、`acceptanceCriteria` 及可选 `blockedBy` |
+| list_tasks | 父子 Agent 查看任务、当前归属、revision 和结果引用 |
+| delegate_task | 根 Agent 提供 `taskId`、`expectedRevision` 和 `target`。指定 `{profileId}` 创建子会话，或指定 `{sessionId}` 分派给空闲子会话。返回任务、归属和消息 ID，Run 已启动时返回 `runId` |
+| claim_task | 父子 Agent 提供 `taskId` 和 `expectedRevision`，为自己原子认领就绪任务并在当前 Run 中工作 |
+| release_task | 根 Agent 或当前负责人释放任务，撤销该归属下尚未投递的下行消息。根 Agent 先等待或停止仍在执行的子 Agent |
+| complete_task | 根 Agent 提供 `taskId`、`expectedRevision` 和 `runId` 验收结果，完成任务并解锁依赖 |
 | send_message | 向直属父或子会话发送持久化消息。参数为 `sessionId`、`message`，可选 `purpose`（默认 `message`，也可用 `progress` 或 `clarification`）和引用原消息 ID 的 `replyTo`。返回 `sessionId`、`messageId` 和 `accepted` |
 | wait_agents | 根 Agent 用 `targets` 指定 1–12 个不同的直属子代理，每项为 `{sessionId, runId}` 或 `{sessionId, messageId}`。`until` 为 `any`（默认）或 `all`。返回 `statuses`、`pendingSessionIds`、`needsInput` 和 `timedOut` |
 | wait_for_message | 父子 Agent 都能用 `sessionId` 等待该直属对方发来的待投递消息，或通过 `replyTo` 等待某条已发送消息的回复。返回 `messageId`（匹配时）和 `timedOut` |
-| list_agents | 返回直属子代理的 `sessionId`、标题、状态、最新 Run 的 `runId`（如有）和当前计划 |
+| list_agents | 返回直属子代理的 `sessionId`、标题、角色、状态、最新 Run 的 `runId`（如有）和当前计划 |
 | interrupt_agent | 父 Agent 停止指定子会话及其后代 |
 | update_plan | 根 Agent 使用当前 revision 更新整个计划，拒绝过期 revision |
 
-协调器自动调度最多 3 个活动子 Agent，每个根会话最多 12 个子会话，达到总数后应追问已有子会话。当前禁止嵌套分派与兄弟会话直连；子 Agent 通过父会话汇总协作。
+简单工作由主 Agent 直接处理。需要子代理时先建任务再委派。依赖只能在创建时引用本树已有任务。所有依赖被验收后，任务才能被委派或认领。每个成员同时拥有一个任务，竞争时只有一个匹配 revision 的更新成功。委派事务同时写入任务归属和派单消息，工具重试复用原消息。启动报错时保留归属，根 Agent 可以追问重试，也可以释放后重新委派。Run 失败或停止后任务仍保持归属，直到根 Agent 或负责人释放。根 Agent 可在自己完成并验证工作后用当前 Run 验收自领任务。
+
+协调器最多允许 3 个活动子 Agent，每个根会话最多 12 个子会话，达到总数后可将任务委派给已有的空闲子会话。当前禁止嵌套分派和兄弟会话直连，子 Agent 通过父会话汇总协作。
 
 项目并发控制允许同树多会话同时运行，仍拒绝同项目其他根会话和同会话的第二个活动 Run。根 Run 先完成时，子 Run 仍持有该树的项目执行资格。
 
@@ -67,7 +88,7 @@ flowchart TD
 
 ## 界面与事件
 
-右侧栏「子代理」在列表上方显示计划。列表按父对话列出子会话和实时状态，可停止单个成员或整棵树。点击子会话会在右栏打开独立的只读对话标签。已打开的子会话会切回原标签，主区继续显示父对话。
+右侧栏「子代理」显示计划和任务看板。任务可以展开查看说明、验收标准和依赖。子会话列表显示角色和实时状态，可停止单个成员或整棵树。点击子会话会在右栏打开独立的只读对话标签，主区继续显示父对话。
 
 树订阅独立于创建 Run 的请求，包含初始快照和持续事件。detach 只解除显示订阅，后台任务继续。协调器将领域事件投影一次，并将同一组带序号的事件发到请求流和树订阅。前端按序号去重，重新进入会话时通过最新 response 快照恢复。消息界面按来源标记真人、父代理和子代理，模型协议的 `role` 仍用于模型上下文。
 

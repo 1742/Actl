@@ -1,5 +1,6 @@
 import type { AgentRunRecord, AgentTimelineItem } from "../runtime/agent-domain.js";
 import type { ModelUsage } from "../model/types.js";
+import type { AgentProfile } from "../../shared/agent/profiles.js";
 
 export interface SessionContextStateRecord {
   sessionId: string;
@@ -28,6 +29,7 @@ export interface SessionRecord {
   rootSessionId?: string;
   originRunId?: string;
   originCallId?: string;
+  profile?: AgentProfile;
   ownerId: string;
   projectId: string | null;
   title?: string;

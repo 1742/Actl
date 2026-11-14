@@ -42,7 +42,8 @@ export type ResponseInputPartDto =
 export type MessageSource =
   | { kind: 'user' | 'runtime' }
   | { kind: 'model'; sessionId: string; runId: string; model?: string }
-  | { kind: 'agent'; sessionId: string; runId: string; model?: string; relationship: AgentMessageRelationship; purpose: AgentMessagePurpose; replyTo?: string };
+  | { kind: 'agent'; sessionId: string; runId: string; model?: string; relationship: AgentMessageRelationship; purpose: AgentMessagePurpose; replyTo?: string; taskId?: string; assignmentId?: string }
+  | { kind: 'user'; taskId: string; assignmentId: string };
 
 export interface ResponseInputMessageDto {
   id?: string;

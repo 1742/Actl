@@ -1,6 +1,7 @@
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { AgentCoordinator } from '../runtime/multi-agents/agent-coordinator.js';
+import { AgentProfileCatalog } from '../runtime/multi-agents/agent-profile-catalog.js';
 import { AgentTeamToolProvider } from '../tools/builtin/agent-team.js';
 import { InMemoryHookEventBus } from "../hooks/event-bus.js";
 import { RunPermissionEngine } from "../permissions/engine.js";
@@ -121,7 +122,7 @@ async function assembleAppDependencies(
     skills: skillCatalog,
     webSearch: webSearchService,
     mcp: mcpManager,
-  });
+  }, new AgentProfileCatalog(config.homeDirectory));
   toolRegistry.registerProvider(new AgentTeamToolProvider(agentCoordinator));
 
   return {

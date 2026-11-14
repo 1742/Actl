@@ -1,4 +1,5 @@
 import type { AgentResponseDto } from "./responses.js";
+import type { AgentProfileIdentity } from "./profiles.js";
 import type { ProjectWorkspace } from "./workspace.js";
 
 export interface ProjectSettings {
@@ -21,6 +22,7 @@ export interface AgentSession {
   id: string;
   parentSessionId?: string;
   rootSessionId?: string;
+  profile?: AgentProfileIdentity;
   projectId: string | null;
   title?: string;
   created_at: string;

@@ -52,6 +52,9 @@ async function stop(id: string) {
       >
         {{ subagent.title || subagent.id }}
       </h2>
+      <span v-if="subagent.profile" class="max-w-[40%] truncate text-xs text-gray-500" :title="subagent.profile.name">
+        {{ subagent.profile.name }}
+      </span>
       <button
         v-if="store.sessionIsActive(selectedKey)"
         class="h-8 shrink-0 rounded-full border border-gray-200 bg-white px-3 text-xs shadow-sm transition-colors hover:bg-gray-100"
@@ -74,7 +77,10 @@ async function stop(id: string) {
       <ul v-else class="space-y-1">
         <li v-for="{ session, response } in members" :key="session.id" class="flex min-w-0 items-center rounded-lg hover:bg-gray-100">
           <button class="flex min-w-0 flex-1 items-center gap-2 px-2 py-2 text-left text-sm" type="button" @click="$emit('openSubagent', session)">
-            <span class="min-w-0 flex-1 truncate">{{ session.title || session.id }}</span>
+            <span class="min-w-0 flex-1">
+              <span class="block truncate">{{ session.title || session.id }}</span>
+              <span v-if="session.profile" class="block truncate text-xs text-gray-500">{{ session.profile.name }}</span>
+            </span>
             <span v-if="store.runtimeBySessionId[key(session.id)]?.status === 'waiting_permission'" class="shrink-0 rounded bg-amber-100 px-1.5 text-xs text-amber-800">
               {{ $t('agents.approval') }}
             </span>

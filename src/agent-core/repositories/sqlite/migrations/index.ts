@@ -4,6 +4,7 @@ import { migrateAgentCoordination } from "./v20-to-v21.js";
 import { migrateAgentMessageAuthor } from "./v21-to-v22.js";
 import { migrateAgentMessageAttribution } from "./v22-to-v23.js";
 import { removeAgentMail } from "./v23-to-v24.js";
+import { migrateAgentTasks } from "./v24-to-v25.js";
 
 export interface SqliteMigration {
   from: number;
@@ -189,6 +190,7 @@ export const SQLITE_MIGRATIONS: readonly SqliteMigration[] = [
   { from: 21, to: 22, up: migrateAgentMessageAuthor },
   { from: 22, to: 23, up: migrateAgentMessageAttribution },
   { from: 23, to: 24, up: removeAgentMail },
+  { from: 24, to: 25, up: migrateAgentTasks },
 ];
 
 export function runSqliteMigrations(

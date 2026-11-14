@@ -8,8 +8,13 @@ export default {
     waitTargetCount: '{count} 个目标', waitTimedOut: '等待超时',
     clarificationRequested: '收到澄清请求', messageReceived: '已收到消息',
     team: '协作与计划', readOnly: '子 Agent 只读', back: '返回主会话', stopAll: '停止全部',
+    tasks: '任务', taskOwner: '负责人', taskDependencies: '依赖', acceptanceCriteria: '验收标准',
+    taskStatus: { ready: '可认领', blocked: '等待依赖', inProgress: '已分配', completed: '已验收' },
+    listProfiles: '查看代理角色', createTask: '创建任务', listTasks: '查看任务', delegateTask: '委派任务',
+    claimTask: '认领任务', releaseTask: '释放任务', completeTask: '验收任务',
+    profileCount: '{count} 个角色', taskCount: '{count} 项任务',
     running: '运行中', approval: '等待审批', stopping: '正在停止', failed: '未完成', cancelled: '已停止', done: '已结束',
-    followup: '追加指令', followupHint: '向这个子 Agent 追加说明或新任务', send: '发送', stop: '停止',
+    followup: '追加指令', followupHint: '为当前任务追加说明', send: '发送', stop: '停止',
   },
   settings: {
     sections: {

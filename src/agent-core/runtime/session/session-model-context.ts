@@ -209,7 +209,10 @@ export function instructionInput(message: AgentInboxMessage): TranscriptMessage 
     relationship: message.relationship ?? "parent", purpose: message.purpose ?? "message",
     ...(message.model ? { model: message.model } : {}),
     ...(message.replyTo ? { replyTo: message.replyTo } : {}),
-  } : message.author === "user" ? { kind: "user" as const } : undefined;
+    ...(message.taskId && message.assignmentId ? { taskId: message.taskId, assignmentId: message.assignmentId } : {}),
+  } : message.author === "user" ? (message.taskId && message.assignmentId
+    ? { kind: "user" as const, taskId: message.taskId, assignmentId: message.assignmentId }
+    : { kind: "user" as const }) : undefined;
   return {
     id: message.id, type: "message", role: "user",
     ...(source ? { source } : {}),

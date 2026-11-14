@@ -1,8 +1,9 @@
 import type { DatabaseSync } from "node:sqlite";
 import { nowIso } from "../../utils.js";
+import { AGENT_TASKS_SQL } from "./migrations/v24-to-v25.js";
 
 export const SQLITE_SCHEMA_GENERATION = "multi-user-multi-model";
-export const SQLITE_SCHEMA_VERSION = 24;
+export const SQLITE_SCHEMA_VERSION = 25;
 
 // New databases start at the current version. Historical upgrades live in migrations/.
 const METADATA_SQL = `
@@ -27,7 +28,8 @@ CREATE TABLE sessions(
   id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
   title TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
   parent_session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
-  root_session_id TEXT, origin_run_id TEXT, origin_call_id TEXT
+  root_session_id TEXT, origin_run_id TEXT, origin_call_id TEXT,
+  agent_profile_json TEXT CHECK(agent_profile_json IS NULL OR json_valid(agent_profile_json))
 ) STRICT;
 CREATE INDEX sessions_root_idx ON sessions(root_session_id);
 CREATE UNIQUE INDEX sessions_delegation_idx ON sessions(origin_run_id, origin_call_id);
@@ -119,7 +121,8 @@ CREATE TABLE agent_messages(id TEXT PRIMARY KEY, from_session_id TEXT NOT NULL R
  wake INTEGER NOT NULL, consumed INTEGER NOT NULL DEFAULT 0, dedupe_key TEXT NOT NULL UNIQUE,
  author TEXT CHECK(author IN ('user', 'model')), model TEXT,
  relationship TEXT CHECK(relationship IN ('parent', 'child')),
- purpose TEXT CHECK(purpose IN ('task', 'message', 'progress', 'clarification')), reply_to TEXT) STRICT;
+ purpose TEXT CHECK(purpose IN ('task', 'message', 'progress', 'clarification')), reply_to TEXT,
+ task_id TEXT, assignment_id TEXT) STRICT;
 CREATE INDEX agent_messages_inbox_idx ON agent_messages(to_session_id, consumed);
 `;
 
@@ -136,6 +139,7 @@ const INITIAL_SCHEMA_SQL = [
   PROMPT_SETTINGS_SQL,
   MCP_CONFIG_SQL,
   AGENT_COORDINATION_SQL,
+  AGENT_TASKS_SQL,
 ].join("\n");
 
 export function initializeWorkspaceSchema(database: DatabaseSync): void {

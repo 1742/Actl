@@ -1,5 +1,5 @@
 import { EventEmitter, once } from 'node:events';
-import type { AgentInboxMessage, AgentMessagePurpose, AgentTreeEvent, AgentTreeSnapshot, PlanItem } from '../../../shared/agent/coordination.js';
+import type { AgentInboxMessage, AgentMessagePurpose, AgentTask, AgentTaskInput, AgentTreeEvent, AgentTreeSnapshot, PlanItem } from '../../../shared/agent/coordination.js';
 import type { AgentCoordinationRepository } from '../../repositories/agent-coordination-repository.js';
 import type { ReasoningEffort } from '../../model/catalog-types.js';
 import type { AgentStreamEvent } from '../../../shared/agent/responses.js';
@@ -15,11 +15,13 @@ import { SessionRuntime, mapSessionConcurrencyError, type AgentRunOptions, type 
 import type { Session, WorkspaceStore } from '../workspace-store.js';
 import type { ProcessSupervisor } from '../process/process-supervisor.js';
 import { AgentEventHub } from './agent-event-hub.js';
+import { AgentProfileCatalog, DEFAULT_AGENT_PROFILE } from './agent-profile-catalog.js';
 
 const MAX_ACTIVE_CHILDREN = 3;
 const MAX_CHILDREN = 12;
 
 type AgentWaitTarget = { sessionId: string; runId: string } | { sessionId: string; messageId: string };
+type DelegationTarget = { profileId: string } | { sessionId: string };
 
 interface WaitAgentsOptions {
   targets: AgentWaitTarget[];
@@ -61,6 +63,7 @@ export class AgentCoordinator {
     private readonly state: AgentCoordinationRepository,
     private readonly processes: ProcessSupervisor,
     private readonly services: SessionRuntimeServices,
+    private readonly profiles = new AgentProfileCatalog(),
   ) {
     this.events = new AgentEventHub(services.files);
     this.admission = new ExecutionAdmission(workspace);
@@ -69,6 +72,7 @@ export class AgentCoordinator {
   async start(session: Session, prepareInput: PrepareRunInput, options: AgentRunOptions, listener?: (event: AgentStreamEvent) => void): Promise<AgentRunRecord> {
     const { running } = await this.serialized(session.rootSessionId ?? session.id, () => {
       this.assertSessionExists(session);
+      if (session.parentSessionId) throw new Error('Child work starts through delegate_task or a follow-up to its assigned task.');
       this.allowUserTurn(session);
       return { running: this.begin(session, prepareInput, options, this.eventHandler(session, listener)) };
     });
@@ -87,6 +91,7 @@ export class AgentCoordinator {
   async compact(session: Session, model: string, reasoningEffort?: ReasoningEffort): Promise<boolean> {
     const { running } = await this.serialized(session.rootSessionId ?? session.id, () => {
       this.assertSessionExists(session);
+      if (session.parentSessionId) throw new Error('Child context is managed by its delegated runs.');
       this.assertAvailableForUser(session);
       return { running: this.track(this.runtime(session).compact(model, reasoningEffort)) };
     });
@@ -163,7 +168,7 @@ export class AgentCoordinator {
         sequenceNumber: run.nextSequenceNumber - 1,
       } : {}) });
     }
-    return { rootSessionId, members, plan: this.state.plan(rootSessionId) };
+    return { rootSessionId, members, plan: this.state.plan(rootSessionId), tasks: this.state.tasks(rootSessionId) };
   }
 
   async list(session: Session) {
@@ -173,54 +178,123 @@ export class AgentCoordinator {
       const child = await this.workspace.getSession(member.id, session.ownerId);
       if (!child) continue;
       const run = child.runs.at(-1);
-      agents.push({ sessionId: child.id, title: child.title, status: run?.status ?? 'idle', ...(run ? { runId: run.id } : {}) });
+      const profile = child.profile ?? DEFAULT_AGENT_PROFILE;
+      agents.push({
+        sessionId: child.id, title: child.title, status: run?.status ?? 'idle',
+        profile: { id: profile.id, name: profile.name }, ...(run ? { runId: run.id } : {})
+      });
     }
     return { agents, plan: this.state.plan(session.rootSessionId ?? session.id) };
   }
 
-  async spawn(parent: Session, run: AgentRunRecord, callId: string, title: string, prompt: string) {
-    if (parent.parentSessionId) throw new Error('Nested delegation is disabled. Send findings to the parent agent.');
-    const admitted = await this.serialized(parent.id, async () => {
-      this.assertSessionExists(parent);
+  async listProfiles(session: Session) {
+    this.assertRoot(session);
+    return (await this.profiles.list()).map(({ id, name, description }) => ({ id, name, description }));
+  }
+
+  tasks(session: Session): AgentTask[] {
+    this.assertSessionExists(session);
+    return this.state.tasks(session.rootSessionId ?? session.id);
+  }
+
+  createTask(session: Session, run: AgentRunRecord, callId: string, draft: AgentTaskInput) {
+    this.assertRoot(session);
+    return this.changeTask(session, () => this.state.createTask(session.id, draft, `create:${run.id}:${callId}`));
+  }
+
+  claimTask(session: Session, run: AgentRunRecord, callId: string, taskId: string, revision: number) {
+    const root = session.rootSessionId ?? session.id;
+    return this.changeTask(session, () => this.state.claimTask(root, taskId, revision, session.id,
+      createRandomId('assignment'), run.id, `claim:${run.id}:${callId}`));
+  }
+
+  async delegateTask(parent: Session, run: AgentRunRecord, callId: string, taskId: string, revision: number, target: DelegationTarget) {
+    this.assertRoot(parent);
+    const { receipt, queued, started } = await this.serialized(parent.id, async () => {
       this.assertOpen(parent);
-      const children = this.workspace.descendants(parent.id).filter((item) => item.id !== parent.id);
-      const match = children.find((item) => item.originRunId === run.id && item.originCallId === callId);
-      const existing = match && await this.workspace.getSession(match.id, parent.ownerId);
-      if (existing) {
-        const first = existing.runs[0];
-        if (first) return { started: Promise.resolve(first) };
-        const started = this.childStarts.get(existing.id);
-        if (started) return { started };
-      } else if (children.length >= MAX_CHILDREN) {
-        throw new Error(`At most ${MAX_CHILDREN} child sessions per chat. Continue an existing child instead.`);
+      const key = `delegate:${run.id}:${callId}`;
+      const receipt = this.state.delegationReceipt(key);
+      if (receipt) {
+        if (receipt.taskId !== taskId) throw new Error('This call already delegated a different task.');
+        const child = await this.workspace.getSession(receipt.sessionId, parent.ownerId);
+        const delivered = child && instructionRun(child, receipt.messageId);
+        const message = this.state.getMessage(receipt.messageId, parent.id, receipt.sessionId);
+        const current = this.state.task(parent.id, taskId);
+        const queued = !!message?.wake && current?.status === 'in_progress' && current.assignmentId === receipt.assignmentId;
+        if (queued && !delivered) this.scheduleWake(receipt.sessionId);
+        return { receipt, queued, started: delivered ? Promise.resolve(delivered) : queued ? this.childStarts.get(receipt.sessionId) : undefined };
       }
+
+      const task = this.requireTask(parent.id, taskId, revision);
+      if (!task.ready) throw new Error('Task must be ready and unassigned before delegation.');
       this.assertCapacity(parent);
-      const child = existing ?? await this.workspace.createSession(parent.ownerId, {
-        ...(parent.projectId ? { projectId: parent.projectId } : {}), title,
-        parentSessionId: parent.id, originRunId: run.id, originCallId: callId,
-      });
-      const taskKey = `task:${run.id}:${callId}`;
-      let task = this.state.messageFromToolCall(taskKey);
-      if (!task) {
-        task = {
-          id: createRandomId('agent_message'), fromSessionId: parent.id, toSessionId: child.id, sourceRunId: run.id,
-          kind: 'message', text: prompt, wake: false, author: 'model', model: run.modelSnapshot.displayName,
-          relationship: 'parent', purpose: 'task',
-        };
-        this.state.enqueue(task, taskKey);
-      }
-      const input = instructionInput(task);
-      this.changed(parent.id);
+      const child = await this.delegationChild(parent, run, callId, task, target);
+      this.assertOpen(parent);
+      this.assertAvailableForUser(child);
+      const runtime = this.runtimes.get(child.id);
+      if (runtime?.preparing || runtime?.executing || child.runs.some((item) => !isTerminalRun(item)) ||
+        this.state.activeTask(parent.id, child.id)) throw new Error('Delegate to a child with no active task or run.');
+
+      const assignmentId = createRandomId('assignment');
+      const message: AgentInboxMessage = {
+        id: createRandomId('agent_message'), fromSessionId: parent.id, toSessionId: child.id, sourceRunId: run.id,
+        kind: 'message', wake: true, author: 'model', model: run.modelSnapshot.displayName,
+        relationship: 'parent', purpose: 'task', taskId, assignmentId,
+        text: `${task.title}\n\n${task.instructions}\n\nAcceptance criteria:\n${task.acceptanceCriteria}`,
+      };
+      this.state.delegateTask(parent.id, taskId, revision, assignmentId, message, key);
+      this.stoppedSessions.delete(child.id);
       const started = new Promise<AgentRunRecord>((resolve, reject) => {
-        void this.startWithInput(child, async () => [input], run, resolve).then(resolve, reject);
+        void this.startWithInput(child, async () => [instructionInput(message)], run, resolve).then(resolve, reject);
       });
       this.childStarts.set(child.id, started);
       const clearStart = () => { this.childStarts.delete(child.id); };
       void started.then(clearStart, clearStart);
-      return { started };
+      this.changed(parent.id);
+      return { receipt: { taskId, assignmentId, sessionId: child.id, messageId: message.id }, queued: true, started };
     });
-    const runStarted = await admitted.started;
-    return { sessionId: runStarted.sessionId, runId: runStarted.id, status: runStarted.status };
+    try {
+      const childRun = await started;
+      return { ...receipt, ...(childRun ? { runId: childRun.id, status: childRun.status } : { status: queued ? 'queued' : 'cancelled' }) };
+    } catch (error) {
+      return { ...receipt, status: 'queued', error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  releaseTask(session: Session, taskId: string, revision: number) {
+    const root = session.rootSessionId ?? session.id;
+    return this.changeTask(session, async () => {
+      const task = this.requireTask(root, taskId, revision);
+      if (session.parentSessionId && task.ownerSessionId !== session.id) throw new Error('Only the task owner or root can release it.');
+      if (task.ownerSessionId && task.ownerSessionId !== session.id) {
+        const child = await this.workspace.getSession(task.ownerSessionId, session.ownerId);
+        const runtime = this.runtimes.get(task.ownerSessionId);
+        if (runtime?.preparing || runtime?.executing || child?.runs.some((run) => !isTerminalRun(run))) {
+          throw new Error('Stop the active child or wait for it before releasing its task.');
+        }
+      }
+      return this.state.releaseTask(root, taskId, revision);
+    });
+  }
+
+  completeTask(session: Session, callerRun: AgentRunRecord, taskId: string, revision: number, resultRunId: string) {
+    this.assertRoot(session);
+    return this.changeTask(session, async () => {
+      const task = this.requireTask(session.id, taskId, revision);
+      const owner = task.ownerSessionId && await this.workspace.getSession(task.ownerSessionId, session.ownerId);
+      const run = owner && owner.runs.find((item) => item.id === resultRunId);
+      const isRootWork = owner === session && run === callerRun;
+      if (!run || (!isRootWork && run.status !== 'completed')) throw new Error('A successful run from the current task assignment is required.');
+      if (owner !== session && task.ownerSessionId) {
+        const runtime = this.runtimes.get(task.ownerSessionId);
+        if (runtime?.executing || runtime?.preparing) throw new Error('Wait for the assigned child run to settle before accepting the task.');
+      }
+      if (!task.assignmentId || (!isRootWork && run.id !== task.assignmentRunId && ![...run.input, ...run.timeline].some((item) =>
+        item.type === 'message' && item.source && 'assignmentId' in item.source && item.source.assignmentId === task.assignmentId))) {
+        throw new Error('Run does not belong to the current task assignment.');
+      }
+      return this.state.completeTask(session.id, taskId, revision, resultRunId);
+    });
   }
 
   async send(sender: Session, sourceRun: AgentRunRecord, targetId: string, text: string, callId: string, options: SendAgentMessageOptions = {}) {
@@ -238,9 +312,15 @@ export class AgentCoordinator {
         if (existing.wake) this.scheduleWake(target.id);
         return { sessionId: target.id, messageId: existing.id, accepted: true };
       }
+      const task = this.state.activeTask(sender.rootSessionId ?? sender.id, downlink ? target.id : sender.id);
+      if (downlink && !task) throw new Error('The child needs an assigned task before receiving follow-ups.');
       // Verify whether the message being replied to exists; for the message being replied to, the sender and recipient are the reverse of those in the reply message.
-      if (options.replyTo && !this.state.getMessage(options.replyTo, target.id, sender.id)) {
-        throw new Error('replyTo must identify a message received from the target agent.');
+      if (options.replyTo) {
+        const question = this.state.getMessage(options.replyTo, target.id, sender.id);
+        if (!question) throw new Error('replyTo must identify a message received from the target agent.');
+        if (question.assignmentId && question.assignmentId !== task?.assignmentId) {
+          throw new Error('The message belongs to a previous task assignment.');
+        }
       }
       if (options.userFollowUp) this.allowUserTurn(sender);
       this.assertOpen(sender);
@@ -250,6 +330,7 @@ export class AgentCoordinator {
         id: createRandomId('agent_message'), fromSessionId: sender.id, toSessionId: target.id,
         sourceRunId: sourceRun.id, kind: 'message', text, wake: downlink,
         author: options.userFollowUp ? 'user' : 'model',
+        ...(task?.assignmentId ? { taskId: task.id, assignmentId: task.assignmentId } : {}),
         ...(options.userFollowUp ? {} : {
           model: sourceRun.modelSnapshot.displayName,
           relationship: downlink ? 'parent' : 'child',
@@ -300,7 +381,9 @@ export class AgentCoordinator {
         const active = child.runs.at(-1);
         const questionRun = run ?? (active?.status === 'in_progress' ? active : undefined);
         if (questionRun?.status === 'in_progress' || questionRun?.status === 'completed') {
+          const assignmentId = this.state.activeTask(parent.id, sessionId)?.assignmentId;
           for (const question of this.state.unansweredClarifications(sessionId, parent.id, questionRun.id)) {
+            if (question.assignmentId && question.assignmentId !== assignmentId) continue;
             needsInput.push({ sessionId, runId: questionRun.id, messageId: question.id });
           }
         }
@@ -336,11 +419,19 @@ export class AgentCoordinator {
   }, signal?: AbortSignal) {
     signal?.throwIfAborted();
     const peer = await this.related(session, sessionId);
-    if (replyTo && !this.state.getMessage(replyTo, session.id, peer.id)) {
+    const question = replyTo && this.state.getMessage(replyTo, session.id, peer.id);
+    if (replyTo && !question) {
       throw new Error('replyTo must identify a message you sent to the target agent.');
     }
     return this.waitForChange<{ messageId?: string }>(session, timeoutMs, signal, () => {
       this.assertSessionExists(peer);
+      if (question && question.assignmentId) {
+        const rootId = session.rootSessionId ?? session.id;
+        const childId = session.parentSessionId ? session.id : peer.id;
+        if (this.state.activeTask(rootId, childId)?.assignmentId !== question.assignmentId) {
+          throw new Error('The message belongs to a previous task assignment.');
+        }
+      }
       const message = replyTo ? this.state.findReply(replyTo, peer.id, session.id) : this.state.pending(session.id)
         .find((item) => item.fromSessionId === peer.id && !instructionRun(session, item.id));
       return { ready: !!message, value: message ? { messageId: message.id } : {} };
@@ -383,6 +474,49 @@ export class AgentCoordinator {
     const target = await this.related(caller, targetId);
     if (target.parentSessionId !== caller.id) throw new Error('Only a parent can interrupt its child.');
     await this.stopTree(target);
+  }
+
+  private assertRoot(session: Session): void {
+    this.assertSessionExists(session);
+    if (session.parentSessionId) throw new Error('Only the root agent can perform this task operation.');
+  }
+
+  private changeTask<T>(session: Session, action: () => T | Promise<T>): Promise<T> {
+    const root = session.rootSessionId ?? session.id;
+    return this.serialized(root, async () => {
+      this.assertSessionExists(session);
+      this.assertOpen(session);
+      const result = await action();
+      this.changed(root);
+      return result;
+    });
+  }
+
+  private requireTask(root: string, taskId: string, revision: number): AgentTask {
+    const task = this.state.task(root, taskId);
+    if (!task) throw new Error('Task not found in this conversation.');
+    if (task.revision !== revision) throw new Error(`Task revision changed to ${task.revision}. Read the task before updating it.`);
+    return task;
+  }
+
+  private async delegationChild(parent: Session, run: AgentRunRecord, callId: string, task: AgentTask, target: DelegationTarget): Promise<Session> {
+    if ('sessionId' in target) {
+      const child = await this.related(parent, target.sessionId);
+      if (child.parentSessionId !== parent.id) throw new Error('Delegate to a direct child.');
+      return child;
+    }
+    const children = this.workspace.descendants(parent.id).filter((item) => item.parentSessionId === parent.id);
+    const existing = children.find((item) => item.originRunId === run.id && item.originCallId === callId);
+    if (existing) return (await this.workspace.getSession(existing.id, parent.ownerId)) ?? existing;
+    if (children.length >= MAX_CHILDREN) throw new Error(`At most ${MAX_CHILDREN} child sessions per chat. Delegate to an existing child.`);
+    const profile = await this.profiles.resolve(target.profileId);
+    const { model, reasoningEffort } = this.childModel(run, profile);
+    await this.services.models.resolveSnapshot(parent.ownerId, model, reasoningEffort);
+    this.assertOpen(parent);
+    return this.workspace.createSession(parent.ownerId, {
+      ...(parent.projectId ? { projectId: parent.projectId } : {}), title: task.title, profile,
+      parentSessionId: parent.id, originRunId: run.id, originCallId: callId,
+    });
   }
 
   /** User cancellation is a tree boundary, including queued automatic wakes. */
@@ -473,10 +607,15 @@ export class AgentCoordinator {
 
   private startWithInput(session: Session, prepareInput: PrepareRunInput, sourceRun: AgentRunRecord, onCreated?: (run: AgentRunRecord) => void): Promise<AgentRunRecord> {
     return this.begin(session, prepareInput, {
-      model: sourceRun.modelSnapshot.targetId,
-      ...(sourceRun.modelSnapshot.reasoningEffort ? { reasoningEffort: sourceRun.modelSnapshot.reasoningEffort } : {}),
+      ...this.childModel(sourceRun, session.profile),
       permissionMode: sourceRun.permissionSnapshot.permissionMode,
     }, this.eventHandler(session, undefined, onCreated));
+  }
+
+  private childModel(sourceRun: AgentRunRecord, profile: Session['profile']): Pick<AgentRunOptions, 'model' | 'reasoningEffort'> {
+    const model = profile?.modelTargetId ?? sourceRun.modelSnapshot.targetId;
+    const effort = profile?.reasoningEffort ?? (model === sourceRun.modelSnapshot.targetId ? sourceRun.modelSnapshot.reasoningEffort : undefined);
+    return { model, ...(effort ? { reasoningEffort: effort } : {}) };
   }
 
   private trackRun(session: Session, operation: Promise<AgentRunRecord>): Promise<AgentRunRecord> {
@@ -518,6 +657,7 @@ export class AgentCoordinator {
       if (!this.workspace.hasSession(id, session.ownerId)) return;
       if (this.closing || this.stoppingTrees.has(root) || this.stoppedSessions.has(id) || this.runtimes.get(id)?.preparing) return;
       const pending = this.state.pending(id);
+      if (!this.state.activeTask(root, id)) return;
       if (!pending.some((message) => message.wake)) return;
       if (session.runs.some((run) => !isTerminalRun(run))) return;
       let previous = session.runs.at(-1);
