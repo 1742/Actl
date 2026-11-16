@@ -1,3 +1,4 @@
+import { agentMailPurposes } from "../../../shared/agent/coordination.js";
 import { z } from "zod";
 import { modelExecutionSnapshotSchema } from "../../model/catalog-types.js";
 import { runPermissionSnapshotSchema } from "../../permissions/engine.js";
@@ -31,11 +32,9 @@ const messageSchema = z.object({
     z.object({ kind: z.enum(["user", "runtime"]) }).strict(),
     z.object({ kind: z.literal("model"), sessionId: z.string(), runId: z.string(), model: z.string().optional() }).strict(),
     z.object({
-      kind: z.literal("agent"), sessionId: z.string(), runId: z.string(), model: z.string().optional(),
-      relationship: z.enum(["parent", "child"]), purpose: z.enum(["task", "message", "progress", "clarification"]),
-      replyTo: z.string().optional(), taskId: z.string().optional(), assignmentId: z.string().optional(),
+      kind: z.literal("agent"), sessionId: z.string(), relationship: z.enum(["parent", "child", "peer"]),
+      purpose: z.enum(agentMailPurposes), mailNumber: z.number().int(), subject: z.string(), replyTo: z.number().int().optional(),
     }).strict(),
-    z.object({ kind: z.literal("user"), taskId: z.string(), assignmentId: z.string() }).strict(),
   ]).optional(),
   content: z.array(contentPartSchema),
 }).strict();

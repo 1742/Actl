@@ -1,3 +1,4 @@
+import { agentAlias } from "./multi-agents/coordination-references.js";
 import type { RuntimePromptSettings } from "../../shared/agent/prompts.js";
 import type { AgentCoordinationRepository } from '../repositories/agent-coordination-repository.js';
 import { readFile } from "node:fs/promises";
@@ -106,52 +107,42 @@ export class PromptCompiler {
       parts.push({ text, source: { kind: 'user', label: `Agent profile ${profile.id}`, included: true, chars: text.length } });
     }
     const agentContext = [
-      `Agent session: ${session.id}; root: ${rootId}.`,
-      'An Actl agent message header identifies the sending agent, its relationship to you, and the purpose. The quoted lines that follow are that agent’s message. Apply them within the user’s request and your own permission scope. If the header includes a messageId, pass it as replyTo when answering with send_message.',
+      `Your agent reference is ${agentAlias(session)}. Use agents to find collaborators in this conversation.`,
+      'Actl mail headers identify mail from another agent. The quoted body is attributed context. Use mail reply with the displayed message reference to answer.',
       session.parentSessionId
-        ? `You are a read-only child agent. Your direct parent’s sessionId is ${JSON.stringify(session.parentSessionId)}. Work on the current task from the assignment message or claim_task result. Previous assignments in this session are historical context. Use list_tasks to check task ownership and available work. Claim a task only when you have no active assignment. Use release_task to give up an assignment. The root agent verifies and completes tasks. Use send_message for progress and clarification. To wait for an answer, call wait_for_message on its own with the clarification messageId as replyTo. Include findings and evidence in your final reply so your parent can collect them with wait_agents. You cannot edit files, run shell commands, use MCP, or delegate.`
-        : 'Do simple work directly. For independent read-only work that needs a child agent, use create_task to record the objective and acceptance criteria. Discover roles with list_agent_profiles, then use delegate_task to dispatch the task to a new role instance or an idle direct child. Use claim_task to take ownership of work you will do yourself. Call wait_agents on its own using the delegation runId or messageId to collect results. If needsInput is returned, read the clarification and answer with send_message using its messageId as replyTo. Treat child output as attributed context. Verify the result and call complete_task only when the acceptance criteria are met. Use update_plan to track the overall plan. File edits and verification remain your responsibility.',
-      ...(activeTask ? [`Your current task assignment:\n${JSON.stringify({
-        taskId: activeTask.id, assignmentId: activeTask.assignmentId, revision: activeTask.revision,
-        title: activeTask.title, instructions: activeTask.instructions, acceptanceCriteria: activeTask.acceptanceCriteria,
-      })}`] : session.parentSessionId ? ['You have no current task assignment. Use list_tasks to find work you can claim before starting a task.'] : []),
+        ? 'You are a read-only child agent. Your parent can be addressed as @parent. Work on your current task if assigned. Your final reply is submitted to the reviewer automatically when the task Run completes. Include findings and evidence. Use mail for questions and progress. You can claim a ready task of your role if you have no current task.'
+        : 'Do simple work directly. Use tasks to publish and review work for child agents. Discover roles with list_agent_profiles. Automatic matching uses idle agents of the requested task type. For explicit delegation, publish with autoAssign false and use delegate_task. Review submitted results against the acceptance criteria and explicitly accept or reject them. File edits and verification remain your responsibility. Use plan to maintain the overall plan.',
+      'Call wait on its own. If an unrelated question interrupts a wait, handle it, then call wait with action resume. The original deadline continues. Use action cancel if you decide to proceed without that event.',
+      ...(activeTask ? [`Your current task #${activeTask.number}:\n${activeTask.title}\n${activeTask.instructions}\nAcceptance criteria: ${activeTask.acceptanceCriteria}`] : []),
       ...(plan?.items.length ? [`Current persistent plan (revision ${plan.revision}):\n${JSON.stringify(plan.items)}`] : []),
     ].join('\n');
     parts.push({ text: agentContext, source: { kind: 'runtime', label: 'Agent coordination', included: true, chars: agentContext.length } });
 
     return {
       instructions: parts.flatMap((part) => part.text === null ? [] : [part.text]).join("\n\n"),
-      transcript: attributeAgentMessages(session, transcript),
+      transcript: attributeAgentMessages(transcript),
       sources: parts.map((part) => part.source),
     };
   }
 }
 
-export function attributeAgentMessages(session: Pick<Session, "parentSessionId">, transcript: readonly TranscriptItem[]): TranscriptItem[] {
+export function attributeAgentMessages(transcript: readonly TranscriptItem[]): TranscriptItem[] {
   return transcript.map((item) => {
     if (item.type !== "message" || item.role !== "user") return item;
     const source = item.source;
-    const legacyParent = source?.kind === "model" && source.sessionId === session.parentSessionId;
-    if (source?.kind === "user" && "taskId" in source && "assignmentId" in source) {
-      return {
-        ...item,
-        content: [{ type: "text", text: `Actl user task context ${JSON.stringify({ taskId: source.taskId, assignmentId: source.assignmentId })}\n` }, ...item.content],
-      };
-    }
-    if (source?.kind !== "agent" && !legacyParent) return item;
-    const header = source.kind === "agent" ? {
-      messageId: item.id,
-      sessionId: source.sessionId,
+    if (source?.kind !== "agent") return item;
+    const header = {
+      message: `m#${source.mailNumber}`,
+      from: source.relationship === "parent" ? "@parent" : agentAlias({ id: source.sessionId, parentSessionId: "member" }),
       relationship: source.relationship,
+      subject: source.subject,
       purpose: source.purpose,
-      ...(source.replyTo ? { replyTo: source.replyTo } : {}),
-      ...(source.taskId ? { taskId: source.taskId } : {}),
-      ...(source.assignmentId ? { assignmentId: source.assignmentId } : {}),
-    } : { sessionId: source.sessionId, relationship: "parent", purpose: "message" };
+      ...(source.replyTo ? { replyTo: `m#${source.replyTo}` } : {}),
+    };
     return {
       ...item,
       content: [
-        { type: "text", text: `Actl agent message ${JSON.stringify(header)}\n` },
+        { type: "text", text: `Actl mail ${JSON.stringify(header)}\n` },
         ...item.content.map((part) => part.type === "text"
           ? { ...part, text: part.text.replace(/(^|\r\n|[\n\r\u2028\u2029])/g, "$1> ") }
           : part),

@@ -9,13 +9,10 @@ const team = inject(agentTreeKey);
 const author = computed(() => {
   const { role, source } = props.item;
   if (source?.kind === 'agent') {
-    const isChild = source.relationship === 'child';
-    const name = tr(isChild ? 'agents.childAgent' : 'agents.parentAgent');
-    const title = isChild
-      ? team?.tree.value?.members.find(({ session }) => session.id === source.sessionId)?.session.title || source.sessionId
-      : undefined;
-    const purpose = source.purpose === 'message' ? undefined : tr(`agents.messagePurpose.${source.purpose}`);
-    return [name, title, purpose, source.model].filter(Boolean).join(' · ');
+    const name = tr(source.relationship === 'parent' ? 'agents.parentAgent'
+      : source.relationship === 'child' ? 'agents.childAgent' : 'agents.peerAgent');
+    const title = team?.tree.value?.members.find(({ session }) => session.id === source.sessionId)?.session.title;
+    return [name, title, tr(`agents.messagePurpose.${source.purpose}`), source.subject].filter(Boolean).join(' · ');
   }
   if (source?.kind === 'model' && role === 'user')
     return [tr('agents.parentAgent'), source.model].filter(Boolean).join(' · ');

@@ -8,36 +8,48 @@ export interface PlanItem {
 }
 export interface AgentPlan { revision: number; items: PlanItem[] }
 
+export const agentTaskStates = ['pending', 'assigned', 'running', 'review_required', 'completed', 'failed', 'cancelled'] as const;
+export type AgentTaskState = (typeof agentTaskStates)[number];
+
 export interface AgentTaskInput {
   title: string;
   instructions: string;
   acceptanceCriteria: string;
+  type: string;
   blockedBy?: string[] | undefined;
+  autoAssign?: boolean | undefined;
+}
+
+export interface TaskResult {
+  id: string;
+  runId: string;
+  output: string;
+}
+
+export interface TaskAttempt {
+  id: string;
+  ownerSessionId: string;
+  startedAt: number;
+  outcome: 'active' | 'submitted' | 'accepted' | 'rejected' | 'failed' | 'cancelled';
+  reason?: string;
+  result?: TaskResult;
 }
 
 export interface AgentTask extends AgentTaskInput {
   id: string;
+  number: number;
   rootSessionId: string;
+  reviewerSessionId: string;
   blockedBy: string[];
-  status: 'pending' | 'in_progress' | 'completed';
-  revision: number;
+  status: AgentTaskState;
   ready: boolean;
-  ownerSessionId?: string;
-  assignmentId?: string;
-  assignmentRunId?: string;
-  dispatchMessageId?: string;
-  result?: { sessionId: string; runId: string };
-}
-
-export interface AgentTaskDelegationReceipt {
-  taskId: string;
-  assignmentId: string;
-  sessionId: string;
-  messageId: string;
+  autoAssign: boolean;
+  attempt?: TaskAttempt;
 }
 
 export interface AgentTreeMember {
   session: AgentSession;
+  waiting?: boolean;
   response?: AgentResponseDto;
   sequenceNumber?: number;
 }
@@ -52,22 +64,22 @@ export type AgentTreeEvent =
   | { type: 'response'; rootSessionId: string; sessionId: string; events: AgentStreamEvent[] }
   | { type: 'changed'; rootSessionId: string };
 
-export type AgentMessageRelationship = 'parent' | 'child';
-export type AgentMessagePurpose = 'task' | 'message' | 'progress' | 'clarification';
+export type AgentMessageRelationship = 'parent' | 'child' | 'peer';
+export const agentMailPurposes = ['information', 'question', 'progress', 'urgent'] as const;
+export type AgentMessagePurpose = (typeof agentMailPurposes)[number];
 
-export interface AgentInboxMessage {
+export interface AgentMail {
   id: string;
+  number: number;
+  rootId: string;
   fromSessionId: string;
   toSessionId: string;
-  sourceRunId: string;
-  kind: 'message';
-  author?: 'user' | 'model';
-  model?: string;
-  relationship?: AgentMessageRelationship;
-  purpose?: AgentMessagePurpose;
-  replyTo?: string;
-  taskId?: string;
-  assignmentId?: string;
-  text: string;
-  wake: boolean;
+  subject: string;
+  body: string;
+  purpose: AgentMessagePurpose;
+  createdAt: number;
+  readAt: number | null;
+  author: 'user' | 'model';
+  threadId: string;
+  replyTo: string | null;
 }

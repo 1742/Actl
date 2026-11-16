@@ -1,3 +1,4 @@
+import type { RunActivation, WaitReceipt } from "./agent-coordination-repository.js";
 import type { AgentRunRecord, AgentTimelineItem } from "../runtime/agent-domain.js";
 import type { ModelUsage } from "../model/types.js";
 import type { AgentProfile } from "../../shared/agent/profiles.js";
@@ -39,6 +40,7 @@ export interface SessionRecord {
 
 export interface SessionContentRecord {
   runs: AgentRunRecord[];
+  parkingRunId?: string;
   provider_response_ids: Record<string, string[]>;
   contextState?: SessionContextStateRecord;
   compressionRecords: ContextCompressionRecord[];
@@ -70,12 +72,13 @@ export interface SessionRepository {
   updateSession(session: SessionRecord): Promise<void>;
   deleteSession(sessionId: string): Promise<void>;
   loadSessionContent(sessionId: string): Promise<SessionContentRecord>;
-  createRun(run: AgentRunRecord): Promise<void>;
+  createRun(run: AgentRunRecord, activation?: RunActivation): Promise<void>;
   updateRun(
     run: AgentRunRecord,
     timelineUpdates: readonly TimelineItemUpdate[],
     timelineLength: number,
     sessionUpdatedAt: string,
+    waitReceipt?: WaitReceipt,
   ): Promise<void>;
   appendProviderResponseId(runId: string, providerResponseId: string): Promise<void>;
   appendModelInvocationUsage(usage: ModelInvocationUsageRecord): Promise<void>;

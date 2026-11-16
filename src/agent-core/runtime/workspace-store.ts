@@ -1,3 +1,4 @@
+import type { RunActivation, WaitReceipt } from "../repositories/agent-coordination-repository.js";
 import { mkdir, realpath, rmdir, stat } from "node:fs/promises";
 import path from "node:path";
 import type { ProjectSettings } from "../../shared/agent/sessions.js";
@@ -352,8 +353,9 @@ export class WorkspaceStore {
     const recoveredRunIds = new Set<string>();
     for (const run of content.runs) {
       if (run.status === "in_progress") {
-        run.status = "failed";
-        run.error = {
+        const wasParking = run.id === content.parkingRunId;
+        run.status = wasParking ? "waiting" : "failed";
+        if (!wasParking) run.error = {
           code: "runtime_interrupted",
           message: "Agent execution was interrupted by server restart.",
         };
@@ -456,6 +458,7 @@ export class WorkspaceStore {
     input: TranscriptMessage[],
     modelSnapshot: ModelExecutionSnapshot,
     permissionSnapshot: RunPermissionSnapshot,
+    activation?: RunActivation,
   ): Promise<AgentRunRecord> {
     const now = nowIso();
     const response: AgentRunRecord = {
@@ -471,7 +474,7 @@ export class WorkspaceStore {
       nextSequenceNumber: 0,
     };
     await this.enqueue(async () => {
-      await this.sessionRepository.createRun(response);
+      await this.sessionRepository.createRun(response, activation);
       session.runs.push(response);
       session.updated_at = now;
       this.requireSessionMetadata(session.id).updated_at = now;
@@ -534,14 +537,14 @@ export class WorkspaceStore {
     return undefined;
   }
 
-  async touch(session: Session, response: AgentRunRecord): Promise<void> {
+  async touch(session: Session, response: AgentRunRecord, waitReceipt?: WaitReceipt): Promise<void> {
     const now = nowIso();
     response.updatedAt = now;
     session.updated_at = now;
     this.requireSessionMetadata(session.id).updated_at = now;
     const snapshot = timelineUpdateSnapshot(response, this.persistedTimelinePayloads.get(response.id) ?? []);
     await this.enqueue(async () => {
-      await this.sessionRepository.updateRun(response, snapshot.updates, response.timeline.length, now);
+      await this.sessionRepository.updateRun(response, snapshot.updates, response.timeline.length, now, waitReceipt);
       this.persistedTimelinePayloads.set(response.id, snapshot.payloads);
     });
   }

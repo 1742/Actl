@@ -18,7 +18,8 @@ const members = computed(() => team.tree.value?.members.filter(
   ({ session }) => session.parentSessionId === team.rootId.value,
 ) ?? []);
 const selectedKey = computed(() => props.subagent ? key(props.subagent.id) : '');
-const active = computed(() => members.value.some(({ session }) => store.sessionIsActive(key(session.id))));
+const active = computed(() => team.tree.value?.members.some(({ session, waiting }) => waiting || store.sessionIsActive(key(session.id))) ?? false);
+const selectedWaiting = computed(() => members.value.some(({ session, waiting }) => session.id === props.subagent?.id && waiting));
 
 watch(team.rootId, () => {
   error.value = '';
@@ -56,7 +57,7 @@ async function stop(id: string) {
         {{ subagent.profile.name }}
       </span>
       <button
-        v-if="store.sessionIsActive(selectedKey)"
+        v-if="selectedWaiting || store.sessionIsActive(selectedKey)"
         class="h-8 shrink-0 rounded-full border border-gray-200 bg-white px-3 text-xs shadow-sm transition-colors hover:bg-gray-100"
         type="button"
         @click="stop(subagent.id)"
@@ -75,7 +76,7 @@ async function stop(id: string) {
       </div>
       <p v-if="!members.length" class="py-2 text-sm text-gray-500">{{ $t('agents.empty') }}</p>
       <ul v-else class="space-y-1">
-        <li v-for="{ session, response } in members" :key="session.id" class="flex min-w-0 items-center rounded-lg hover:bg-gray-100">
+        <li v-for="{ session, response, waiting } in members" :key="session.id" class="flex min-w-0 items-center rounded-lg hover:bg-gray-100">
           <button class="flex min-w-0 flex-1 items-center gap-2 px-2 py-2 text-left text-sm" type="button" @click="$emit('openSubagent', session)">
             <span class="min-w-0 flex-1">
               <span class="block truncate">{{ session.title || session.id }}</span>
@@ -86,11 +87,12 @@ async function stop(id: string) {
             </span>
             <LoaderCircle v-else-if="store.sessionIsActive(key(session.id))" :size="14" class="shrink-0 animate-spin text-primary"
               :aria-label="$t(store.runtimeBySessionId[key(session.id)]?.status === 'stopping' ? 'agents.stopping' : 'ui.sessionRunning')" />
-            <span v-else-if="response" class="shrink-0 text-xs text-gray-500">
+            <span v-else-if="waiting" class="shrink-0 text-xs text-gray-500">{{ $t('agents.waiting') }}</span>
+            <span v-else-if="response && response.status !== 'waiting'" class="shrink-0 text-xs text-gray-500">
               {{ $t(response.status === 'cancelled' ? 'agents.cancelled' : response.status === 'failed' || response.status === 'incomplete' ? 'agents.failed' : 'agents.done') }}
             </span>
           </button>
-          <button v-if="store.sessionIsActive(key(session.id))" class="shrink-0 rounded px-2 py-1 text-xs hover:bg-gray-200" type="button" @click="stop(session.id)">
+          <button v-if="waiting || store.sessionIsActive(key(session.id))" class="shrink-0 rounded px-2 py-1 text-xs hover:bg-gray-200" type="button" @click="stop(session.id)">
             {{ $t('agents.stop') }}
           </button>
         </li>

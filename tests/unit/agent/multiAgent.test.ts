@@ -18,11 +18,11 @@ import { StoredFileService } from '../../../src/agent-core/stored-files/stored-f
 import { ModelStore } from '../../../src/agent-core/runtime/model-store';
 import { SecretProtector } from '../../../src/agent-core/security/secret-protector';
 import { AgentCoordinator } from '../../../src/agent-core/runtime/multi-agents/agent-coordinator';
+import { CoordinationWaits } from '../../../src/agent-core/runtime/multi-agents/coordination-waits';
 import { createSilentLogger } from '../../../src/agent-core/observability/logger';
 import { ProcessSupervisor } from '../../../src/agent-core/runtime/process/process-supervisor';
 import { ToolRegistry } from '../../../src/agent-core/tools/registry';
 import { AgentTeamToolProvider } from '../../../src/agent-core/tools/builtin/agent-team';
-import { toAgentResponseDto } from '../../../src/agent-core/contracts/agent-responses/presenter';
 import { FilesystemToolProvider } from '../../../src/agent-core/tools/builtin/filesystem/provider';
 import { ShellToolProvider } from '../../../src/agent-core/tools/builtin/shell';
 import { InMemoryHookEventBus } from '../../../src/agent-core/hooks/event-bus';
@@ -58,19 +58,24 @@ function toolOutput<T>(request: ModelTurnRequest, name: string): T {
   return envelope.output as T;
 }
 
-function runTarget(session: { id: string; runs: AgentRunRecord[] }) {
-  return { sessionId: session.id, runId: session.runs[0]!.id };
+const team = (name: string, command: unknown) => call(name, { command });
+const taskDraft = (title: string, instructions = 'Inspect the example.') =>
+  ({ title, instructions, acceptanceCriteria: 'Report evidence.', type: 'review', autoAssign: false });
+const publish = (title: string) => team('tasks', { action: 'publish', ...taskDraft(title) });
+
+function requestText(request: ModelTurnRequest) {
+  return request.transcript.filter((item) => item.type === 'message' && item.role === 'user')
+    .flatMap((item) => item.content.flatMap((part) => part.type === 'text' ? [part.text] : [])).join('\n');
 }
 
-const taskDraft = (title: string, instructions: string) => ({ title, instructions, acceptanceCriteria: 'Report findings with evidence.' });
-
-function delegateFixture(request: ModelTurnRequest, ...assignments: Array<[string, string]>): TranscriptItem[] {
-  const creates = calls(request, 'create_task');
-  if (!creates.length) return assignments.map(([title, instructions]) => call('create_task', taskDraft(title, instructions)));
-  return creates.map(({ callId }) => {
-    const task = toolResult(request, callId).envelope.output as { id: string; revision: number };
-    return call('delegate_task', { taskId: task.id, expectedRevision: task.revision, target: { profileId: 'review' } });
-  });
+async function until<T>(probe: () => T | Promise<T>, label: string): Promise<NonNullable<T>> {
+  const deadline = Date.now() + 6000;
+  do {
+    const value = await probe();
+    if (value) return value;
+    await delay(15);
+  } while (Date.now() < deadline);
+  assert.fail(label);
 }
 
 async function fixture(handler: (request: ModelTurnRequest, signal?: AbortSignal) => Promise<TranscriptItem[]>) {
@@ -79,9 +84,13 @@ async function fixture(handler: (request: ModelTurnRequest, signal?: AbortSignal
   const database = await openWorkspaceDatabase(path.join(directory, 'workspace.db'));
   const storedFileRepository = new SqliteStoredFileRepository(database);
   const coordination = new SqliteAgentCoordinationRepository(database);
-  const workspace = new WorkspaceStore(new SqliteProjectRepository(database),
-    new SqliteSessionRepository(database, storedFileRepository), path.join(directory, 'workspaces'));
-  await workspace.initialize();
+  const makeWorkspace = async () => {
+    const workspace = new WorkspaceStore(new SqliteProjectRepository(database),
+      new SqliteSessionRepository(database, storedFileRepository), path.join(directory, 'workspaces'));
+    await workspace.initialize();
+    return workspace;
+  };
+  let workspace = await makeWorkspace();
   const files = new StoredFileService(directory, storedFileRepository); await files.initialize();
   const models = new ModelStore(new SqliteModelCatalogRepository(database), new SecretProtector(path.join(directory, 'unused-key')), 'development');
   const client: ModelClient = { protocol: 'chat_completions', runTurn: async (request, _onEvent, opts) => ({
@@ -89,683 +98,354 @@ async function fixture(handler: (request: ModelTurnRequest, signal?: AbortSignal
   }) };
   models.resolveSnapshot = async () => structuredClone(snapshot);
   models.getClientForSnapshot = async () => client;
-  const registry = new ToolRegistry(); registry.registerProvider(new FilesystemToolProvider());
-  registry.registerProvider(new ShellToolProvider());
-  const processes = new ProcessSupervisor();
-  const compiler = new PromptCompiler(new SqlitePromptSettingsRepository(database), coordination);
-  const coordinator = new AgentCoordinator(workspace, coordination, processes, {
-    models, files, toolRegistry: registry, permissions: new RunPermissionEngine(),
-    hooks: new InMemoryHookEventBus(), promptCompiler: compiler, logger: createSilentLogger(),
-  });
-  registry.registerProvider(new AgentTeamToolProvider(coordinator));
+  const makeCoordinator = () => {
+    const registry = new ToolRegistry();
+    registry.registerProvider(new FilesystemToolProvider());
+    registry.registerProvider(new ShellToolProvider());
+    const coordinator = new AgentCoordinator(workspace, coordination, new ProcessSupervisor(), {
+      models, files, toolRegistry: registry, permissions: new RunPermissionEngine(),
+      hooks: new InMemoryHookEventBus(), promptCompiler: new PromptCompiler(new SqlitePromptSettingsRepository(database), coordination),
+      logger: createSilentLogger(),
+    });
+    registry.registerProvider(new AgentTeamToolProvider(coordinator));
+    return coordinator;
+  };
+  let coordinator = makeCoordinator();
   const project = await workspace.createProject(owner, { workspacePaths: [projectPath], primaryWorkspacePath: projectPath });
-  const root = await workspace.createSession(owner, { projectId: project.id });
-  return { directory, projectPath, coordination, workspace, files, coordinator, root, project, compiler,
+  let root = await workspace.createSession(owner, { projectId: project.id });
+  return { directory, projectPath, database, coordination, project,
+    get workspace() { return workspace; }, get coordinator() { return coordinator; }, get root() { return root; },
+    restart: async () => {
+      await coordinator.close();
+      workspace = await makeWorkspace();
+      root = (await workspace.getSession(root.id, owner))!;
+      coordinator = makeCoordinator();
+    },
     close: async () => { await coordinator.close(); database.close(); await rm(directory, { recursive: true, force: true }); } };
 }
 
-test('migrates v20 without losing sessions, persists plans/messages, and rejects stale plan revisions', async () => {
-  const directory = await mkdtemp(path.join(tmpdir(), 'actl-migration-'));
-  const dbPath = path.join(directory, 'workspace.db');
-  const db = new DatabaseSync(dbPath);
-  // The v20 tables used by the migration, before sessions gained coordination columns.
-  db.exec(`
-    CREATE TABLE schema_metadata(id INTEGER PRIMARY KEY CHECK(id = 1), generation TEXT NOT NULL, version INTEGER NOT NULL CHECK(version > 0), created_at TEXT NOT NULL) STRICT;
-    CREATE TABLE projects(id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, name TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL) STRICT;
-    CREATE TABLE sessions(
-      id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
-      title TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
-    ) STRICT;
-    CREATE TABLE agent_runs(id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id));
-    CREATE TABLE timeline_items(run_id TEXT, item_order INTEGER NOT NULL, item_id TEXT, item_type TEXT, payload_json TEXT, PRIMARY KEY(run_id, item_order));
-  `);
-  db.prepare('INSERT INTO schema_metadata VALUES (1, ?, 20, ?)').run('multi-user-multi-model', 'now');
-  db.prepare('INSERT INTO sessions VALUES (?, ?, NULL, ?, ?, ?)').run('root', owner, 'retained', 'now', 'now');
-  db.close();
-  let database = await openWorkspaceDatabase(dbPath);
+async function childOf(f: Awaited<ReturnType<typeof fixture>>, title: string) {
+  return f.workspace.createSession(owner, { projectId: f.project.id, parentSessionId: f.root.id, title,
+    profile: { id: 'review', name: 'Review', description: 'Review work.', instructions: 'Report findings.' } });
+}
+
+function post(f: Awaited<ReturnType<typeof fixture>>, from: string, to: string, body: string,
+  purpose: 'information' | 'question' | 'progress' | 'urgent', replyTo: string | null = null) {
+  return f.coordination.sendMail({ rootId: f.root.id, fromSessionId: from, toSessionId: to, subject: body,
+    body, purpose, replyTo, author: 'model' }, randomUUID());
+}
+
+test('task claims are atomic and results are idempotent per attempt', async () => {
+  const f = await fixture(async () => [text('Idle')]);
   try {
-    const sessions = await new SqliteSessionRepository(database, new SqliteStoredFileRepository(database)).listSessions();
-    assert.equal(sessions[0]?.rootSessionId, 'root');
-    assert.equal(sessions[0]?.title, 'retained');
-    const coordination = new SqliteAgentCoordinationRepository(database);
-    coordination.updatePlan('root', 0, [{ id: 'a', text: 'Inspect', status: 'pending' }]);
-    assert.throws(() => coordination.updatePlan('root', 0, []), /revision/);
-    assert.equal(coordination.updatePlan('root', 1, [{ id: 'a', text: 'Inspect', status: 'completed' }]).revision, 2);
-    const message = { id: 'message', fromSessionId: 'root', toSessionId: 'root', sourceRunId: 'run', kind: 'message' as const, text: 'retained message', wake: false };
-    assert.equal(coordination.enqueue(message, 'key'), message.id);
-    assert.equal(coordination.enqueue({ ...message, id: 'duplicate' }, 'key'), message.id);
-    database.close();
-    database = await openWorkspaceDatabase(dbPath);
-    const reopened = new SqliteAgentCoordinationRepository(database);
-    assert.equal(reopened.plan('root').revision, 2);
-    assert.equal(reopened.pending('root')[0]?.text, 'retained message');
-    database.exec(`
-      DROP TABLE agent_task_assignments;
-      DROP TABLE agent_tasks;
-      DROP INDEX agent_messages_assignment_idx;
-      ALTER TABLE sessions DROP COLUMN agent_profile_json;
-      ALTER TABLE agent_messages DROP COLUMN assignment_id;
-      ALTER TABLE agent_messages DROP COLUMN task_id;
-      ALTER TABLE agent_messages DROP COLUMN author;
-      ALTER TABLE agent_messages DROP COLUMN model;
-      ALTER TABLE agent_messages DROP COLUMN relationship;
-      ALTER TABLE agent_messages DROP COLUMN purpose;
-      ALTER TABLE agent_messages DROP COLUMN reply_to;
-      UPDATE schema_metadata SET version = 21;
-      INSERT INTO sessions(id, owner_id, title, created_at, updated_at, parent_session_id, root_session_id)
-        VALUES ('child', 'developer:local', 'child', 'now', 'now', 'root', 'root');
-      INSERT INTO agent_messages(id, from_session_id, to_session_id, source_run_id, kind, text, wake, consumed, dedupe_key)
-        VALUES ('old-mail', 'child', 'root', 'child-run', 'result', 'legacy private body', 1, 1, 'result:child-run'),
-               ('old-instruction', 'root', 'child', 'root-run', 'message', 'legacy instruction', 1, 0, 'instruction');
-      INSERT INTO agent_runs VALUES ('root-run', 'root');
-      INSERT INTO timeline_items VALUES
-        ('root-run', 0, 'old-mail', 'message', '{"type":"message","id":"old-mail","role":"user","content":[]}'),
-        ('root-run', 1, 'read', 'tool_call', '{"type":"tool_call","name":"read_mail","callId":"old-read"}'),
-        ('root-run', 2, 'result', 'tool_result', '{"type":"tool_result","callId":"old-read"}'),
-        ('root-run', 3, 'kept', 'message', '{"type":"message","id":"kept","role":"assistant","content":[]}');
-    `);
-    database.close();
-    database = await openWorkspaceDatabase(dbPath);
-    const migrated = new SqliteAgentCoordinationRepository(database);
-    assert.deepEqual(migrated.pending('child'), []);
-    assert.equal(migrated.getMessage('old-instruction', 'root', 'child')?.wake, false);
-    assert.equal(database.prepare("SELECT 1 FROM sqlite_master WHERE name = 'agent_mail'").get(), undefined);
-    assert.equal(database.prepare("SELECT 1 FROM agent_messages WHERE id = 'old-mail'").get(), undefined);
-    assert.deepEqual(database.prepare('SELECT item_id, item_order FROM timeline_items').all().map((row) => [row.item_id, row.item_order]), [['kept', 0]]);
-  } finally { if (database.isOpen) database.close(); await rm(directory, { recursive: true, force: true }); }
-});
+    const one = await childOf(f, 'one');
+    const two = await childOf(f, 'two');
+    const root = f.root.id;
+    const run1 = await f.workspace.createResponse(one, await input('one')(), snapshot, { permissionMode: 'plan' });
+    const run2 = await f.workspace.createResponse(two, await input('two')(), snapshot, { permissionMode: 'plan' });
+    const task = f.coordination.createTask(root, root, taskDraft('First'), 'first');
+    const dependent = f.coordination.createTask(root, root, { ...taskDraft('Depends on first'), blockedBy: [task.id] }, 'second');
+    assert.throws(() => f.coordination.assignTask(root, dependent.id, one.id, { kind: 'claim', runId: run1.id }, 'blocked'), /not|ready/i);
+    assert.throws(() => f.coordination.createTask(root, root, { ...taskDraft('Invalid'), blockedBy: ['unknown'] }, 'bad'), /root/i);
 
-test('parallel fresh-context children deliver results; attempted edits are blocked at execution', async () => {
-  let simultaneous = 0; let peak = 0;
-  const f = await fixture(async (request, signal) => {
-    if (isChild(request)) {
-      assert.ok(!JSON.stringify(request.transcript).includes('ROOT_ONLY_CONTEXT'));
-      assert.ok(!request.tools.some((tool) => ['shell', 'write_file', 'delegate_task', 'spawn_agent', 'call_mcp_tool'].includes(tool.name)));
-      if (!calls(request, 'write_file').length) {
-        simultaneous++; peak = Math.max(peak, simultaneous);
-        await delay(70, undefined, { signal }); simultaneous--;
-        return [call('write_file', { path: 'forbidden.txt', content: 'must not write' })];
-      }
-      assert.ok(request.transcript.some((item) => item.type === 'tool_result' && item.isError));
-      return [text('Child findings')];
-    }
-    if (!calls(request, 'delegate_task').length) return delegateFixture(request, ['One', 'Read one'], ['Two', 'Read two']);
-    const children = f.workspace.descendants(f.root.id).filter((member) => member.parentSessionId);
-    const active = children.filter((member) => member.runs[0]?.status === 'in_progress');
-    if (active.length) return [call('wait_agents', { targets: active.map(runTarget), until: 'all', timeoutMs: 1000 })];
-    return [text('All findings received')];
-  });
-  try {
-    const sequence = new Map<string, number[]>();
-    const off = f.coordinator.subscribe((event) => {
-      if (event.type === 'response') for (const item of event.events) {
-        const values = sequence.get(item.response_id) ?? [];
-        values.push(item.sequence_number); sequence.set(item.response_id, values);
-      }
-    });
-    const requestSequence: number[] = [];
-    const result = await f.coordinator.start(f.root, input('ROOT_ONLY_CONTEXT'), options, (event) => {
-      requestSequence.push(event.sequence_number);
-    });
-    assert.deepEqual(requestSequence, sequence.get(result.id));
-    assert.equal(result.status, 'completed'); assert.equal(peak, 2);
-    const children = f.workspace.descendants(f.root.id).filter((member) => member.parentSessionId);
-    assert.equal(children.length, 2);
-    assert.ok(children.every((member) => member.cwd === f.root.cwd && member.runs[0]?.permissionSnapshot.permissionMode === 'plan'));
-    await assert.rejects(access(path.join(f.projectPath, 'forbidden.txt')));
-    assert.equal(f.coordination.pending(f.root.id).length, 0);
-    for (const values of sequence.values()) assert.deepEqual(values, values.map((_, index) => index));
-    off();
-  } finally { await f.close(); }
-});
-
-test('task ownership, dependencies and result acceptance survive delegation and reassignment', async () => {
-  const f = await fixture(async (request) => {
-    if (isChild(request)) {
-      assert.ok(request.tools.some((tool) => tool.name === 'claim_task'));
-      assert.ok(!request.tools.some((tool) => ['delegate_task', 'complete_task', 'write_file'].includes(tool.name)));
-      assert.match(request.instructions, /Review/);
-      return [text('Findings')];
-    }
-    assert.ok(!request.tools.some((tool) => tool.name === 'spawn_agent'));
-    return [text('Ready')];
-  });
-  try {
-    const rootRun = await f.coordinator.start(f.root, input('Plan work'), options);
-    const review = await f.coordinator.createTask(f.root, rootRun, 'review', taskDraft('Review', 'Review the migration'));
-    assert.deepEqual(await f.coordinator.createTask(f.root, rootRun, 'review', taskDraft('Duplicate', 'Duplicate')), review);
-    const fix = await f.coordinator.createTask(f.root, rootRun, 'fix', { ...taskDraft('Fix', 'Repair findings'), blockedBy: [review.id] });
-    assert.equal(fix.ready, false);
-    await assert.rejects(f.coordinator.claimTask(f.root, rootRun, 'early', fix.id, fix.revision), /not ready/);
-
-    const initial = await f.coordinator.delegateTask(f.root, rootRun, 'delegate', review.id, review.revision, { profileId: 'review' });
-    const child = (await f.workspace.getSession(initial.sessionId))!;
-    assert.equal(child.profile?.id, 'review');
-    const targets = [{ sessionId: child.id, messageId: initial.messageId }];
-    assert.equal((await f.coordinator.wait(f.root, { targets, until: 'all', timeoutMs: 2000 })).statuses[0]?.output, 'Findings');
-    assert.equal(f.coordination.task(f.root.id, review.id)?.status, 'in_progress');
-    assert.equal(f.coordination.task(f.root.id, fix.id)?.ready, false);
-    assert.throws(() => f.coordinator.completeTask(child, child.runs[0]!, review.id, 2, child.runs[0]!.id), /root agent/);
-    const released = await f.coordinator.releaseTask(f.root, review.id, 2);
-    assert.equal(released.status, 'pending');
-    await assert.rejects(f.coordinator.send(f.root, rootRun, child.id, 'Unassigned work', 'unassigned'), /assigned task/);
-
-    const next = await f.coordinator.delegateTask(f.root, rootRun, 'reassign', review.id, released.revision, { sessionId: child.id });
-    assert.notEqual(next.assignmentId, initial.assignmentId);
-    const nextResult = await f.coordinator.wait(f.root, { targets: [{ sessionId: child.id, messageId: next.messageId }], until: 'all', timeoutMs: 2000 });
-    assert.ok(nextResult.statuses[0]?.runId);
-    await assert.rejects(f.coordinator.completeTask(f.root, rootRun, review.id, 4, child.runs[0]!.id), /current task assignment/);
-    const accepted = await f.coordinator.completeTask(f.root, rootRun, review.id, 4, nextResult.statuses[0].runId);
-    assert.deepEqual(accepted.result, { sessionId: child.id, runId: child.runs[1]?.id });
-    assert.equal(f.coordination.task(f.root.id, fix.id)?.ready, true);
-
-    const claims = await Promise.allSettled([
-      f.coordinator.claimTask(f.root, rootRun, 'claim-a', fix.id, fix.revision),
-      f.coordinator.claimTask(child, child.runs[1]!, 'claim-b', fix.id, fix.revision),
-    ]);
-    assert.equal(claims.filter(({ status }) => status === 'fulfilled').length, 1);
-    assert.equal(f.coordination.task(f.root.id, fix.id)?.ownerSessionId, f.root.id);
-    const own = await f.coordinator.completeTask(f.root, rootRun, fix.id, 2, rootRun.id);
-    assert.equal(own.status, 'completed');
-    assert.deepEqual((await f.coordinator.snapshot(f.root)).tasks?.map(({ status }) => status), ['completed', 'completed']);
-  } finally { await f.close(); }
-});
-
-test('child messages and completion preserve parent approval and deliver when it resumes', async () => {
-  const review = Promise.withResolvers<void>();
-  const f = await fixture(async (request, signal) => {
-    if (isChild(request)) {
-      await review.promise;
-      signal?.throwIfAborted();
-      return calls(request, 'send_message').length ? [text('Review ready')] :
-        [call('send_message', { sessionId: f.root.id, message: 'Review progress', purpose: 'progress' })];
-    }
-    if (!calls(request, 'delegate_task').length) return delegateFixture(request, ['Review', 'Review']);
-    if (!calls(request, 'write_file').length) return [call('write_file', { path: 'approved.txt', content: 'approved' })];
-    assert.ok(request.transcript.some((item) => item.type === 'message' && item.source?.kind === 'agent' && item.source.purpose === 'progress'));
-    return [text('Final')];
-  });
-  try {
-    f.coordinator.updatePlan(f.root, 0, [{ id: 'review', text: 'Review and verify', status: 'in_progress' }]);
-    const run = await f.coordinator.start(f.root, input('Start'), options);
-    assert.equal(run.status, 'waiting_permission');
-    const child = f.workspace.descendants(f.root.id).find((session) => session.parentSessionId)!;
-    const receipt = f.coordinator.wait(f.root, { targets: [runTarget(child)], until: 'any', timeoutMs: 2000 });
-    review.resolve();
-    assert.equal((await receipt).statuses[0]?.output, 'Review ready');
-    assert.equal(f.root.runs.length, 1); assert.equal(run.status, 'waiting_permission');
-    assert.equal(f.coordination.pending(f.root.id)[0]?.text, 'Review progress');
-    const batch = run.pendingToolBatch!;
-    const completed = await f.coordinator.resume(f.root, run, batch.id, batch.permissions.map((permission) => ({ permissionId: permission.id, decision: 'approve' })));
-    assert.equal(completed.status, 'completed');
-    assert.equal(f.coordination.pending(f.root.id).length, 0);
-    const compiled = await f.compiler.compile(f.root, []);
-    assert.match(compiled.instructions, /Review and verify/);
-    assert.equal(f.coordination.plan(f.root.id).items[0]?.status, 'in_progress');
-  } finally { review.resolve(); await f.close(); }
-});
-
-test('tree shares project admission; unrelated roots conflict; cancellation aborts waits and prevents auto-wake', async () => {
-  let started!: () => void;
-  const ready = new Promise<void>((resolve) => { started = resolve; });
-  const f = await fixture(async (request, signal) => {
-    if (isChild(request)) { started(); await delay(10000, undefined, { signal }); return [text('Should not finish')]; }
-    if (!calls(request, 'delegate_task').length) return delegateFixture(request, ['Slow', 'Slow review']);
-    const child = f.workspace.descendants(f.root.id).find((item) => item.parentSessionId)!;
-    return [call('wait_agents', { targets: [runTarget(child)], timeoutMs: 60000 })];
-  });
-  try {
-    const execution = f.coordinator.start(f.root, input('Start'), options);
-    await ready;
-    const other = await f.workspace.createSession(owner, { projectId: f.project.id });
-    await assert.rejects(f.coordinator.start(other, input('Other root'), options), /active response/);
-    await assert.rejects(f.coordinator.start(f.root, input('Duplicate run'), options), /active response/);
-    const rootRun = f.root.runs[0]!;
-    const child = f.workspace.descendants(f.root.id).find((item) => item.parentSessionId)!;
-    const task = f.coordination.activeTask(f.root.id, child.id)!;
-    const duplicate = await f.coordinator.delegateTask(f.root, rootRun, child.originCallId!, task.id, 1, { profileId: 'review' });
-    assert.deepEqual(duplicate, { ...runTarget(child), taskId: task.id, assignmentId: task.assignmentId,
-      messageId: task.dispatchMessageId, status: 'in_progress' });
-    await f.coordinator.stopTree(f.root);
-    assert.equal((await execution).status, 'cancelled');
-    await delay(60);
-    assert.equal(f.root.runs.length, 1); assert.equal(child.runs[0]?.status, 'cancelled');
-  } finally { await f.close(); }
-});
-
-test('inbox delivery survives transcript/ack interruption and tree deletion removes coordination state', async () => {
-  const f = await fixture(async () => [text('ok')]);
-  try {
-    const child = await f.workspace.createSession(owner, { projectId: f.project.id, parentSessionId: f.root.id });
-    const run = await f.workspace.createResponse(f.root, await input('start')(), snapshot, { permissionMode: 'ask' });
-    const message = { id: 'delivery', fromSessionId: child.id, toSessionId: f.root.id, sourceRunId: 'source', kind: 'message' as const, text: 'once', wake: false };
-    f.coordination.enqueue(message, 'delivery');
-    run.timeline.push({ id: 'delivery', type: 'message', role: 'user', content: [{ type: 'text', text: 'once' }] });
-    await f.workspace.touch(f.root, run);
-    run.status = 'completed'; await f.workspace.touch(f.root, run);
-    await f.coordinator.start(f.root, input('continue'), options);
-    assert.equal(f.root.runs.flatMap((item) => item.timeline).filter((item) => item.id === 'delivery').length, 1);
-    assert.equal(f.coordination.pending(f.root.id).length, 0);
-    await f.coordinator.deleteSession(f.root);
-    assert.equal(await f.workspace.getSession(child.id), undefined);
-    assert.deepEqual(f.coordination.pending(child.id), []);
-  } finally { await f.close(); }
-});
-
-test('ordinary completion does not reload a session when no message needs a wake', async () => {
-  const f = await fixture(async () => [text('done')]);
-  const original = f.workspace.getSession.bind(f.workspace);
-  try {
-    await f.coordinator.start(f.root, input('ordinary task'), options);
-    let postCompletionLoads = 0;
-    f.workspace.getSession = async (...args) => { postCompletionLoads++; return original(...args); };
-    await delay(30);
-    assert.equal(postCompletionLoads, 0);
-  } finally { f.workspace.getSession = original; await f.close(); }
-});
-
-test('stopping a session aborts input preparation and releases its reservation', { timeout: 5000 }, async () => {
-  const f = await fixture(async () => [text('done')]);
-  let preparing!: () => void;
-  const entered = new Promise<void>((resolve) => { preparing = resolve; });
-  let inputPrepared = false;
-  try {
-    const starting = f.coordinator.start(f.root, async (signal) => {
-      preparing();
-      await delay(3000, undefined, { signal });
-      inputPrepared = true;
-      return input('interrupted')();
-    }, options);
-    const cancelled = assert.rejects(starting, { name: 'AbortError' });
-    await entered;
-    await f.coordinator.stopTree(f.root);
-    await cancelled;
-    assert.equal(inputPrepared, false);
-    assert.equal(f.root.runs.length, 0);
-    assert.equal((await f.coordinator.start(f.root, input('retry'), options)).status, 'completed');
-  } finally { await f.close(); }
-});
-
-test('a running child keeps its project reserved and its result can be collected without waking the parent', { timeout: 5000 }, async () => {
-  const finishChild = new AbortController();
-  const f = await fixture(async (request, signal) => {
-    if (isChild(request)) {
-      const finish = AbortSignal.any([signal!, finishChild.signal]);
-      try { await delay(3000, undefined, { signal: finish }); }
-      catch (error) { if (!finishChild.signal.aborted) throw error; }
-      return [text('child findings')];
-    }
-    if (!calls(request, 'delegate_task').length) return delegateFixture(request, ['Review', 'Review']);
-    return [text('parent done')];
-  });
-  try {
-    const initial = await f.coordinator.start(f.root, input('delegate'), options);
-    assert.equal(initial.status, 'completed');
-    const other = await f.workspace.createSession(owner, { projectId: f.project.id });
-    await assert.rejects(f.coordinator.start(other, input('conflict'), options), { code: 'project_active_response_exists' });
-    const child = f.workspace.descendants(f.root.id).find((session) => session.parentSessionId)!;
-    const waiting = f.coordinator.wait(f.root, { targets: [runTarget(child)], until: 'any', timeoutMs: 2000 });
-    finishChild.abort();
-    const result = await waiting;
-    assert.deepEqual(result, {
-      statuses: [{ sessionId: child.id, runId: child.runs[0]?.id, status: 'completed', output: 'child findings' }],
-      pendingSessionIds: [], needsInput: [], timedOut: false,
-    });
-    await delay(30);
-    assert.equal(f.root.runs.length, 1);
-    assert.ok(!JSON.stringify(f.root.runs[0]?.timeline).includes('child findings'));
-  } finally { await f.close(); }
-});
-
-test('wait_agents delivers the selected run result to the model, desktop streams and history', async () => {
-  const output = 'Review findings 40c3';
-  const f = await fixture(async (request) => {
-    if (isChild(request)) {
-      assert.ok(request.tools.some((tool) => tool.name === 'send_message'));
-      assert.ok(request.tools.some((tool) => tool.name === 'wait_for_message'));
-      assert.ok(!request.tools.some((tool) => tool.name === 'wait_agents'));
-      return [text(output)];
-    }
-    assert.ok(!request.tools.some((tool) => tool.name.endsWith('_mail')));
-    assert.ok(request.tools.some((tool) => tool.name === 'wait_for_message'));
-    if (!calls(request, 'delegate_task').length) return delegateFixture(request, ['Review', 'Review']);
-    const { status, sessionId, runId } = toolOutput<{ sessionId: string; runId: string; status: string }>(request, 'delegate_task');
-    const target = { sessionId, runId };
-    assert.ok(status);
-    const childSession = await f.workspace.getSession(target.sessionId);
-    assert.deepEqual(target, runTarget(childSession!));
-    if (!calls(request, 'wait_agents').length) return [call('wait_agents', { targets: [target], timeoutMs: 2000 })];
-    assert.deepEqual(toolOutput(request, 'wait_agents'), {
-      statuses: [{ ...target, status: 'completed', output }],
-      pendingSessionIds: [], needsInput: [], timedOut: false,
-    });
-    if (!calls(request, 'list_agents').length) return [call('list_agents', {})];
-    assert.deepEqual(toolOutput(request, 'list_agents'), {
-      agents: [{ ...target, title: 'Review', status: 'completed', profile: { id: 'review', name: 'Review' } }],
-      plan: { revision: 0, items: [] },
-    });
-    return [text('Reviewed the results')];
-  });
-  try {
-    const streamed: AgentStreamEvent[] = [];
-    const treeEvents: AgentStreamEvent[] = [];
-    const off = f.coordinator.subscribe((event) => {
-      if (event.type === 'response' && event.sessionId === f.root.id) treeEvents.push(...event.events);
-    });
-    const run = await f.coordinator.start(f.root, input('Review'), options, (event) => { streamed.push(event); });
-    off();
-    assert.equal(run.status, 'completed');
-    for (const events of [streamed, treeEvents]) {
-      const results = events.filter((event) => event.type === 'agent.tool.completed');
-      const wait = results.find((event) => event.result.toolName === 'wait_agents');
-      assert.ok(wait?.result.ok);
-      assert.match(JSON.stringify(wait.result.output), /Review findings 40c3/);
-      assert.ok(!JSON.stringify(results.filter((event) => event !== wait)).includes(output));
-    }
-    const response = toAgentResponseDto(run);
-    const waitCall = response.output.find((item) => item.type === 'function_call' && item.name === 'wait_agents');
-    assert.ok(waitCall?.type === 'function_call');
-    const waitOutput = response.output.find((item) => item.type === 'function_call_output' && item.call_id === waitCall.call_id);
-    assert.ok(waitOutput?.type === 'function_call_output');
-    assert.equal(JSON.parse(waitOutput.output).output.statuses[0].output, output);
-    assert.match(JSON.stringify(await f.coordinator.snapshot(f.root)), /Review findings 40c3/);
-    const other = await f.workspace.createSession(owner);
-    const child = f.workspace.descendants(f.root.id).find((session) => session.parentSessionId)!;
-    await assert.rejects(f.coordinator.wait(other, { targets: [runTarget(child)], until: 'any', timeoutMs: 0 }), /direct child/);
-  } finally { await f.close(); }
-});
-
-test('wait_agents times out and cancels without consuming child work', async () => {
-  const f = await fixture(async (request, signal) => {
-    if (isChild(request)) await delay(60000, undefined, { signal });
-    return calls(request, 'delegate_task').length ? [text('Delegated')] : delegateFixture(request, ['Review', 'Review']);
-  });
-  try {
-    await f.coordinator.start(f.root, input('Delegate'), options);
-    const child = f.workspace.descendants(f.root.id).find((session) => session.parentSessionId)!;
-    const wait = { targets: [runTarget(child)], until: 'any', timeoutMs: 15 } as const;
-    assert.deepEqual(await f.coordinator.wait(f.root, wait), {
-      statuses: [{ ...runTarget(child), status: 'in_progress' }], pendingSessionIds: [child.id], needsInput: [], timedOut: true,
-    });
-    const abort = new AbortController();
-    const waiting = f.coordinator.wait(f.root, { ...wait, timeoutMs: 60000 }, abort.signal);
-    abort.abort();
-    await assert.rejects(waiting, { name: 'AbortError' });
-    assert.equal(child.runs[0]?.status, 'in_progress');
-    await f.coordinator.interrupt(f.root, child.id);
-    assert.deepEqual((await f.coordinator.wait(f.root, wait)).statuses,
-      [{ ...runTarget(child), status: 'cancelled' }]);
-  } finally { await f.close(); }
-});
-
-test('wait tools return an error when batched and allow the other calls to finish', { timeout: 5000 }, async () => {
-  const f = await fixture(async (request) => {
-    if (isChild(request)) return [text('Child finished')];
-    const spawned = calls(request, 'delegate_task');
-    if (!spawned.length) return delegateFixture(request, ['Review', 'Review']);
-    const { sessionId, runId } = toolOutput<{ sessionId: string; runId: string }>(request, 'delegate_task');
-    const waits = calls(request, 'wait_agents');
-    if (!waits.length) return [
-      call('wait_for_message', { sessionId, timeoutMs: 60000 }),
-      call('wait_agents', { targets: [{ sessionId, runId }], timeoutMs: 60000 }),
-      call('send_message', { sessionId, message: 'Proceed with the review' }),
-    ];
-    if (waits.length === 1) {
-      for (const name of ['wait_agents', 'wait_for_message']) {
-        const { result, envelope } = toolResult(request, calls(request, name)[0]?.callId);
-        assert.equal(result.isError, true);
-        assert.match(envelope.error ?? '', /on its own/);
-      }
-      const sent = toolOutput<{ messageId: string }>(request, 'send_message');
-      assert.ok(sent.messageId);
-      return [call('wait_agents', { targets: [{ sessionId, messageId: sent.messageId }], timeoutMs: 2000 })];
-    }
-    assert.equal(toolOutput<{ timedOut: boolean }>(request, 'wait_agents').timedOut, false);
-    return [text('Done')];
-  });
-  try {
-    const run = await f.coordinator.start(f.root, input('Review'), options);
-    assert.equal(run.status, 'completed', run.error?.message);
-  } finally { await f.close(); }
-});
-
-for (const replyBeforeWait of [false, true]) {
-  test(`clarification interrupts the parent's wait and resumes the same child run (${replyBeforeWait ? 'reply queued first' : 'child waits first'})`, { timeout: 8000 }, async () => {
-    const parentWaiting = Promise.withResolvers<void>();
-    const childWaiting = Promise.withResolvers<void>();
-    const parentAnswered = Promise.withResolvers<void>();
-    const independentFinished = new AbortController();
-    const question = 'Which output should I inspect?';
-    const answer = 'Use the build log.';
-    let questionId: string | undefined;
-    const f = await fixture(async (request, signal) => {
-      const incoming = request.transcript.filter((item) => item.type === 'message' && item.source?.kind === 'agent');
-      if (isChild(request)) {
-        assert.match(request.instructions, new RegExp(f.root.id));
-        const task = incoming.find((item) => item.source?.kind === 'agent' && item.source.purpose === 'task');
-        assert.ok(task);
-        if (task.content.some((part) => part.type === 'text' && part.text.includes('Independent check'))) {
-          try { await delay(60000, undefined, { signal: AbortSignal.any([signal!, independentFinished.signal]) }); }
-          catch (error) { if (!independentFinished.signal.aborted) throw error; }
-          return [text('Independent findings')];
-        }
-        if (!calls(request, 'send_message').length) {
-          await parentWaiting.promise;
-          return [call('send_message', { sessionId: f.root.id, message: question, purpose: 'clarification', replyTo: task.id })];
-        }
-        questionId = toolOutput<{ messageId: string }>(request, 'send_message').messageId;
-        if (!calls(request, 'wait_for_message').length) {
-          if (replyBeforeWait) await parentAnswered.promise;
-          return [call('wait_for_message', { sessionId: f.root.id, replyTo: questionId, timeoutMs: 4000 })];
-        }
-        const receipt = toolOutput<{ messageId: string; timedOut: boolean }>(request, 'wait_for_message');
-        assert.equal(receipt.timedOut, false);
-        const received = incoming.filter((item) => item.id === receipt.messageId);
-        assert.equal(received.length, 1);
-        assert.equal(received[0]?.source?.kind, 'agent');
-        assert.equal(received[0].source.replyTo, questionId);
-        assert.match(JSON.stringify(received[0].content), /Use the build log/);
-        independentFinished.abort();
-        return [text('Build log findings')];
-      }
-
-      if (!calls(request, 'delegate_task').length) return delegateFixture(request, ['Review', 'Inspect the output'], ['Independent', 'Independent check']);
-      const children = f.workspace.descendants(f.root.id).filter((session) => session.parentSessionId);
-      const review = children.find((session) => session.title === 'Review')!;
-      const wait = { targets: children.map(runTarget), until: 'all', timeoutMs: 4000 };
-      const waits = calls(request, 'wait_agents');
-      if (!waits.length) return [call('wait_agents', wait)];
-      if (!calls(request, 'send_message').length) {
-        const clarification = incoming.find((item) => item.source?.kind === 'agent' && item.source.purpose === 'clarification');
-        assert.ok(clarification?.source?.kind === 'agent');
-        const interrupted = toolOutput<{ needsInput: unknown[]; pendingSessionIds: string[]; timedOut: boolean }>(request, 'wait_agents');
-        assert.equal(interrupted.timedOut, false);
-        assert.deepEqual(interrupted.needsInput, [{ ...runTarget(review), messageId: clarification.id }]);
-        assert.ok(interrupted.pendingSessionIds.includes(children.find((session) => session.title === 'Independent')!.id));
-        assert.equal(clarification.source.replyTo, review.runs[0]?.input[0]?.id);
-        assert.match(JSON.stringify(clarification.content), /Actl agent message/);
-        if (!replyBeforeWait) {
-          await childWaiting.promise;
-          const sent = await f.coordinator.send(f.root, f.root.runs[0]!, review.id, 'Review the first failure.', 'queued-before-answer');
-          const target = { sessionId: review.id, messageId: sent.messageId };
-          const queued = await f.coordinator.wait(f.root, { targets: [target], until: 'all', timeoutMs: 0 });
-          assert.deepEqual(queued, {
-            statuses: [{ ...target, status: 'queued' }], pendingSessionIds: [review.id],
-            needsInput: interrupted.needsInput, timedOut: false,
-          });
-        }
-        return [call('send_message', { sessionId: review.id, message: answer, replyTo: clarification.id })];
-      }
-      parentAnswered.resolve();
-      if (waits.length === 1) return [call('wait_agents', wait)];
-      const completed = toolOutput<{ statuses: Array<{ output?: string }>; pendingSessionIds: string[] }>(request, 'wait_agents');
-      assert.deepEqual(completed.pendingSessionIds, []);
-      assert.deepEqual(completed.statuses.map(({ output }) => output).sort(), ['Build log findings', 'Independent findings']);
-      return [text('Parent finished')];
-    });
-
-    const wait = f.coordinator.wait.bind(f.coordinator);
-    f.coordinator.wait = (...args) => {
-      const waiting = wait(...args);
-      parentWaiting.resolve();
-      return waiting;
-    };
-    const waitForMessage = f.coordinator.waitForMessage.bind(f.coordinator);
-    f.coordinator.waitForMessage = (...args) => {
-      const waiting = waitForMessage(...args);
-      childWaiting.resolve();
-      return waiting;
-    };
-
+    const secondConnection = new DatabaseSync(path.join(f.directory, 'workspace.db'));
     try {
-      const events: AgentStreamEvent[] = [];
-      const run = await f.coordinator.start(f.root, input('Review'), options, (event) => { events.push(event); });
-      assert.equal(run.status, 'completed', run.error?.message);
-      const child = f.workspace.descendants(f.root.id).find((session) => session.title === 'Review')!;
-      assert.equal(child.runs.length, 1);
-      assert.equal(child.runs[0]?.status, 'completed', child.runs[0]?.error?.message);
-      const received = toAgentResponseDto(run).output.filter((item) => item.type === 'message' && item.id === questionId);
-      assert.equal(received.length, 1);
-      assert.ok(received[0]?.type === 'message');
-      assert.deepEqual(received[0].content, [{ type: 'output_text', text: question, annotations: [] }]);
-      const task = f.coordination.activeTask(f.root.id, child.id)!;
-      assert.deepEqual(received[0].source, { kind: 'agent', sessionId: child.id, runId: child.runs[0]?.id, model: 'Fake',
-        relationship: 'child', purpose: 'clarification', replyTo: child.runs[0]?.input[0]?.id, taskId: task.id, assignmentId: task.assignmentId });
-      assert.ok(events.some((event) => event.type === 'response.output_item.done' && event.item.id === questionId));
-      assert.deepEqual(f.coordination.pending(f.root.id), []);
-      assert.deepEqual(f.coordination.pending(child.id), []);
-      await assert.rejects(f.coordinator.waitForMessage(child, { sessionId: f.root.id, replyTo: child.runs[0]?.input[0]?.id, timeoutMs: 0 }), /replyTo/);
-      await assert.rejects(f.coordinator.send(f.root, run, child.id, answer, 'bad-reply', { replyTo: child.runs[0]?.input[0]?.id }), /replyTo/);
-      await assert.rejects(f.coordinator.send(child, child.runs[0]!, child.id, question, 'self'), /direct child/);
-      await assert.rejects(f.coordinator.send(child, child.runs[0]!, f.root.id, question, 'human-up', { userFollowUp: true }), /direct child/);
-    } finally {
-      parentWaiting.resolve();
-      childWaiting.resolve();
-      parentAnswered.resolve();
-      independentFinished.abort();
-      await f.close();
+      const second = new SqliteAgentCoordinationRepository(secondConnection);
+      const attempts = await Promise.allSettled([
+        Promise.resolve().then(() => f.coordination.assignTask(root, task.id, one.id, { kind: 'claim', runId: run1.id }, 'claim-1')),
+        Promise.resolve().then(() => second.assignTask(root, task.id, two.id, { kind: 'claim', runId: run2.id }, 'claim-2')),
+      ]);
+      assert.equal(attempts.filter(({ status }) => status === 'fulfilled').length, 1);
+    } finally { secondConnection.close(); }
+
+    const plan = f.coordination.updatePlan(root, 0, [{ id: 'a', text: 'Check', status: 'pending' }]);
+    f.coordination.updatePlan(root, plan.revision, []);
+    assert.equal(f.coordination.task(root, task.id)?.status, 'running');
+    run1.status = 'completed'; run1.finalOutput = 'first findings';
+    await f.workspace.touch(one, run1);
+    f.coordination.finishRun(run1.id);
+    f.coordination.finishRun(run1.id);
+    const submitted = f.coordination.task(root, task.id)!;
+    assert.equal(submitted.status, 'review_required');
+    assert.equal(submitted.attempt?.result?.output, 'first findings');
+    assert.equal(f.coordination.reviewNotifications(root).length, 1);
+    assert.equal(f.coordination.task(root, dependent.id)?.ready, false);
+    assert.throws(() => f.coordination.decideTask(root, task.id, two.id, { kind: 'accept' }), /authorized reviewer/);
+    f.coordination.decideTask(root, task.id, root, { kind: 'reject', reason: 'Get more evidence.' });
+    const newRun = await f.workspace.createResponse(one, await input('retry')(), snapshot, { permissionMode: 'plan' });
+    f.coordination.assignTask(root, task.id, one.id, { kind: 'claim', runId: newRun.id }, 'reclaim');
+    f.coordination.finishRun(run1.id);
+    assert.equal(f.coordination.task(root, task.id)?.status, 'running');
+    newRun.status = 'completed'; newRun.finalOutput = 'more evidence';
+    await f.workspace.touch(one, newRun);
+    f.coordination.finishRun(newRun.id);
+    const history = f.coordination.attemptHistory(root, task.id);
+    assert.deepEqual(history.map((attempt) => [attempt.outcome, attempt.result?.output]), [
+      ['rejected', 'first findings'], ['submitted', 'more evidence'],
+    ]);
+    assert.equal(history[0]?.reason, 'Get more evidence.');
+    assert.equal(f.coordination.decideTask(root, task.id, root, { kind: 'accept' }).status, 'completed');
+    assert.equal(f.coordination.task(root, dependent.id)?.ready, true);
+  } finally { await f.close(); }
+});
+
+test('an expired attempt can be retried and its late final cannot replace the new attempt', async () => {
+  const f = await fixture(async () => [text('Idle')]);
+  try {
+    const root = f.root.id;
+    const oldAgent = await childOf(f, 'Old agent');
+    const newAgent = await childOf(f, 'New agent');
+    const task = f.coordination.createTask(root, root, taskDraft('Retry'), 'create');
+    const first = await f.workspace.createResponse(oldAgent, await input('old')(), snapshot, { permissionMode: 'plan' });
+    const stale = f.coordination.assignTask(root, task.id, oldAgent.id, { kind: 'claim', runId: first.id }, 'old');
+    const at = Date.now();
+    f.database.prepare('UPDATE agent_task_attempts SET lease_expires_at = ? WHERE id = ?').run(at - 1, stale.attempt!.id);
+    assert.deepEqual(f.coordination.expiredAttempts(root, at), [stale.attempt!.id]);
+    f.coordination.failAttempt(stale.attempt!.id, 'Lease expired.');
+    assert.equal(f.coordination.task(root, task.id)?.status, 'failed');
+    f.coordination.decideTask(root, task.id, root, { kind: 'retry' }, 'retry');
+    const resumed = await f.workspace.createResponse(newAgent, await input('new')(), snapshot, { permissionMode: 'plan' });
+    const active = f.coordination.assignTask(root, task.id, newAgent.id, { kind: 'claim', runId: resumed.id }, 'new');
+    // Replaying the old retry while the replacement runs must be harmless.
+    f.coordination.decideTask(root, task.id, root, { kind: 'retry' }, 'retry');
+    first.status = 'completed'; first.finalOutput = 'Late result';
+    await f.workspace.touch(oldAgent, first);
+    f.coordination.finishRun(first.id);
+    assert.deepEqual(f.coordination.task(root, task.id)?.attempt, active.attempt);
+    assert.equal(f.coordination.attemptHistory(root, task.id)[0]?.result, undefined);
+    resumed.status = 'completed'; resumed.finalOutput = 'Replacement result';
+    await f.workspace.touch(newAgent, resumed);
+    f.coordination.finishRun(resumed.id);
+    assert.equal(f.coordination.task(root, task.id)?.attempt?.result?.output, 'Replacement result');
+  } finally { await f.close(); }
+});
+
+test('deleting a child with a submitted result keeps the task retryable', async () => {
+  const f = await fixture(async () => [text('Idle')]);
+  try {
+    const child = await childOf(f, 'Deleted reviewer');
+    const task = f.coordination.createTask(f.root.id, f.root.id, taskDraft('Needs another reviewer'), 'create');
+    const run = await f.workspace.createResponse(child, await input('old')(), snapshot, { permissionMode: 'plan' });
+    f.coordination.assignTask(f.root.id, task.id, child.id, { kind: 'claim', runId: run.id }, 'claim');
+    run.status = 'completed'; run.finalOutput = 'Result';
+    await f.workspace.touch(child, run);
+    f.coordination.finishRun(run.id);
+    await f.coordinator.deleteSession(child);
+    assert.equal(f.coordination.task(f.root.id, task.id)?.status, 'failed');
+    assert.equal(f.coordination.decideTask(f.root.id, task.id, f.root.id, { kind: 'retry' }).status, 'pending');
+  } finally { await f.close(); }
+});
+
+test('tools publish, delegate, park and resume for review in the same root session', async () => {
+  const f = await fixture(async (request) => {
+    if (isChild(request)) {
+      assert.ok(!request.tools.some(({ name }) => ['shell', 'write_file', 'delegate_task', 'call_mcp_tool'].includes(name)));
+      assert.match(request.instructions, /Your current task #1/);
+      if (!calls(request, 'write_file').length) return [call('write_file', { path: 'forbidden.txt', content: 'must not write' })];
+      assert.ok(toolResult(request, calls(request, 'write_file')[0]?.callId).result.isError);
+      return [text('Reviewed with evidence.')];
     }
+    const context = requestText(request);
+    if (context.includes('Wait finished')) {
+      assert.match(context, /review_required/);
+      if (calls(request, 'tasks').length === 1) return [team('tasks', { action: 'accept', task: '#1' })];
+      assert.equal(toolOutput<{ status: string }>(request, 'tasks').status, 'completed');
+      return [text('Accepted')];
+    }
+    if (!calls(request, 'tasks').length) return [publish('Review')];
+    if (!calls(request, 'delegate_task').length) return [call('delegate_task', { task: '#1', target: { kind: 'create', role: 'review' } })];
+    return [team('wait', { action: 'start', condition: { kind: 'task_state', task: '#1', states: ['review_required'] } })];
+  });
+  try {
+    const events: AgentStreamEvent[] = [];
+    const first = await f.coordinator.start(f.root, input('Delegate review'), options, (event) => events.push(event));
+    assert.equal(first.status, 'waiting');
+    assert.ok(events.some((event) => event.type === 'response.waiting'));
+    await until(() => f.root.runs[1]?.status === 'completed', 'Root did not finish its resumed review.');
+    const task = f.coordination.tasks(f.root.id)[0]!;
+    assert.equal(task.status, 'completed');
+    assert.equal(task.attempt?.result?.output, 'Reviewed with evidence.');
+    await assert.rejects(access(path.join(f.projectPath, 'forbidden.txt')));
+    const child = (await f.workspace.getSession(task.attempt!.ownerSessionId))!;
+    assert.equal(child.runs.length, 1);
+    assert.equal(child.runs[0]!.input[0]?.source?.kind, 'runtime');
+    assert.deepEqual(f.coordination.pendingMail(f.root.id), []);
+  } finally { await f.close(); }
+});
+
+for (const mode of ['reply', 'timeout', 'reply during interruption'] as const) {
+  test(`interrupted wait preserves its deadline and task delivery follows the ${mode}`, async () => {
+    let childActive = 0;
+    let maxChildActive = 0;
+    const interrupted = Promise.withResolvers<void>();
+    const continueInterrupted = Promise.withResolvers<void>();
+    const f = await fixture(async (request) => {
+      if (!isChild(request)) return [text('Root is available.')];
+      childActive++;
+      maxChildActive = Math.max(maxChildActive, childActive);
+      try {
+        const latest = requestText(request);
+        if (latest.includes('Wait finished:')) {
+          assert.match(latest, mode === 'reply' ? /the needed answer/ : /timed_out/);
+          assert.equal(latest.split('unsolicited question').length - 1, 2, 'Subject and body must be delivered just once.');
+          return [text('Task final after ' + mode)];
+        }
+        if (latest.includes('The original wait is still active')) {
+          if (mode === 'reply') return [text('Only handled new mail')];
+          if (mode === 'reply during interruption') {
+            if (calls(request, 'wait').length === 1) {
+              interrupted.resolve();
+              await continueInterrupted.promise;
+              return [team('wait', { action: 'resume' })];
+            }
+            assert.equal(toolOutput<{ body: string }>(request, 'wait').body, 'the needed answer');
+            return [text('Task final after ' + mode)];
+          }
+          if (calls(request, 'mail').length === 1) {
+            return [team('mail', { action: 'reply', body: 'Answered the other question.' })];
+          }
+          return [team('wait', { action: 'resume' })];
+        }
+        if (!calls(request, 'mail').length) return [team('mail', { action: 'send', to: '@parent',
+          subject: 'Question for parent', body: 'Please clarify.', purpose: 'question' })];
+        const question = toolOutput<{ message: string }>(request, 'mail').message;
+        return [team('wait', { action: 'start', timeoutMs: mode === 'timeout' ? 1300 : 10000,
+          condition: { kind: 'mail', replyTo: question } })];
+      } finally { childActive--; }
+    });
+    try {
+      const rootRun = await f.coordinator.start(f.root, input('Begin'), options);
+      const task = f.coordination.createTask(f.root.id, f.root.id, taskDraft('Wait on an answer'), 'task');
+      const peer = await childOf(f, 'Peer');
+      const child = await childOf(f, 'Waiting child');
+      f.coordination.assignTask(f.root.id, task.id, child.id, { kind: 'delegate', sourceRunId: rootRun.id }, 'delegate');
+      const original = await until(() => child.runs[0]?.status === 'waiting' && f.coordination.wait(child.id), 'Child did not park.');
+      const question = f.coordination.searchMail(child.id, { purpose: 'question', limit: 1 })[0]!;
+      post(f, peer.id, child.id, 'background progress', 'progress');
+      await delay(40);
+      assert.equal(child.runs.length, 1);
+      assert.equal(f.coordination.task(f.root.id, task.id)?.status, 'running');
+      post(f, peer.id, child.id, 'unsolicited question', 'question');
+      if (mode === 'reply during interruption') {
+        await until(() => Promise.race([interrupted.promise.then(() => true), delay(10).then(() => false)]), 'The child did not receive the interruption.');
+        const answer = post(f, f.root.id, child.id, 'the needed answer', 'information', question.id);
+        continueInterrupted.resolve();
+        const result = await until(() => f.coordination.task(f.root.id, task.id)?.attempt?.result, 'No result after inline reply.');
+        assert.equal(result.output, 'Task final after ' + mode);
+        assert.deepEqual(child.runs.map(({ status }) => status), ['waiting', 'completed']);
+        assert.ok(!f.coordination.pendingMail(child.id).some(({ id }) => id === answer.id));
+        assert.equal(f.coordination.wait(child.id), undefined);
+        return;
+      }
+      await until(() => child.runs[1]?.status === 'waiting', 'Premature final or resume did not park.');
+      assert.equal(f.coordination.wait(child.id)?.deadline, original.deadline);
+      assert.equal(f.coordination.task(f.root.id, task.id)?.attempt?.result, undefined);
+
+      if (mode === 'reply') {
+        await f.restart();
+        assert.equal(f.coordination.wait(child.id)?.id, original.id);
+        const other = await f.workspace.createSession(owner, { projectId: f.project.id });
+        assert.equal((await f.coordinator.start(other, input('Same project while parked'), options)).status, 'completed');
+        post(f, f.root.id, child.id, 'the needed answer', 'information', question.id);
+      }
+      const result = await until(() => f.coordination.task(f.root.id, task.id)?.attempt?.result, 'No result after original wait ended.');
+      assert.equal(result.output, 'Task final after ' + mode);
+      const restored = (await f.workspace.getSession(child.id))!;
+      assert.deepEqual(restored.runs.map(({ status }) => status), ['waiting', 'waiting', 'completed']);
+      assert.equal(f.coordination.wait(child.id), undefined);
+      assert.equal(f.coordination.attemptHistory(f.root.id, task.id).length, 1);
+      assert.equal(maxChildActive, 1);
+      if (mode === 'timeout') {
+        const late = post(f, f.root.id, child.id, 'late answer', 'information', question.id);
+        await delay(550);
+        assert.equal(restored.runs.length, 3);
+        assert.equal(f.coordination.mail(f.root.id, late.id)?.body, 'late answer');
+      }
+    } finally { continueInterrupted.resolve(); await f.close(); }
   });
 }
 
-test('wait_agents can return for any child or wait for all children', async () => {
-  const finishFirst = new AbortController();
-  const finishSecond = new AbortController();
-  const f = await fixture(async (request, signal) => {
-    if (!isChild(request)) {
-      return calls(request, 'delegate_task').length ? [text('Delegated')] : delegateFixture(request, ['First', 'First assignment'], ['Second', 'Second assignment']);
-    }
-    const first = JSON.stringify(request.transcript).includes('First assignment');
-    const finish = first ? finishFirst.signal : finishSecond.signal;
-    try { await delay(60000, undefined, { signal: AbortSignal.any([signal!, finish]) }); }
-    catch (error) { if (!finish.aborted) throw error; }
-    return [text('Finished')];
-  });
+test('event cursor catches a task transition between the initial check and registration', async () => {
+  const f = await fixture(async () => [text('Idle')]);
   try {
-    await f.coordinator.start(f.root, input('Delegate'), options);
-    const children = f.workspace.descendants(f.root.id);
-    const first = children.find((child) => child.title === 'First')!;
-    const second = children.find((child) => child.title === 'Second')!;
-    const wait = { targets: [runTarget(first), runTarget(second)], timeoutMs: 2000 };
-    await f.coordinator.send(first, first.runs[0]!, f.root.id, 'Still working', 'progress', { purpose: 'progress' });
-    const before = await f.coordinator.wait(f.root, { ...wait, until: 'any', timeoutMs: 0 });
-    assert.deepEqual(before.pendingSessionIds, [first.id, second.id]);
-    assert.equal(before.timedOut, true);
-
-    const anyStatus = f.coordinator.wait(f.root, { ...wait, until: 'any' });
-    const allStatus = f.coordinator.wait(f.root, { ...wait, until: 'all' });
-    finishFirst.abort();
-    const any = await anyStatus;
-    assert.equal(any.timedOut, false);
-    assert.deepEqual(any.pendingSessionIds, [second.id]);
-    const partial = await f.coordinator.wait(f.root, { ...wait, until: 'all', timeoutMs: 0 });
-    assert.deepEqual(partial.statuses.map((item) => [item.sessionId, item.status, item.output]),
-      [[first.id, 'completed', 'Finished'], [second.id, 'in_progress', undefined]]);
-    assert.equal(partial.timedOut, true);
-
-    finishSecond.abort();
-    const all = await allStatus;
-    assert.equal(all.timedOut, false);
-    assert.deepEqual(all.pendingSessionIds, []);
-  } finally {
-    finishFirst.abort();
-    finishSecond.abort();
-    await f.close();
-  }
+    const root = f.root.id;
+    const member = await childOf(f, 'Reviewer');
+    const task = f.coordination.createTask(root, root, taskDraft('Transient state'), 'create');
+    const run = await f.workspace.createResponse(member, await input('Worker')(), snapshot, { permissionMode: 'plan' });
+    const waits = new CoordinationWaits(f.coordination, f.workspace);
+    const wait = { rootId: root, sessionId: root, condition: { kind: 'task_state' as const, task: task.id, states: ['running' as const] },
+      cursor: f.coordination.eventCursor(), deadline: Date.now() + 5000, parkRunId: 'parent-run' };
+    assert.equal(await waits.outcome(wait, true), undefined);
+    f.coordination.assignTask(root, task.id, member.id, { kind: 'claim', runId: run.id }, 'claim');
+    run.status = 'completed'; run.finalOutput = 'done';
+    await f.workspace.touch(member, run);
+    f.coordination.finishRun(run.id);
+    assert.equal(f.coordination.task(root, task.id)?.status, 'review_required');
+    const subscription = f.coordination.registerWait(wait);
+    assert.deepEqual(await waits.outcome(subscription), { kind: 'task_state', task: task.id, state: 'running' });
+  } finally { await f.close(); }
 });
 
-test('message waits resolve to the run that delivered the instruction while exact run waits keep the original result', { timeout: 8000 }, async () => {
-  let releaseChild!: () => void;
-  const gate = new Promise<void>((resolve) => { releaseChild = resolve; });
-  const followUpStarted = Promise.withResolvers<void>();
-  const releaseFollowUp = Promise.withResolvers<void>();
+test('restart preserves a registered wait even if the process died before parking its run', async () => {
   const f = await fixture(async (request) => {
-    if (!isChild(request)) {
-      return calls(request, 'delegate_task').length
-        ? [text('Parent ready')]
-        : delegateFixture(request, ['Review', 'Initial assignment']);
-    }
-    const actualInput = request.transcript.some((item) => item.type === 'message' && item.content.some((part) => part.type === 'text' && part.text === 'Actual new input'));
-    if (actualInput) {
-      followUpStarted.resolve();
-      await releaseFollowUp.promise;
-      return [text('New child result')];
-    }
-    await gate;
-    return [text('Original child result')];
+    assert.match(requestText(request), /Wait finished/);
+    assert.match(requestText(request), /after recovery/);
+    return [text('Resumed')];
   });
   try {
-    const rootRun = await f.coordinator.start(f.root, input('Start'), options);
-    const child = f.workspace.descendants(f.root.id).find((session) => session.parentSessionId)!;
-    const first = await f.coordinator.send(f.root, rootRun, child.id, 'First instruction', 'first');
-    assert.deepEqual(await f.coordinator.send(f.root, rootRun, child.id, 'Duplicate instruction', 'first'), first);
-    await f.coordinator.send(f.root, rootRun, child.id, 'Second instruction', 'second');
-    const controls = { until: 'any', timeoutMs: 2000 } as const;
-    const firstReceipt = f.coordinator.wait(f.root, { ...controls, targets: [{ sessionId: child.id, messageId: first.messageId }] });
-    releaseChild();
-    const result = await firstReceipt;
-    assert.deepEqual(result.statuses, [{ ...runTarget(child), messageId: first.messageId, status: 'completed', output: 'Original child result' }]);
-    const firstRun = toAgentResponseDto(child.runs[0]!);
-    const task = f.coordination.activeTask(f.root.id, child.id)!;
-    assert.deepEqual(firstRun.input[0]?.source, {
-      kind: 'agent', sessionId: f.root.id, runId: rootRun.id, model: 'Fake', relationship: 'parent', purpose: 'task', taskId: task.id, assignmentId: task.assignmentId,
-    });
-    assert.deepEqual(firstRun.output.flatMap((item) =>
-      item.type === 'message' && item.role === 'user' ? item.content : [],
-    ).map((part) => part.type === 'output_text' ? part.text : ''), ['First instruction', 'Second instruction']);
-    assert.ok(firstRun.output.some((item) => item.type === 'message' && item.role === 'assistant' && item.source?.kind === 'model'));
+    const peer = await childOf(f, 'Sender');
+    const root = f.root.id;
+    const run = await f.workspace.createResponse(f.root, await input('Original')(), snapshot, { permissionMode: 'ask' });
+    const wait = f.coordination.registerWait({ rootId: root, sessionId: root, condition: { kind: 'mail', from: peer.id },
+      cursor: f.coordination.eventCursor(), deadline: Date.now() + 5000, parkRunId: run.id });
+    await f.restart();
+    assert.equal(f.root.runs[0]?.status, 'waiting');
+    assert.equal(f.coordination.wait(root)?.id, wait.id);
+    post(f, peer.id, root, 'after recovery', 'information');
+    await until(() => f.root.runs[1]?.status === 'completed', 'Wait did not resume after restart.');
+  } finally { await f.close(); }
+});
 
-    const { messageId } = await f.coordinator.send(f.root, rootRun, child.id, 'Actual new input', 'third', { userFollowUp: true });
-    const nextTarget = { sessionId: child.id, messageId };
-    const queued = await f.coordinator.wait(f.root, { ...controls, targets: [nextTarget], timeoutMs: 0 });
-    assert.deepEqual(queued, { statuses: [{ ...nextTarget, status: 'queued' }], pendingSessionIds: [child.id], needsInput: [], timedOut: true });
+test('automatic assignment uses idle matching agents and reuses sessions for newly ready work', async () => {
+  const f = await fixture(async (request) => [text(isChild(request) ? 'Child result' : 'Root')]);
+  try {
+    await f.coordinator.start(f.root, input('Plan'), options);
+    const root = f.root.id;
+    const first = f.coordination.createTask(root, root, { ...taskDraft('First'), autoAssign: true }, 'first');
+    const second = f.coordination.createTask(root, root, { ...taskDraft('Second'), autoAssign: true, blockedBy: [first.id] }, 'second');
+    const general = await f.workspace.createSession(owner, { parentSessionId: root, projectId: f.project.id });
+    assert.equal(f.coordination.task(root, first.id)?.status, 'pending');
+    const review = await childOf(f, 'Reviewer');
+    await until(() => f.coordination.task(root, first.id)?.status === 'review_required', 'The matching reviewer was not assigned.');
+    assert.equal(f.coordination.task(root, first.id)?.attempt?.ownerSessionId, review.id);
+    assert.equal(f.coordination.task(root, second.id)?.status, 'pending');
+    assert.equal(general.runs.length, 0);
+    f.coordination.decideTask(root, first.id, root, { kind: 'accept' });
+    await until(() => f.coordination.task(root, second.id)?.status === 'review_required', 'The dependency did not unlock scheduling.');
+    assert.equal(f.coordination.task(root, second.id)?.attempt?.ownerSessionId, review.id);
+    assert.equal(review.runs.length, 2);
+  } finally { await f.close(); }
+});
 
-    await followUpStarted.promise;
-    const earlierResult = await f.coordinator.wait(f.root, { ...controls, targets: [runTarget(child)], timeoutMs: 0 });
-    assert.equal(earlierResult.timedOut, false);
-    assert.deepEqual(earlierResult.statuses, [{ ...runTarget(child), status: 'completed', output: 'Original child result' }]);
-    const retry = await f.coordinator.delegateTask(f.root, rootRun, child.originCallId!, task.id, 1, { profileId: 'review' });
-    assert.deepEqual(retry, { ...runTarget(child), taskId: task.id, assignmentId: task.assignmentId,
-      messageId: task.dispatchMessageId, status: 'completed' });
-    await assert.rejects(f.coordinator.wait(f.root, { ...controls, targets: [{ sessionId: child.id, runId: rootRun.id }] }), /run/i);
-    await assert.rejects(f.coordinator.wait(f.root, { ...controls, targets: [{ sessionId: child.id, messageId: 'unknown-message' }] }), /message/i);
-
-    const next = f.coordinator.wait(f.root, { ...controls, targets: [nextTarget] });
-    releaseFollowUp.resolve();
-    const nextResult = await next;
-    assert.equal(nextResult.timedOut, false);
-    assert.equal(child.runs.length, 2);
-    assert.deepEqual(nextResult.statuses, [{ ...nextTarget, runId: child.runs[1]?.id, status: 'completed', output: 'New child result' }]);
-    const nextRun = toAgentResponseDto(child.runs[1]!);
-    assert.deepEqual(nextRun.input[0]?.content, [{ type: 'input_text', text: 'Actual new input' }]);
-    assert.equal(nextRun.input[0]?.source?.kind, 'user');
-    assert.ok(!nextRun.output.some((item) => item.type === 'message' && item.role === 'user'));
-    assert.equal(f.coordination.pending(child.id).length, 0);
-  } finally {
-    releaseChild();
-    releaseFollowUp.resolve();
-    await f.close();
-  }
+test('mail is peer-to-peer within the root with thread search, read markers and duplicate send protection', async () => {
+  const f = await fixture(async () => [text('Idle')]);
+  try {
+    const a = await childOf(f, 'A');
+    const b = await childOf(f, 'B');
+    const foreign = await f.workspace.createSession(owner, { projectId: f.project.id });
+    const original = post(f, a.id, b.id, 'Cache invalidation', 'progress');
+    const reply = post(f, b.id, a.id, 'Cache fixed', 'information', original.id);
+    assert.equal(reply.threadId, original.threadId);
+    assert.throws(() => post(f, a.id, foreign.id, 'outside', 'information'), /does not belong/);
+    assert.equal(f.coordination.searchMail(b.id, { from: a.id, keyword: 'invalidation', thread: original.threadId, unread: true, limit: 10 })[0]?.id, original.id);
+    f.coordination.readMail(b.id, original.id);
+    assert.deepEqual(f.coordination.searchMail(b.id, { unread: true, limit: 10 }), []);
+    assert.equal(f.coordination.searchMail(a.id, { from: b.id, thread: original.threadId, limit: 10 })[0]?.id, reply.id);
+    const message = { rootId: f.root.id, fromSessionId: a.id, toSessionId: b.id, subject: 'Once',
+      body: 'Only once', purpose: 'information' as const, replyTo: null, author: 'model' as const };
+    assert.equal(f.coordination.sendMail(message, 'dedupe').id, f.coordination.sendMail(message, 'dedupe').id);
+    assert.deepEqual(f.coordination.tasks(f.root.id), []);
+  } finally { await f.close(); }
 });
 
 for (const scope of ['session', 'project'] as const) {

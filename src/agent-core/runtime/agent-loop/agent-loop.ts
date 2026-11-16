@@ -62,6 +62,7 @@ export class AgentLoop {
         if (unresolvedToolCalls.length > 0) {
           const waiting = await this.toolExecutor.process(session, run, unresolvedToolCalls, signal, onEvent);
           if (waiting) return run;
+          if (this.context.shouldPark(run)) return this.finalizer.waiting(session, run, onEvent);
           continue;
         }
 
@@ -115,7 +116,10 @@ export class AgentLoop {
         );
         if (functionCalls.length > 0) {
           const waiting = await this.toolExecutor.process(session, run, functionCalls, signal, onEvent);
-          if (waiting) return run;
+          // Awaiting authorization
+          if (waiting) return run; 
+          // Wait via tool
+          if (this.context.shouldPark(run)) return this.finalizer.waiting(session, run, onEvent);
           continue;
         }
 
@@ -130,10 +134,8 @@ export class AgentLoop {
           continue;
         }
 
-        // Deliver queued collaboration messages before completing the run.
-        if (!this.context.readyToComplete()) continue;
-        
-        return this.finalizer.completed(session, run, onEvent);
+        if (this.context.hasPendingWait()) return this.finalizer.waiting(session, run, onEvent);
+        return this.finalizer.completed(session, run, text, onEvent);
       }
       throw new Error("Agent loop exceeded maximum steps.");
     } catch (error) {

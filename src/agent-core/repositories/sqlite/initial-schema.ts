@@ -1,9 +1,9 @@
 import type { DatabaseSync } from "node:sqlite";
 import { nowIso } from "../../utils.js";
-import { AGENT_TASKS_SQL } from "./migrations/v24-to-v25.js";
+import { COORDINATION_SCHEMA } from "./coordination-schema.js";
 
 export const SQLITE_SCHEMA_GENERATION = "multi-user-multi-model";
-export const SQLITE_SCHEMA_VERSION = 25;
+export const SQLITE_SCHEMA_VERSION = 26;
 
 // New databases start at the current version. Historical upgrades live in migrations/.
 const METADATA_SQL = `
@@ -38,7 +38,7 @@ CREATE UNIQUE INDEX sessions_delegation_idx ON sessions(origin_run_id, origin_ca
 const RUNS_SQL = `
 CREATE TABLE agent_runs(
   id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-  run_order INTEGER NOT NULL, status TEXT NOT NULL, model_snapshot_json TEXT NOT NULL,
+  run_order INTEGER NOT NULL, status TEXT NOT NULL, final_output TEXT, model_snapshot_json TEXT NOT NULL,
   permission_snapshot_json TEXT NOT NULL DEFAULT '{"permissionMode":"ask"}',
   pending_tool_batch_json TEXT, error_code TEXT, error_message TEXT,
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL, completed_at TEXT,
@@ -115,15 +115,6 @@ CREATE TABLE mcp_servers(name TEXT PRIMARY KEY, ciphertext BLOB NOT NULL, nonce 
 const AGENT_COORDINATION_SQL = `
 CREATE TABLE agent_plans(root_session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
  revision INTEGER NOT NULL, items_json TEXT NOT NULL CHECK(json_valid(items_json))) STRICT;
-CREATE TABLE agent_messages(id TEXT PRIMARY KEY, from_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
- to_session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, source_run_id TEXT NOT NULL,
- kind TEXT NOT NULL CHECK(kind IN ('message', 'result')), text TEXT NOT NULL,
- wake INTEGER NOT NULL, consumed INTEGER NOT NULL DEFAULT 0, dedupe_key TEXT NOT NULL UNIQUE,
- author TEXT CHECK(author IN ('user', 'model')), model TEXT,
- relationship TEXT CHECK(relationship IN ('parent', 'child')),
- purpose TEXT CHECK(purpose IN ('task', 'message', 'progress', 'clarification')), reply_to TEXT,
- task_id TEXT, assignment_id TEXT) STRICT;
-CREATE INDEX agent_messages_inbox_idx ON agent_messages(to_session_id, consumed);
 `;
 
 const INITIAL_SCHEMA_SQL = [
@@ -139,7 +130,7 @@ const INITIAL_SCHEMA_SQL = [
   PROMPT_SETTINGS_SQL,
   MCP_CONFIG_SQL,
   AGENT_COORDINATION_SQL,
-  AGENT_TASKS_SQL,
+  COORDINATION_SCHEMA,
 ].join("\n");
 
 export function initializeWorkspaceSchema(database: DatabaseSync): void {

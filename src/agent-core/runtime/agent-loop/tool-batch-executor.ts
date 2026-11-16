@@ -41,6 +41,9 @@ export class ToolBatchExecutor {
     private readonly logger: Logger,
   ) {}
 
+  /**
+   * @returns whether need permission
+   */
   async process(
     session: Session,
     run: AgentRunRecord,
@@ -389,10 +392,11 @@ export class ToolBatchExecutor {
         ...(result.ok ? structuredClone(result.content ?? []) : [])], isError: !result.ok,
     };
     const outputIndex = run.timeline.push(item) - 1;
-    await this.workspaceStore.touch(session, run);
+    const { waitReceipt, ...visibleResult } = result;
+    await this.workspaceStore.touch(session, run, waitReceipt);
     await emit(onEvent, run, { type: "item_started", item, outputIndex });
     await emit(onEvent, run, { type: "item_completed", item, outputIndex });
-    await emit(onEvent, run, { type: "tool_completed", itemId: item.id, callId: toolCall.id, result });
+    await emit(onEvent, run, { type: "tool_completed", itemId: item.id, callId: toolCall.id, result: visibleResult });
   }
 }
 

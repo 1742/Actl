@@ -1,3 +1,5 @@
+import { activateAgentRun, completeAgentWait } from "./agent-coordination-repository.js";
+import type { RunActivation, WaitReceipt } from "../agent-coordination-repository.js";
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import type { AgentRunRecord } from "../../runtime/agent-domain.js";
 import { agentProfileSchema } from "../../runtime/multi-agents/agent-profile-catalog.js";
@@ -95,8 +97,10 @@ export class SqliteSessionRepository implements SessionRepository {
       (providerResponseIds[runId] ??= []).push(stringColumn(row, "provider_response_id"));
     }
     const contextState = this.loadSessionContextState(sessionId);
+    const parked = this.db.prepare('SELECT park_run_id FROM agent_waits WHERE session_id = ?').get(sessionId);
     return {
       runs,
+      ...(parked ? { parkingRunId: String(parked.park_run_id) } : {}),
       provider_response_ids: providerResponseIds,
       ...(contextState ? { contextState } : {}),
       compressionRecords: this.all("SELECT session_id, summarized_run_count, summary, created_at FROM context_compressions WHERE session_id = ? ORDER BY summarized_run_count", sessionId).map((row): ContextCompressionRecord => ({
@@ -109,12 +113,13 @@ export class SqliteSessionRepository implements SessionRepository {
     };
   }
 
-  async createRun(run: AgentRunRecord): Promise<void> {
+  async createRun(run: AgentRunRecord, activation?: RunActivation): Promise<void> {
     withSqliteTransaction(this.db, () => {
       const orderRow = this.db.prepare(
         "SELECT COALESCE(MAX(run_order), -1) + 1 AS next_order FROM agent_runs WHERE session_id = ?",
       ).get(run.sessionId) as SqliteRow;
       this.insertRun(run, numberColumn(orderRow, "next_order"));
+      if (activation) activateAgentRun(this.db, run, activation);
       this.db.prepare("UPDATE sessions SET updated_at = ? WHERE id = ?").run(run.updatedAt, run.sessionId);
     });
   }
@@ -124,19 +129,21 @@ export class SqliteSessionRepository implements SessionRepository {
     timelineUpdates: readonly TimelineItemUpdate[],
     timelineLength: number,
     sessionUpdatedAt: string,
+    waitReceipt?: WaitReceipt,
   ): Promise<void> {
     withSqliteTransaction(this.db, () => {
       assertChanged(this.db.prepare(`
-        UPDATE agent_runs SET status = ?, model_snapshot_json = ?, permission_snapshot_json = ?, pending_tool_batch_json = ?, error_code = ?, error_message = ?,
+        UPDATE agent_runs SET status = ?, final_output = ?, model_snapshot_json = ?, permission_snapshot_json = ?, pending_tool_batch_json = ?, error_code = ?, error_message = ?,
           updated_at = ?, completed_at = ?, next_sequence_number = ?
         WHERE id = ? AND session_id = ?
       `).run(
-        run.status, JSON.stringify(run.modelSnapshot), JSON.stringify(run.permissionSnapshot),
+        run.status, run.finalOutput ?? null, JSON.stringify(run.modelSnapshot), JSON.stringify(run.permissionSnapshot),
         run.pendingToolBatch ? JSON.stringify(run.pendingToolBatch) : null,
         run.error?.code ?? null, run.error?.message ?? null, run.updatedAt, run.completedAt ?? null,
         run.nextSequenceNumber, run.id, run.sessionId,
       ), "Run", run.id);
       this.updateTimeline(run.id, timelineUpdates, timelineLength);
+      if (waitReceipt) completeAgentWait(this.db, run.sessionId, waitReceipt);
       assertChanged(this.db.prepare("UPDATE sessions SET updated_at = ? WHERE id = ?")
         .run(sessionUpdatedAt, run.sessionId), "Session", run.sessionId);
     });
@@ -273,6 +280,7 @@ export class SqliteSessionRepository implements SessionRepository {
       id,
       sessionId: stringColumn(row, "session_id"),
       status: stringColumn(row, "status") as AgentRunRecord["status"],
+      ...(row.final_output === null ? {} : { finalOutput: stringColumn(row, "final_output") }),
       modelSnapshot: parseModelSnapshot(modelSnapshotJson),
       permissionSnapshot: parsePermissionSnapshot(stringColumn(row, "permission_snapshot_json")),
       input: this.all("SELECT payload_json FROM run_messages WHERE run_id = ? ORDER BY message_order", id)

@@ -39,11 +39,15 @@ export type ResponseInputPartDto =
   | { type: "input_skill"; id: string; name?: string }
   | { type: "input_mcp_server"; name: string };
 
+  /**
+   * user: human message 
+   * model: ai message 
+   * agent: mail 
+   */
 export type MessageSource =
   | { kind: 'user' | 'runtime' }
   | { kind: 'model'; sessionId: string; runId: string; model?: string }
-  | { kind: 'agent'; sessionId: string; runId: string; model?: string; relationship: AgentMessageRelationship; purpose: AgentMessagePurpose; replyTo?: string; taskId?: string; assignmentId?: string }
-  | { kind: 'user'; taskId: string; assignmentId: string };
+  | { kind: 'agent'; sessionId: string; relationship: AgentMessageRelationship; purpose: AgentMessagePurpose; mailNumber: number; subject: string; replyTo?: number };
 
 export interface ResponseInputMessageDto {
   id?: string;
@@ -164,7 +168,7 @@ export interface AgentResponseDto {
   id: string;
   object: "response";
   session_id: string;
-  status: "in_progress" | "waiting_permission" | "completed" | "incomplete" | "failed" | "cancelled";
+  status: "in_progress" | "waiting_permission" | "waiting" | "completed" | "incomplete" | "failed" | "cancelled";
   model: string;
   reasoning_effort?: ReasoningEffort;
   permission_mode: PermissionMode;
@@ -179,7 +183,7 @@ export interface AgentResponseDto {
 
 interface StreamEventBase { response_id: string; sequence_number: number }
 export type AgentStreamEvent = StreamEventBase & (
-  | { type: "response.created" | "response.completed" | "response.failed" | "response.incomplete" | "response.cancelled"; response: AgentResponseDto }
+  | { type: "response.created" | "response.waiting" | "response.completed" | "response.failed" | "response.incomplete" | "response.cancelled"; response: AgentResponseDto }
   | { type: "response.output_item.added" | "response.output_item.done"; output_index: number; item: AgentItemDto }
   | { type: "response.content_part.added" | "response.content_part.done"; item_id: string; output_index: number; content_index: number; part: ResponseMessagePartDto }
   | { type: "response.output_text.delta"; item_id: string; output_index: number; content_index: number; delta: string }

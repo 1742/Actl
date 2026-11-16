@@ -2,7 +2,7 @@ import type { AIFunctionCallItem, AIMessageItem, AIReasoningItem, AIResponseCont
 import type { AgentStreamEvent } from '../../../../shared/agent/responses';
 import { normalizeContent, normalizeResponse, normalizeResponseItem } from "../utils/aiResponse";
 
-type ResponseReduceStatus = "streaming" | "completed" | "failed" | "incomplete" | "cancelled";
+type ResponseReduceStatus = "streaming" | "waiting" | "completed" | "failed" | "incomplete" | "cancelled";
 
 interface ResponseReduceResult {
   status: ResponseReduceStatus;
@@ -70,10 +70,11 @@ export function reduceResponseEvent(
     case "response.function_call_arguments.done":
       updateFunctionArguments(context, event);
       return result("streaming", context);
+    case "response.waiting":
     case "response.completed":
       replaceResponse(context, event.response);
       context.completedAt = timestampFrom(event.response) ?? now;
-      return result("completed", context);
+      return result(event.type === "response.waiting" ? "waiting" : "completed", context);
     case "response.failed":
       replaceResponse(context, event.response);
       context.completedAt = timestampFrom(event.response) ?? now;
@@ -121,6 +122,7 @@ function result(status: ResponseReduceStatus, context: AIResponseContext): Respo
 
 function statusFromContext(context: AIResponseContext): ResponseReduceStatus {
   if (context.response.status === "completed") return "completed";
+  if (context.response.status === "waiting") return "waiting";
   if (context.response.status === "failed") return "failed";
   if (context.response.status === "incomplete") return "incomplete";
   if (context.response.status === "cancelled") return "cancelled";

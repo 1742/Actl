@@ -3,7 +3,7 @@ import type { ReasoningEffort } from "../../model/catalog-types.js";
 import type { TranscriptMessage } from "../../model/types.js";
 import type { Logger } from "../../observability/logger.js";
 import type { PermissionEngine, PermissionMode } from "../../permissions/engine.js";
-import type { AgentCoordinationRepository } from "../../repositories/agent-coordination-repository.js";
+import type { AgentCoordinationRepository, RunActivation } from "../../repositories/agent-coordination-repository.js";
 import type { ToolRegistry } from "../../tools/registry.js";
 import { isTerminalRun, type AgentDomainEventHandler, type AgentRunRecord, type PendingToolBatch, type PermissionResolution } from "../agent-domain.js";
 import { AgentLoop } from "../agent-loop/agent-loop.js";
@@ -62,6 +62,7 @@ export class SessionRuntime {
     prepareInput: PrepareRunInput,
     options: AgentRunOptions,
     onEvent: AgentDomainEventHandler,
+    activation?: RunActivation,
   ): Promise<AgentRunRecord> {
     return this.operate(async (operation) => {
       const session = this.session;
@@ -78,7 +79,7 @@ export class SessionRuntime {
         signal.throwIfAborted();
         run = await this.workspace.createResponse(session, prepared, snapshot, {
           permissionMode: session.parentSessionId ? "plan" : options.permissionMode,
-        });
+        }, activation);
         this.admission.activate(reservation, activeResponseReference(run, session));
       } catch (error) {
         await this.admission.releaseReservation(reservation);

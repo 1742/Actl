@@ -23,6 +23,7 @@ export class AgentStreamProjector {
 
   private projectPayload(event: AgentDomainEvent): AgentStreamEventPayload[] {
     if (event.type === "run_created") return [{ type: "response.created", response: toAgentResponseDto(event.run, this.resolveStoredFile) }];
+    if (event.type === "run_waiting") return [{ type: "response.waiting", response: toAgentResponseDto(event.run, this.resolveStoredFile) }];
     if (event.type === "run_completed") return [{ type: "response.completed", response: toAgentResponseDto(event.run, this.resolveStoredFile) }];
     if (event.type === "run_failed") return [{ type: "response.failed", response: toAgentResponseDto(event.run, this.resolveStoredFile) }];
     if (event.type === "run_incomplete") return [{ type: "response.incomplete", response: toAgentResponseDto(event.run, this.resolveStoredFile) }];

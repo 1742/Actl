@@ -1,14 +1,19 @@
-import { EventEmitter, once } from 'node:events';
-import type { AgentInboxMessage, AgentMessagePurpose, AgentTask, AgentTaskInput, AgentTreeEvent, AgentTreeSnapshot, PlanItem } from '../../../shared/agent/coordination.js';
-import type { AgentCoordinationRepository } from '../../repositories/agent-coordination-repository.js';
+import { AgentDirectory, directoryState } from './agent-directory.js';
+import { AgentMailbox, type SendMailInput } from './agent-mailbox.js';
+import { WaitToolOutput } from '../transcript.js';
+import type { AgentMail, AgentTask, AgentTaskInput, AgentTreeEvent, AgentTreeSnapshot, PlanItem, TaskAttempt } from '../../../shared/agent/coordination.js';
+import type { AgentCoordinationRepository, RunActivation, TaskDecision, WaitCondition, WaitOutcome } from '../../repositories/agent-coordination-repository.js';
+import type { TranscriptMessage } from '../../model/types.js';
+import { runAlias } from './coordination-references.js';
+import { CoordinationWaits, matchesWaitMail } from './coordination-waits.js';
 import type { ReasoningEffort } from '../../model/catalog-types.js';
 import type { AgentStreamEvent } from '../../../shared/agent/responses.js';
 import type { ProjectSettings } from '../../../shared/agent/sessions.js';
 import { toSessionJson } from '../../contracts/common/presenters.js';
 import { toAgentResponseDto } from '../../contracts/agent-responses/presenter.js';
 import { createRandomId } from '../../utils.js';
-import { isTerminalRun, type AgentDomainEventHandler, type AgentRunRecord, type AgentRunStatus, type PermissionResolution } from '../agent-domain.js';
-import { instructionInput, instructionRun } from '../session/session-model-context.js';
+import { isTerminalRun, type AgentDomainEventHandler, type AgentRunRecord, type PermissionResolution } from '../agent-domain.js';
+import { mailInput } from '../session/session-model-context.js';
 import { AgentLoopError } from '../agent-loop/agent-loop-error.js';
 import { ExecutionAdmission, ResponseScopeConflictError } from '../execution-admission.js';
 import { SessionRuntime, mapSessionConcurrencyError, type AgentRunOptions, type PrepareRunInput, type SessionRuntimeServices } from '../session/session-runtime.js';
@@ -20,42 +25,29 @@ import { AgentProfileCatalog, DEFAULT_AGENT_PROFILE } from './agent-profile-cata
 const MAX_ACTIVE_CHILDREN = 3;
 const MAX_CHILDREN = 12;
 
-type AgentWaitTarget = { sessionId: string; runId: string } | { sessionId: string; messageId: string };
-type DelegationTarget = { profileId: string } | { sessionId: string };
+export type DelegationTarget = { kind: 'agent'; agent: string } | { kind: 'create'; role: string };
+export type WaitCommand =
+  | { action: 'start'; condition: WaitCondition; timeoutMs: number }
+  | { action: 'resume' }
+  | { action: 'cancel' };
 
-interface WaitAgentsOptions {
-  targets: AgentWaitTarget[];
-  until: 'any' | 'all';
-  timeoutMs: number;
-}
-
-interface ChildStatus {
-  sessionId: string;
-  status: AgentRunStatus | 'queued';
-  runId?: string;
-  messageId?: string;
-  output?: string;
-  error?: string;
-}
-
-interface SendAgentMessageOptions {
-  userFollowUp?: boolean;
-  purpose?: Exclude<AgentMessagePurpose, 'task'> | undefined;
-  replyTo?: string | undefined;
+function runtimeInput(text: string): TranscriptMessage {
+  return { id: createRandomId('coordination'), type: 'message', role: 'user', source: { kind: 'runtime' }, content: [{ type: 'text', text }] };
 }
 
 export class AgentCoordinator {
+  readonly directory: AgentDirectory;
+  readonly mailbox: AgentMailbox;
   private readonly events: AgentEventHub;
-  private readonly waitEvents = new EventEmitter();
+  private readonly waits: CoordinationWaits;
+  private readonly retryTimer: NodeJS.Timeout;
+  private dispatchTimer?: NodeJS.Timeout | undefined;
+  private dispatching?: Promise<void> | undefined;
   private readonly executions = new Set<Promise<unknown>>();
   private readonly runtimes = new Map<string, SessionRuntime>();
   private readonly admission: ExecutionAdmission;
   private readonly stops = new Map<string, Promise<void>>();
-  private readonly stoppingTrees = new Set<string>();
-  private readonly stoppedSessions = new Set<string>();
   private readonly queues = new Map<string, Promise<void>>();
-  private readonly wakeTimers = new Map<string, NodeJS.Timeout>();
-  private readonly childStarts = new Map<string, Promise<AgentRunRecord>>();
   private closing = false;
 
   constructor(
@@ -65,16 +57,25 @@ export class AgentCoordinator {
     private readonly services: SessionRuntimeServices,
     private readonly profiles = new AgentProfileCatalog(),
   ) {
+    this.directory = new AgentDirectory(workspace, state);
+    this.mailbox = new AgentMailbox(state, this.directory);
     this.events = new AgentEventHub(services.files);
     this.admission = new ExecutionAdmission(workspace);
+    this.waits = new CoordinationWaits(state, workspace);
+    this.retryTimer = setInterval(() => this.requestDispatch(), 500);
+    this.retryTimer.unref();
+    this.requestDispatch();
   }
 
   async start(session: Session, prepareInput: PrepareRunInput, options: AgentRunOptions, listener?: (event: AgentStreamEvent) => void): Promise<AgentRunRecord> {
-    const { running } = await this.serialized(session.rootSessionId ?? session.id, () => {
+    const { running } = await this.serialized(session.rootSessionId ?? session.id, async () => {
       this.assertSessionExists(session);
-      if (session.parentSessionId) throw new Error('Child work starts through delegate_task or a follow-up to its assigned task.');
-      this.allowUserTurn(session);
-      return { running: this.begin(session, prepareInput, options, this.eventHandler(session, listener)) };
+      if (session.parentSessionId) throw new Error('Start child work through task assignment or a follow-up.');
+      this.assertAvailableForUser(session);
+      this.state.enableAgent(session.id);
+      const wake = await this.prepareWake(session, this.state.activeTask(session.id, session.id), true);
+      const input: PrepareRunInput = async (signal) => [...(wake?.input ?? []), ...await prepareInput(signal)];
+      return { running: this.begin(session, input, options, this.eventHandler(session, listener), wake?.activation) };
     });
     return running;
   }
@@ -163,7 +164,7 @@ export class AgentCoordinator {
       const loaded = await this.workspace.getSession(item.id, session.ownerId);
       if (!loaded) continue;
       const run = loaded.runs.at(-1);
-      members.push({ session: toSessionJson(loaded), ...(run ? {
+      members.push({ session: toSessionJson(loaded), waiting: !!this.state.wait(loaded.id), ...(run ? {
         response: toAgentResponseDto(run, this.services.files.describeForSession.bind(this.services.files)),
         sequenceNumber: run.nextSequenceNumber - 1,
       } : {}) });
@@ -171,317 +172,192 @@ export class AgentCoordinator {
     return { rootSessionId, members, plan: this.state.plan(rootSessionId), tasks: this.state.tasks(rootSessionId) };
   }
 
-  async list(session: Session) {
-    const agents = [];
-    for (const member of this.workspace.descendants(session.id)) {
-      if (member.parentSessionId !== session.id) continue;
-      const child = await this.workspace.getSession(member.id, session.ownerId);
-      if (!child) continue;
-      const run = child.runs.at(-1);
-      const profile = child.profile ?? DEFAULT_AGENT_PROFILE;
-      agents.push({
-        sessionId: child.id, title: child.title, status: run?.status ?? 'idle',
-        profile: { id: profile.id, name: profile.name }, ...(run ? { runId: run.id } : {})
-      });
-    }
-    return { agents, plan: this.state.plan(session.rootSessionId ?? session.id) };
-  }
-
   async listProfiles(session: Session) {
     this.assertRoot(session);
     return (await this.profiles.list()).map(({ id, name, description }) => ({ id, name, description }));
   }
 
-  tasks(session: Session): AgentTask[] {
+  tasks(session: Session) {
     this.assertSessionExists(session);
-    return this.state.tasks(session.rootSessionId ?? session.id);
+    return this.state.tasks(session.rootSessionId ?? session.id).map((task) => this.presentTask(session, task));
+  }
+
+  taskDetails(session: Session, ref: string) {
+    const task = this.requireTask(session, ref);
+    const attempts = this.state.attemptHistory(task.rootSessionId, task.id).map((attempt) => this.presentAttempt(session, attempt));
+    return { ...this.presentTask(session, task), attempts };
   }
 
   createTask(session: Session, run: AgentRunRecord, callId: string, draft: AgentTaskInput) {
     this.assertRoot(session);
-    return this.changeTask(session, () => this.state.createTask(session.id, draft, `create:${run.id}:${callId}`));
+    return this.mutate(session, () => {
+      const blockedBy = draft.blockedBy?.map((ref) => this.requireTask(session, ref).id);
+      const task = this.state.createTask(session.id, session.id, { ...draft, blockedBy }, `task:${run.id}:${callId}`);
+      return this.presentTask(session, task);
+    });
   }
 
-  claimTask(session: Session, run: AgentRunRecord, callId: string, taskId: string, revision: number) {
-    const root = session.rootSessionId ?? session.id;
-    return this.changeTask(session, () => this.state.claimTask(root, taskId, revision, session.id,
-      createRandomId('assignment'), run.id, `claim:${run.id}:${callId}`));
+  claimTask(session: Session, run: AgentRunRecord, callId: string, ref: string) {
+    return this.mutate(session, () => {
+      const task = this.requireTask(session, ref);
+      this.assertMatches(session, task);
+      if (this.state.wait(session.id)) throw new Error('Resolve or cancel your current wait before claiming a task.');
+      if (task.reviewerSessionId === session.id) throw new Error('The reviewer cannot claim this task. Do your own work directly.');
+      const claimed = this.state.assignTask(task.rootSessionId, task.id, session.id, { kind: 'claim', runId: run.id }, `claim:${run.id}:${callId}`);
+      return this.presentTask(session, claimed);
+    });
   }
 
-  async delegateTask(parent: Session, run: AgentRunRecord, callId: string, taskId: string, revision: number, target: DelegationTarget) {
+  async delegateTask(parent: Session, run: AgentRunRecord, callId: string, ref: string, target?: DelegationTarget) {
     this.assertRoot(parent);
-    const { receipt, queued, started } = await this.serialized(parent.id, async () => {
-      this.assertOpen(parent);
-      const key = `delegate:${run.id}:${callId}`;
-      const receipt = this.state.delegationReceipt(key);
-      if (receipt) {
-        if (receipt.taskId !== taskId) throw new Error('This call already delegated a different task.');
-        const child = await this.workspace.getSession(receipt.sessionId, parent.ownerId);
-        const delivered = child && instructionRun(child, receipt.messageId);
-        const message = this.state.getMessage(receipt.messageId, parent.id, receipt.sessionId);
-        const current = this.state.task(parent.id, taskId);
-        const queued = !!message?.wake && current?.status === 'in_progress' && current.assignmentId === receipt.assignmentId;
-        if (queued && !delivered) this.scheduleWake(receipt.sessionId);
-        return { receipt, queued, started: delivered ? Promise.resolve(delivered) : queued ? this.childStarts.get(receipt.sessionId) : undefined };
+    return this.mutate(parent, async () => {
+      const task = this.requireTask(parent, ref);
+      const operation = `delegate:${run.id}:${callId}`;
+      const existing = this.state.assignmentOwner(operation, task.id);
+      if (existing) return this.presentTask(parent, task);
+      if (!task.ready) throw new Error('Only a pending task with accepted dependencies can be delegated.');
+      let child: Session | undefined;
+      let created = false;
+      if (!target) {
+        child = (await this.idleChildren(parent)).find((agent) => this.matches(agent, task));
+      } else if (target.kind === 'agent') {
+        child = await this.directory.resolve(parent, target.agent);
+        if (child.parentSessionId !== parent.id) throw new Error('Delegate to a child agent.');
+        this.assertMatches(child, task);
+        if (!this.isAvailable(child)) throw new Error('The selected agent is not idle.');
+      } else {
+        if (target.role !== task.type) throw new Error('The new role must match the task type.');
+        child = await this.createChild(parent, run, callId, task, target.role);
+        created = true;
       }
-
-      const task = this.requireTask(parent.id, taskId, revision);
-      if (!task.ready) throw new Error('Task must be ready and unassigned before delegation.');
-      this.assertCapacity(parent);
-      const child = await this.delegationChild(parent, run, callId, task, target);
-      this.assertOpen(parent);
-      this.assertAvailableForUser(child);
-      const runtime = this.runtimes.get(child.id);
-      if (runtime?.preparing || runtime?.executing || child.runs.some((item) => !isTerminalRun(item)) ||
-        this.state.activeTask(parent.id, child.id)) throw new Error('Delegate to a child with no active task or run.');
-
-      const assignmentId = createRandomId('assignment');
-      const message: AgentInboxMessage = {
-        id: createRandomId('agent_message'), fromSessionId: parent.id, toSessionId: child.id, sourceRunId: run.id,
-        kind: 'message', wake: true, author: 'model', model: run.modelSnapshot.displayName,
-        relationship: 'parent', purpose: 'task', taskId, assignmentId,
-        text: `${task.title}\n\n${task.instructions}\n\nAcceptance criteria:\n${task.acceptanceCriteria}`,
-      };
-      this.state.delegateTask(parent.id, taskId, revision, assignmentId, message, key);
-      this.stoppedSessions.delete(child.id);
-      const started = new Promise<AgentRunRecord>((resolve, reject) => {
-        void this.startWithInput(child, async () => [instructionInput(message)], run, resolve).then(resolve, reject);
-      });
-      this.childStarts.set(child.id, started);
-      const clearStart = () => { this.childStarts.delete(child.id); };
-      void started.then(clearStart, clearStart);
-      this.changed(parent.id);
-      return { receipt: { taskId, assignmentId, sessionId: child.id, messageId: message.id }, queued: true, started };
-    });
-    try {
-      const childRun = await started;
-      return { ...receipt, ...(childRun ? { runId: childRun.id, status: childRun.status } : { status: queued ? 'queued' : 'cancelled' }) };
-    } catch (error) {
-      return { ...receipt, status: 'queued', error: error instanceof Error ? error.message : String(error) };
-    }
-  }
-
-  releaseTask(session: Session, taskId: string, revision: number) {
-    const root = session.rootSessionId ?? session.id;
-    return this.changeTask(session, async () => {
-      const task = this.requireTask(root, taskId, revision);
-      if (session.parentSessionId && task.ownerSessionId !== session.id) throw new Error('Only the task owner or root can release it.');
-      if (task.ownerSessionId && task.ownerSessionId !== session.id) {
-        const child = await this.workspace.getSession(task.ownerSessionId, session.ownerId);
-        const runtime = this.runtimes.get(task.ownerSessionId);
-        if (runtime?.preparing || runtime?.executing || child?.runs.some((run) => !isTerminalRun(run))) {
-          throw new Error('Stop the active child or wait for it before releasing its task.');
-        }
+      if (!child) {
+        this.state.requestAssignment(task.rootSessionId, task.id);
+        return { ...this.presentTask(parent, task), reason: 'unassigned' };
       }
-      return this.state.releaseTask(root, taskId, revision);
+      try {
+        const assigned = this.state.assignTask(parent.id, task.id, child.id, { kind: 'delegate', sourceRunId: run.id }, operation);
+        return this.presentTask(parent, assigned);
+      } catch (error) {
+        if (created && !this.state.activeTask(parent.id, child.id)) await this.workspace.deleteSession(parent.ownerId, child.id);
+        throw error;
+      }
     });
   }
 
-  completeTask(session: Session, callerRun: AgentRunRecord, taskId: string, revision: number, resultRunId: string) {
-    this.assertRoot(session);
-    return this.changeTask(session, async () => {
-      const task = this.requireTask(session.id, taskId, revision);
-      const owner = task.ownerSessionId && await this.workspace.getSession(task.ownerSessionId, session.ownerId);
-      const run = owner && owner.runs.find((item) => item.id === resultRunId);
-      const isRootWork = owner === session && run === callerRun;
-      if (!run || (!isRootWork && run.status !== 'completed')) throw new Error('A successful run from the current task assignment is required.');
-      if (owner !== session && task.ownerSessionId) {
-        const runtime = this.runtimes.get(task.ownerSessionId);
-        if (runtime?.executing || runtime?.preparing) throw new Error('Wait for the assigned child run to settle before accepting the task.');
-      }
-      if (!task.assignmentId || (!isRootWork && run.id !== task.assignmentRunId && ![...run.input, ...run.timeline].some((item) =>
-        item.type === 'message' && item.source && 'assignmentId' in item.source && item.source.assignmentId === task.assignmentId))) {
-        throw new Error('Run does not belong to the current task assignment.');
-      }
-      return this.state.completeTask(session.id, taskId, revision, resultRunId);
+  async decideTask(session: Session, run: AgentRunRecord, callId: string, ref: string, decision: TaskDecision) {
+    const { presented, stopped } = await this.mutate(session, () => {
+      const task = this.requireTask(session, ref);
+      const updated = this.state.decideTask(task.rootSessionId, task.id, session.id, decision, `decision:${run.id}:${callId}`);
+      const cancellingRun = updated.status === 'cancelled' && task.status === 'running' && task.attempt;
+      const stopped = cancellingRun ? this.runtimes.get(cancellingRun.ownerSessionId)?.stop() : undefined;
+      return { presented: this.presentTask(session, updated), stopped };
     });
+    await stopped;
+    return presented;
   }
 
-  async send(sender: Session, sourceRun: AgentRunRecord, targetId: string, text: string, callId: string, options: SendAgentMessageOptions = {}) {
-    if (sourceRun.sessionId !== sender.id) throw new Error('Source run does not belong to the sending session.');
-    const target = await this.related(sender, targetId);
-    const downlink = target.parentSessionId === sender.id;
-    if (options.userFollowUp && !downlink) throw new Error('User instructions can only be sent to a direct child.');
-    return this.serialized(sender.rootSessionId ?? sender.id, () => {
-      this.assertSessionExists(sender);
-      this.assertSessionExists(target);
-      const dedupeKey = `message:${sourceRun.id}:${callId}`;
-      const existing = this.state.messageFromToolCall(dedupeKey);
-      if (existing) {
-        if (existing.toSessionId !== target.id) throw new Error('This tool call already sent a message to another session.');
-        if (existing.wake) this.scheduleWake(target.id);
-        return { sessionId: target.id, messageId: existing.id, accepted: true };
-      }
-      const task = this.state.activeTask(sender.rootSessionId ?? sender.id, downlink ? target.id : sender.id);
-      if (downlink && !task) throw new Error('The child needs an assigned task before receiving follow-ups.');
-      // Verify whether the message being replied to exists; for the message being replied to, the sender and recipient are the reverse of those in the reply message.
-      if (options.replyTo) {
-        const question = this.state.getMessage(options.replyTo, target.id, sender.id);
-        if (!question) throw new Error('replyTo must identify a message received from the target agent.');
-        if (question.assignmentId && question.assignmentId !== task?.assignmentId) {
-          throw new Error('The message belongs to a previous task assignment.');
-        }
-      }
-      if (options.userFollowUp) this.allowUserTurn(sender);
-      this.assertOpen(sender);
-      this.assertAvailableForUser(target);
-      if (downlink) this.stoppedSessions.delete(target.id);
-      const message: AgentInboxMessage = {
-        id: createRandomId('agent_message'), fromSessionId: sender.id, toSessionId: target.id,
-        sourceRunId: sourceRun.id, kind: 'message', text, wake: downlink,
-        author: options.userFollowUp ? 'user' : 'model',
-        ...(task?.assignmentId ? { taskId: task.id, assignmentId: task.assignmentId } : {}),
-        ...(options.userFollowUp ? {} : {
-          model: sourceRun.modelSnapshot.displayName,
-          relationship: downlink ? 'parent' : 'child',
-          purpose: options.purpose ?? 'message',
-          ...(options.replyTo ? { replyTo: options.replyTo } : {}),
-        }),
-      };
-      const messageId = this.state.enqueue(message, dedupeKey);
-      if (message.wake) this.scheduleWake(target.id);
-      this.changed(sender.rootSessionId ?? sender.id);
-      return { sessionId: target.id, messageId, accepted: true };
-    });
-  }
-
-  /** parent agent wait children */
-  async wait(parent: Session, { targets, until, timeoutMs }: WaitAgentsOptions, signal?: AbortSignal) {
-    signal?.throwIfAborted();
-    this.assertSessionExists(parent);
-    if (new Set(targets.map((target) => target.sessionId)).size !== targets.length) {
-      throw new Error('Wait targets must specify distinct child sessions.');
-    }
-    const children = await Promise.all(targets.map(async (target) => {
-      const child = await this.related(parent, target.sessionId);
-      if (child.parentSessionId !== parent.id) throw new Error('Only direct children can be awaited.');
-      if ('runId' in target) {
-        const run = child.runs.find((item) => item.id === target.runId);
-        if (!run) throw new Error('Run does not belong to the target child.');
-        return { child, run };
-      }
-      if (!this.state.getMessage(target.messageId, parent.id, child.id)) {
-        throw new Error('Message was not sent to the target child by this caller.');
-      }
-      return { child, messageId: target.messageId };
-    }));
-
-    return this.waitForChange(parent, timeoutMs, signal, () => {
-      const pendingSessionIds: string[] = [];
-      const needsInput: Array<{ sessionId: string; runId: string; messageId: string }> = [];
-      const statuses = children.map(({ child, run: selected, messageId }): ChildStatus => {
-        const sessionId = child.id;
-        const target = { sessionId, ...(messageId ? { messageId } : {}) };
-        const run = messageId ? instructionRun(child, messageId) : selected;
-        if (!this.workspace.hasSession(sessionId, parent.ownerId)) {
-          return { ...target, ...(run ? { runId: run.id } : {}), status: 'cancelled' };
-        }
-
-        // A child waiting for clarification can also prevent a new follow-up from being delivered.
-        const active = child.runs.at(-1);
-        const questionRun = run ?? (active?.status === 'in_progress' ? active : undefined);
-        if (questionRun?.status === 'in_progress' || questionRun?.status === 'completed') {
-          const assignmentId = this.state.activeTask(parent.id, sessionId)?.assignmentId;
-          for (const question of this.state.unansweredClarifications(sessionId, parent.id, questionRun.id)) {
-            if (question.assignmentId && question.assignmentId !== assignmentId) continue;
-            needsInput.push({ sessionId, runId: questionRun.id, messageId: question.id });
-          }
-        }
-
-        if (!run) {
-          if (!messageId || !this.state.getMessage(messageId, parent.id, sessionId)?.wake) {
-            return { ...target, status: 'cancelled' };
-          }
-          pendingSessionIds.push(sessionId);
-          return { ...target, status: 'queued' };
-        }
-
-        const current = run === active;
-        // The current run's terminal status is assigned before its final write and lease release.
-        if (!isTerminalRun(run) || (current && (this.runtimes.get(sessionId)?.executing || this.stops.has(sessionId)))) {
-          pendingSessionIds.push(sessionId);
-          return { ...target, runId: run.id, status: isTerminalRun(run) ? 'in_progress' : run.status };
-        }
-
-        const output = run.status === 'completed' ? this.resultText(run) : '';
-        return { ...target, runId: run.id, status: run.status,
-          ...(output ? { output } : {}), ...(run.error ? { error: run.error.message } : {}) };
-      });
-      const finished = until === 'all' ? pendingSessionIds.length === 0 : pendingSessionIds.length < children.length;
-      return { ready: needsInput.length > 0 || finished, value: { statuses, pendingSessionIds, needsInput } };
-    });
-  }
-
-  async waitForMessage(session: Session, { sessionId, replyTo, timeoutMs }: {
-    sessionId: string;
-    replyTo?: string | undefined;
-    timeoutMs: number;
-  }, signal?: AbortSignal) {
-    signal?.throwIfAborted();
-    const peer = await this.related(session, sessionId);
-    const question = replyTo && this.state.getMessage(replyTo, session.id, peer.id);
-    if (replyTo && !question) {
-      throw new Error('replyTo must identify a message you sent to the target agent.');
-    }
-    return this.waitForChange<{ messageId?: string }>(session, timeoutMs, signal, () => {
-      this.assertSessionExists(peer);
-      if (question && question.assignmentId) {
-        const rootId = session.rootSessionId ?? session.id;
-        const childId = session.parentSessionId ? session.id : peer.id;
-        if (this.state.activeTask(rootId, childId)?.assignmentId !== question.assignmentId) {
-          throw new Error('The message belongs to a previous task assignment.');
-        }
-      }
-      const message = replyTo ? this.state.findReply(replyTo, peer.id, session.id) : this.state.pending(session.id)
-        .find((item) => item.fromSessionId === peer.id && !instructionRun(session, item.id));
-      return { ready: !!message, value: message ? { messageId: message.id } : {} };
-    });
-  }
-
-  private async waitForChange<T extends object>(session: Session, timeoutMs: number, signal: AbortSignal | undefined, check: () => { ready: boolean; value: T }) {
-    const root = session.rootSessionId ?? session.id;
-    const timeout = new AbortController();
-    const timer = setTimeout(() => timeout.abort(), timeoutMs);
-    const waitSignal = signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal;
-    try {
-      for (;;) {
-        signal?.throwIfAborted();
-        this.assertSessionExists(session);
-        const { ready, value } = check();
-        if (ready) return { ...value, timedOut: false };
-        if (timeoutMs === 0 || timeout.signal.aborted) return { ...value, timedOut: true };
-        // Check and register the listener in the same turn so no notification is missed.
-        try {
-          await once(this.waitEvents, root, { signal: waitSignal });
-        } catch (error) {
-          signal?.throwIfAborted();
-          if (!timeout.signal.aborted) throw error;
-        }
-      }
-    } finally {
-      clearTimeout(timer);
-    }
+  plan(session: Session) {
+    return this.state.plan(session.rootSessionId ?? session.id);
   }
 
   updatePlan(session: Session, revision: number, items: PlanItem[]) {
-    if (session.parentSessionId) throw new Error('Only the root agent can update the plan.');
+    this.assertRoot(session);
     const plan = this.state.updatePlan(session.id, revision, items);
     this.changed(session.id);
     return plan;
   }
 
-  async interrupt(caller: Session, targetId: string): Promise<void> {
-    const target = await this.related(caller, targetId);
+  async sendUserFollowUp(sender: Session, targetId: string, body: string, operation: string) {
+    const target = await this.directory.resolve(sender, targetId);
+    if (target.parentSessionId !== sender.id) throw new Error('User follow-ups go to a direct child.');
+    const rootId = sender.rootSessionId ?? sender.id;
+    const mail = await this.serialized(rootId, () => {
+      this.assertAvailableForUser(sender);
+      this.assertAvailableForUser(target);
+      const stored = this.state.sendMail({ rootId: target.rootSessionId!, fromSessionId: sender.id, toSessionId: target.id,
+        subject: 'User follow-up', body, author: 'user', purpose: 'urgent', replyTo: null }, `user-mail:${operation}`);
+      this.state.enableAgent(sender.id);
+      this.state.enableAgent(target.id);
+      this.changed(rootId);
+      return stored;
+    });
+    return { accepted: true, sessionId: target.id, messageId: mail.id };
+  }
+
+  sendMail(session: Session, run: AgentRunRecord, callId: string, input: SendMailInput) {
+    return this.mutate(session, () => this.mailbox.send(session, input, `mail:${run.id}:${callId}`));
+  }
+
+  async wait(session: Session, run: AgentRunRecord, command: WaitCommand) {
+    const root = session.rootSessionId ?? session.id;
+    return this.serialized(root, async () => {
+      this.assertOpen(session);
+      const current = this.state.wait(session.id);
+      if (command.action === 'cancel') {
+        return current
+          ? new WaitToolOutput({ status: 'cancelled' }, { waitId: current.id })
+          : { status: 'no_wait' };
+      }
+      if (command.action === 'resume') {
+        if (!current) return { status: 'no_wait' };
+        const outcome = await this.waits.outcome(current);
+        if (outcome) {
+          return new WaitToolOutput(this.presentOutcome(session, outcome, true), {
+            waitId: current.id, ...(outcome.kind === 'mail' ? { mailId: outcome.message.id } : {}),
+          });
+        }
+        this.state.parkWait(session.id, current.id, run.id);
+        return { status: 'waiting', deadline: current.deadline };
+      }
+      if (current) throw new Error('You have an existing wait. Use action resume to keep its deadline or cancel it explicitly.');
+      const condition = await this.resolveCondition(session, command.condition);
+      const deadline = Date.now() + command.timeoutMs;
+      const wait = { rootId: root, sessionId: session.id, condition, cursor: this.state.eventCursor(), deadline, parkRunId: run.id };
+      const outcome = await this.waits.outcome(wait, true);
+      if (outcome) {
+        const includeBody = outcome.kind === 'mail' && !this.state.pendingMail(session.id).some((mail) => mail.id === outcome.message.id);
+        return this.presentOutcome(session, outcome, includeBody);
+      }
+      this.state.registerWait(wait);
+      this.changed(root);
+      return { status: 'waiting', deadline };
+    });
+  }
+
+  async interrupt(caller: Session, ref: string): Promise<void> {
+    const target = await this.directory.resolve(caller, ref);
     if (target.parentSessionId !== caller.id) throw new Error('Only a parent can interrupt its child.');
     await this.stopTree(target);
   }
 
-  private assertRoot(session: Session): void {
-    this.assertSessionExists(session);
-    if (session.parentSessionId) throw new Error('Only the root agent can perform this task operation.');
+  private async resolveCondition(session: Session, condition: WaitCondition): Promise<WaitCondition> {
+    switch (condition.kind) {
+      case 'mail': {
+        const from = condition.from && (await this.directory.resolve(session, condition.from)).id;
+        const original = condition.replyTo ? this.mailbox.requireMessage(session, condition.replyTo) : undefined;
+        if (original && (original.fromSessionId !== session.id || (from && from !== original.toSessionId))) {
+          throw new Error('Wait for a reply to mail you sent to that agent.');
+        }
+        return { kind: 'mail', from: original?.toSessionId ?? from, replyTo: original?.id, purpose: condition.purpose };
+      }
+      case 'task_state': return { ...condition, task: this.requireTask(session, condition.task).id };
+      case 'agent_state': return { ...condition, agent: (await this.directory.resolve(session, condition.agent)).id };
+      case 'run_finished': {
+        const agent = await this.directory.resolve(session, condition.agent);
+        const match = agent.runs.filter((run) => run.id === condition.run || runAlias(run.id) === condition.run);
+        if (match.length !== 1) throw new Error('Choose an unambiguous run from that agent.');
+        if (agent.id === session.id && !isTerminalRun(match[0]!)) throw new Error('A run cannot wait for itself to finish.');
+        return { kind: condition.kind, agent: agent.id, run: match[0]!.id };
+      }
+    }
   }
 
-  private changeTask<T>(session: Session, action: () => T | Promise<T>): Promise<T> {
+  private assertRoot(session: Session): void {
+    this.assertSessionExists(session);
+    if (session.parentSessionId) throw new Error('Only the root agent can perform this operation.');
+  }
+
+  private mutate<T>(session: Session, action: () => T | Promise<T>): Promise<T> {
     const root = session.rootSessionId ?? session.id;
     return this.serialized(root, async () => {
       this.assertSessionExists(session);
@@ -492,24 +368,79 @@ export class AgentCoordinator {
     });
   }
 
-  private requireTask(root: string, taskId: string, revision: number): AgentTask {
-    const task = this.state.task(root, taskId);
+  private requireTask(session: Session, ref: string): AgentTask {
+    const root = session.rootSessionId ?? session.id;
+    const number = /^#([1-9][0-9]*)$/.exec(ref)?.[1];
+    const task = number ? this.state.tasks(root).find((item) => item.number === Number(number)) : this.state.task(root, ref);
     if (!task) throw new Error('Task not found in this conversation.');
-    if (task.revision !== revision) throw new Error(`Task revision changed to ${task.revision}. Read the task before updating it.`);
     return task;
   }
 
-  private async delegationChild(parent: Session, run: AgentRunRecord, callId: string, task: AgentTask, target: DelegationTarget): Promise<Session> {
-    if ('sessionId' in target) {
-      const child = await this.related(parent, target.sessionId);
-      if (child.parentSessionId !== parent.id) throw new Error('Delegate to a direct child.');
-      return child;
+  private presentTask(session: Session, task: AgentTask) {
+    return {
+      task: `#${task.number}`, title: task.title, type: task.type, status: task.status, ready: task.ready,
+      instructions: task.instructions, acceptanceCriteria: task.acceptanceCriteria, autoAssign: task.autoAssign,
+      blockedBy: this.state.tasks(task.rootSessionId).filter((item) => task.blockedBy.includes(item.id)).map((item) => `#${item.number}`),
+      ...(task.status === 'pending' ? { pendingReason: task.ready ? 'unassigned' : 'dependencies' } : {}),
+      reviewer: this.directory.alias(session, task.reviewerSessionId), ...(task.attempt ? { attempt: this.presentAttempt(session, task.attempt) } : {}),
+    };
+  }
+
+  private presentAttempt(session: Session, attempt: TaskAttempt) {
+    return {
+      agent: this.directory.alias(session, attempt.ownerSessionId), outcome: attempt.outcome,
+      startedAt: attempt.startedAt, reason: attempt.reason,
+      ...(attempt.result ? { result: { run: runAlias(attempt.result.runId), output: attempt.result.output } } : {}),
+    };
+  }
+
+  private presentOutcome(session: Session, outcome: WaitOutcome, includeBody = false) {
+    switch (outcome.kind) {
+      case 'mail': return { status: 'matched', kind: outcome.kind, ...this.mailbox.present(session, outcome.message, includeBody) };
+      case 'task_state': return { status: 'matched', ...outcome, task: `#${this.requireTask(session, outcome.task).number}` };
+      case 'agent_state': return { status: 'matched', ...outcome, agent: this.directory.alias(session, outcome.agent) };
+      case 'run_finished': return { status: 'matched', ...outcome, run: runAlias(outcome.run) };
+      case 'timed_out': return { status: 'timed_out' };
     }
+  }
+
+  private describeCondition(session: Session, condition: WaitCondition) {
+    switch (condition.kind) {
+      case 'mail': return { ...condition, from: condition.from && this.directory.alias(session, condition.from),
+        replyTo: condition.replyTo && `m#${this.state.mail(session.rootSessionId ?? session.id, condition.replyTo)?.number}` };
+      case 'task_state': return { ...condition, task: `#${this.requireTask(session, condition.task).number}` };
+      case 'agent_state': return { ...condition, agent: this.directory.alias(session, condition.agent) };
+      case 'run_finished': return { ...condition, agent: this.directory.alias(session, condition.agent), run: runAlias(condition.run) };
+    }
+  }
+
+  private matches(session: Session, task: AgentTask): boolean {
+    return (session.profile ?? DEFAULT_AGENT_PROFILE).id === task.type;
+  }
+
+  private assertMatches(session: Session, task: AgentTask): void {
+    if (!this.matches(session, task)) throw new Error('Agent role does not match this task type.');
+  }
+
+  private isAvailable(session: Session): boolean {
+    const runtime = this.runtimes.get(session.id);
+    return !runtime?.preparing && !runtime?.executing && directoryState(this.state, session) === 'idle' &&
+      !this.state.activeTask(session.rootSessionId ?? session.id, session.id);
+  }
+
+  private async idleChildren(parent: Session): Promise<Session[]> {
+    const idle = (await this.directory.members(parent.id, parent.ownerId))
+      .filter((member) => member.parentSessionId === parent.id && this.isAvailable(member));
+    const idleSince = (session: Session) => session.runs.at(-1)?.completedAt ?? session.created_at;
+    return idle.sort((a, b) => idleSince(a).localeCompare(idleSince(b)) || a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
+  }
+
+  private async createChild(parent: Session, run: AgentRunRecord, callId: string, task: AgentTask, role: string): Promise<Session> {
     const children = this.workspace.descendants(parent.id).filter((item) => item.parentSessionId === parent.id);
     const existing = children.find((item) => item.originRunId === run.id && item.originCallId === callId);
-    if (existing) return (await this.workspace.getSession(existing.id, parent.ownerId)) ?? existing;
-    if (children.length >= MAX_CHILDREN) throw new Error(`At most ${MAX_CHILDREN} child sessions per chat. Delegate to an existing child.`);
-    const profile = await this.profiles.resolve(target.profileId);
+    if (existing) return (await this.workspace.getSession(existing.id, parent.ownerId))!;
+    if (children.length >= MAX_CHILDREN) throw new Error(`At most ${MAX_CHILDREN} child sessions per conversation.`);
+    const profile = await this.profiles.resolve(role);
     const { model, reasoningEffort } = this.childModel(run, profile);
     await this.services.models.resolveSnapshot(parent.ownerId, model, reasoningEffort);
     this.assertOpen(parent);
@@ -524,11 +455,9 @@ export class AgentCoordinator {
     const existing = this.stops.get(session.id);
     if (existing) return existing;
     const root = session.rootSessionId ?? session.id;
-    if (session.id === root) this.stoppingTrees.add(root);
-    this.stoppedSessions.add(session.id);
     const stopping = this.stopMembers(session, root).finally(() => {
       this.stops.delete(session.id);
-      this.waitEvents.emit(root);
+      this.changed(root);
     });
     this.stops.set(session.id, stopping);
     return stopping;
@@ -537,13 +466,7 @@ export class AgentCoordinator {
   private async stopMembers(session: Session, root: string): Promise<void> {
     const members = await this.serialized(root, () => {
       const descendants = this.workspace.descendants(session.id);
-      for (const member of descendants) {
-        this.stoppedSessions.add(member.id);
-        this.state.suppressWake(member.id);
-        const timer = this.wakeTimers.get(member.id);
-        if (timer) clearTimeout(timer);
-        this.wakeTimers.delete(member.id);
-      }
+      for (const member of descendants) this.state.stopAgent(root, member.id);
       return descendants;
     });
     const stopped = await Promise.allSettled(members.map(async (member) => {
@@ -551,15 +474,15 @@ export class AgentCoordinator {
       if (loaded) await this.runtime(loaded).stop();
     }));
     this.changed(root);
-    this.scheduleTree(root);
     const failure = stopped.find((result) => result.status === 'rejected');
     if (failure) throw failure.reason;
   }
 
   async close(drain?: () => Promise<void>): Promise<void> {
     this.closing = true;
-    for (const timer of this.wakeTimers.values()) clearTimeout(timer);
-    this.wakeTimers.clear();
+    clearInterval(this.retryTimer);
+    if (this.dispatchTimer) clearTimeout(this.dispatchTimer);
+    await this.dispatching;
     try {
       const stops = await Promise.allSettled([...this.runtimes.values()].map((runtime) => runtime.stop(true)));
       await Promise.allSettled([...this.executions, ...this.stops.values()]);
@@ -584,14 +507,13 @@ export class AgentCoordinator {
     return runtime;
   }
 
-  private eventHandler(session: Session, listener?: (event: AgentStreamEvent) => void, onCreated?: (run: AgentRunRecord) => void): AgentDomainEventHandler {
+  private eventHandler(session: Session, listener?: (event: AgentStreamEvent) => void): AgentDomainEventHandler {
     const rootSessionId = session.rootSessionId ?? session.id;
     return (run, event) => {
-      const terminal = event.type === 'run_completed' || event.type === 'run_failed' || event.type === 'run_cancelled' || event.type === 'run_incomplete';
+      const terminal = event.type === 'run_waiting' || event.type === 'run_completed' || event.type === 'run_failed' || event.type === 'run_cancelled' || event.type === 'run_incomplete';
       const events = this.events.project(run, event);
       this.events.publish({ type: 'response', rootSessionId, sessionId: session.id, events });
       if (terminal || event.type === 'run_created' || event.type === 'permissions_requested') this.changed(rootSessionId);
-      if (event.type === 'run_created') onCreated?.(run);
       if (listener) {
         for (const item of events) {
           try { listener(structuredClone(item)); } catch { /* A subscriber cannot fail an agent run. */ }
@@ -600,16 +522,9 @@ export class AgentCoordinator {
     };
   }
 
-  private begin(session: Session, prepareInput: PrepareRunInput, options: AgentRunOptions, onEvent: AgentDomainEventHandler): Promise<AgentRunRecord> {
+  private begin(session: Session, prepareInput: PrepareRunInput, options: AgentRunOptions, onEvent: AgentDomainEventHandler, activation?: RunActivation): Promise<AgentRunRecord> {
     this.assertOpen(session);
-    return this.trackRun(session, this.runtime(session).start(prepareInput, options, onEvent));
-  }
-
-  private startWithInput(session: Session, prepareInput: PrepareRunInput, sourceRun: AgentRunRecord, onCreated?: (run: AgentRunRecord) => void): Promise<AgentRunRecord> {
-    return this.begin(session, prepareInput, {
-      ...this.childModel(sourceRun, session.profile),
-      permissionMode: sourceRun.permissionSnapshot.permissionMode,
-    }, this.eventHandler(session, undefined, onCreated));
+    return this.trackRun(session, this.runtime(session).start(prepareInput, options, onEvent, activation));
   }
 
   private childModel(sourceRun: AgentRunRecord, profile: Session['profile']): Pick<AgentRunOptions, 'model' | 'reasoningEffort'> {
@@ -619,12 +534,7 @@ export class AgentCoordinator {
   }
 
   private trackRun(session: Session, operation: Promise<AgentRunRecord>): Promise<AgentRunRecord> {
-    const root = session.rootSessionId ?? session.id;
-    return this.track(operation.then((run) => {
-      // Wait for the execution lease to be released before waking an idle session.
-      if (isTerminalRun(run)) this.scheduleTree(root);
-      return run;
-    }).finally(() => { this.waitEvents.emit(root); }));
+    return this.track(operation.finally(() => this.changed(session.rootSessionId ?? session.id)));
   }
 
   private track<T>(operation: Promise<T>): Promise<T> {
@@ -633,58 +543,150 @@ export class AgentCoordinator {
     return operation;
   }
 
-  private scheduleTree(root: string): void {
-    if (this.closing || this.stoppingTrees.has(root)) return;
-    for (const member of this.workspace.descendants(root)) this.scheduleWake(member.id);
-  }
-
-  private scheduleWake(sessionId: string): void {
-    if (this.closing || this.stoppedSessions.has(sessionId) || this.wakeTimers.has(sessionId) ||
-      !this.state.pending(sessionId).some((message) => message.wake)) return;
-    const timer = setTimeout(() => {
-      this.wakeTimers.delete(sessionId);
-      // Failed automatic starts leave durable input for explicit continuation.
-      void this.track(this.wake(sessionId));
-    }, 0);
-    this.wakeTimers.set(sessionId, timer);
-  }
-
-  private async wake(id: string): Promise<void> {
-    const session = await this.workspace.getSession(id);
-    if (!session?.parentSessionId) return;
-    const root = session.rootSessionId ?? session.id;
-    await this.serialized(root, async () => {
-      if (!this.workspace.hasSession(id, session.ownerId)) return;
-      if (this.closing || this.stoppingTrees.has(root) || this.stoppedSessions.has(id) || this.runtimes.get(id)?.preparing) return;
-      const pending = this.state.pending(id);
-      if (!this.state.activeTask(root, id)) return;
-      if (!pending.some((message) => message.wake)) return;
-      if (session.runs.some((run) => !isTerminalRun(run))) return;
-      let previous = session.runs.at(-1);
-      const task = pending.find((message) => message.purpose === 'task');
-      if (!previous && task) {
-        const parent = await this.workspace.getSession(task.fromSessionId, session.ownerId);
-        previous = parent?.runs.find((run) => run.id === task.sourceRunId);
+  private async dispatch(): Promise<void> {
+    if (this.closing) return;
+    const roots = new Set(this.state.rootsWithWork());
+    for (const event of this.state.pendingEvents()) {
+      try {
+        if (event.kind === 'run_finished') this.state.finishRun(event.runId);
+        this.state.dispatchEvent(event.id);
+        roots.add(event.rootId);
+        this.events.publish({ type: 'changed', rootSessionId: event.rootId });
+      } catch (error) {
+        this.logDispatchError(error, event.rootId);
       }
-      if (!previous) return;
-      const input = pending.flatMap((message) => {
-        if (!instructionRun(session, message.id)) return [instructionInput(message)];
-        this.state.acknowledge(message.id);
-        return [];
-      });
-      if (!input.length) return;
-      this.assertCapacity(session);
-      void this.startWithInput(session, async () => input, previous);
-    });
+    }
+    for (const rootId of roots) {
+      if (this.closing) return;
+      try {
+        await this.serialized(rootId, () => this.reconcileRoot(rootId));
+      } catch (error) {
+        this.logDispatchError(error, rootId);
+      }
+    }
   }
 
-  private async related(sender: Session, targetId: string): Promise<Session> {
-    const target = await this.workspace.getSession(targetId, sender.ownerId);
-    if (!target || (target.rootSessionId ?? target.id) !== (sender.rootSessionId ?? sender.id) ||
-      (target.parentSessionId !== sender.id && sender.parentSessionId !== target.id)) throw new Error('Target must be a parent or direct child in this agent tree.');
-    return target;
+  /** Refresh attempts, assign task. */
+  private async reconcileRoot(rootId: string): Promise<void> {
+    if (this.closing || this.stops.has(rootId) || this.state.isStopped(rootId)) return;
+    const root = await this.workspace.getSession(rootId);
+    if (!root) return;
+    const expired = new Set(this.state.expiredAttempts(rootId, Date.now()));
+    let available = await this.idleChildren(root);
+
+    for (const task of this.state.tasks(rootId)) {
+      if (!task.ready || !task.autoAssign) continue;
+      const candidate = available.find((child) => this.matches(child, task));
+      const source = root.runs.at(-1);
+      if (!candidate || !source) continue;
+      this.state.assignTask(rootId, task.id, candidate.id, { kind: 'delegate', sourceRunId: source.id }, createRandomId('auto'));
+      available = available.filter((child) => child !== candidate);
+    }
+
+    for (const record of this.workspace.descendants(rootId)) {
+      if (this.closing) return;
+      const member = await this.workspace.getSession(record.id, root.ownerId);
+      if (!member || this.stops.has(member.id) || this.state.isStopped(member.id)) continue;
+      const task = this.state.activeTask(rootId, member.id);
+      const runtime = this.runtimes.get(member.id);
+      const active = runtime?.preparing || runtime?.executing || member.runs.some((run) => !isTerminalRun(run));
+
+      if (task?.attempt) {
+        if (active || this.state.wait(member.id) || task.status === 'assigned') {
+          this.state.renewAttempt(task.attempt.id, Date.now());
+        } else if (expired.has(task.attempt.id)) {
+          this.state.failAttempt(task.attempt.id, 'The attempt lease expired before execution resumed.');
+          continue;
+        }
+      }
+
+      if (active || (member.parentSessionId && this.activeChildren(rootId) >= MAX_ACTIVE_CHILDREN)) continue;
+
+      const wake = await this.prepareWake(member, task);
+      if (!wake) continue;
+      const previous = await this.modelSource(member, task, wake.mail);
+      if (!previous) {
+        if (task?.attempt) this.state.failAttempt(task.attempt.id, 'No model context is available to start the task.');
+        continue;
+      }
+      if (this.closing || this.stops.has(member.id) || this.stops.has(rootId)) continue;
+      const running = this.begin(member, async () => wake.input, {
+        ...this.childModel(previous, member.profile),
+        permissionMode: previous.permissionSnapshot.permissionMode,
+      }, this.eventHandler(member), wake.activation);
+      void running.catch((error) => {
+        // Admission conflicts are transient. The wake is still in durable storage.
+        if (error instanceof AgentLoopError && ['active_response_exists', 'project_active_response_exists'].includes(error.code)) return;
+        if (!this.closing && task?.attempt) this.state.failAttempt(task.attempt.id, error instanceof Error ? error.message : String(error));
+        this.logDispatchError(error, rootId);
+      });
+    }
   }
-  
+
+  /** Push mail, wait, review, task assign prompt in context. */
+  private async prepareWake(session: Session, task: AgentTask | undefined, explicit = false) {
+    const wait = this.state.wait(session.id);
+    const outcome = wait && await this.waits.outcome(wait);
+    const mail = this.state.pendingMail(session.id).filter((item) => !wait || outcome || !matchesWaitMail(wait, item));
+    const reviews = this.state.reviewNotifications(session.id);
+    const interruption = mail.some((item) => item.purpose === 'question' || item.purpose === 'urgent');
+    if (!explicit && !outcome && !interruption && (wait || (!reviews.length && task?.status !== 'assigned'))) return undefined;
+
+    const input = mail.map((item) => mailInput(item, session, item.replyTo ? this.state.mail(item.rootId, item.replyTo)?.number : undefined));
+    if (wait && outcome) {
+      input.unshift(runtimeInput(`Wait finished: ${JSON.stringify(this.presentOutcome(session, outcome, outcome.kind === 'mail' &&
+        !mail.some((item) => item.id === outcome.message.id)))}.`));
+    } else if (wait) {
+      input.unshift(runtimeInput(`The original wait is still active until ${new Date(wait.deadline).toISOString()}: ${JSON.stringify(this.describeCondition(session, wait.condition))}. After handling other input, use wait action resume or explicitly cancel it.`));
+    }
+    if (reviews.length) {
+      input.push(runtimeInput(`Results are ready for review: ${reviews.map((event) => `#${event.taskNumber}`).join(', ')}. Use tasks show.`));
+    }
+    if (task?.status === 'assigned') {
+      const previous = this.state.attemptHistory(task.rootSessionId, task.id).at(-2);
+      const feedback = previous?.reason ? `\nPrevious attempt (${previous.outcome}): ${previous.reason}` : '';
+      input.push(runtimeInput(`Begin task #${task.number}: ${task.title}${feedback}`));
+    }
+    const activation: RunActivation = {
+      work: task?.attempt ? { kind: 'attempt', attemptId: task.attempt.id } : { kind: 'conversation' },
+      ...(wait && outcome ? { resolvedWaitId: wait.id } : {}),
+      mailIds: mail.map((item) => item.id), notificationIds: reviews.map((item) => item.eventId),
+    };
+    return { activation, input, mail };
+  }
+
+  private async modelSource(member: Session, task: AgentTask | undefined, mail: AgentMail[]): Promise<AgentRunRecord | undefined> {
+    const prior = member.runs.at(-1);
+    if (prior) return prior;
+    if (task?.attempt) {
+      const reviewer = await this.workspace.getSession(task.reviewerSessionId, member.ownerId);
+      const source = reviewer?.runs.find((run) => run.id === this.state.taskSourceRun(task.attempt!.id));
+      if (source) return source;
+    }
+    const sender = mail[0] && await this.workspace.getSession(mail[0].fromSessionId, member.ownerId);
+    return sender?.runs.at(-1);
+  }
+
+  private activeChildren(rootId: string): number {
+    return this.workspace.descendants(rootId).filter((member) => member.parentSessionId &&
+      (this.runtimes.get(member.id)?.preparing || this.runtimes.get(member.id)?.executing ||
+        member.runs.some((run) => !isTerminalRun(run)))).length;
+  }
+
+  private requestDispatch(): void {
+    if (this.closing || this.dispatching || this.dispatchTimer) return;
+    this.dispatchTimer = setTimeout(() => {
+      this.dispatchTimer = undefined;
+      this.dispatching = this.dispatch().catch((error) => this.logDispatchError(error)).finally(() => { this.dispatching = undefined; });
+    }, 0);
+    this.dispatchTimer.unref();
+  }
+
+  private logDispatchError(error: unknown, rootId?: string): void {
+    this.services.logger.error({ event: 'agent.coordination.dispatch_failed', rootId,
+      message: error instanceof Error ? error.message : String(error) });
+  }
+
   private assertSessionExists(session: Session): void {
     if (!this.workspace.hasSession(session.id, session.ownerId)) throw new Error('Agent session no longer exists.');
   }
@@ -695,18 +697,8 @@ export class AgentCoordinator {
     }
   }
 
-  private allowUserTurn(session: Session): void {
-    this.assertAvailableForUser(session);
-    this.stoppingTrees.delete(session.rootSessionId ?? session.id);
-    this.stoppedSessions.delete(session.id);
-  }
-
   private forget(ids: string[]): void {
-    for (const id of ids) {
-      this.runtimes.delete(id);
-      this.stoppedSessions.delete(id);
-      this.stoppingTrees.delete(id);
-    }
+    for (const id of ids) this.runtimes.delete(id);
   }
 
   private async withProjectMaintenance<T>(projectId: string, operation: () => Promise<T>, stopPreparing = false): Promise<T> {
@@ -719,28 +711,15 @@ export class AgentCoordinator {
   }
 
   private assertOpen(session: Session): void {
-    if (this.closing || this.stoppingTrees.has(session.rootSessionId ?? session.id) || this.stoppedSessions.has(session.id)) throw new Error('Agent tree is stopping.');
-  }
-
-  private assertCapacity(session: Session): void {
-    const root = session.rootSessionId ?? session.id;
-    const active = this.workspace.descendants(root).filter((item) => item.parentSessionId &&
-      (this.runtimes.get(item.id)?.preparing || item.runs.some((run) => !isTerminalRun(run))));
-    if (active.length >= MAX_ACTIVE_CHILDREN) throw new Error(`At most ${MAX_ACTIVE_CHILDREN} child agents can be active. Wait for one to finish.`);
-  }
-
-  private resultText(run: AgentRunRecord): string {
-    const last = run.timeline.findLast((item) =>
-      item.type === 'message' && item.role === 'assistant' && item.source?.kind !== 'runtime');
-    const text = last?.type === 'message' ? last.content.flatMap((part) => part.type === 'text' ? [part.text] : []).join('\n') : '';
-    return text.slice(0, 16000);
+    this.assertAvailableForUser(session);
+    if (this.state.isStopped(session.id) || this.state.isStopped(session.rootSessionId ?? session.id)) throw new Error('Agent is stopped.');
   }
 
   private changed(rootSessionId: string): void {
-    this.waitEvents.emit(rootSessionId);
     this.events.publish({ type: 'changed', rootSessionId });
+    this.requestDispatch();
   }
-  
+
   private serialized<T>(root: string, operation: () => T | Promise<T>): Promise<T> {
     const result = (this.queues.get(root) ?? Promise.resolve()).catch(() => undefined).then(operation);
     const tail = result.then(() => undefined, () => undefined);

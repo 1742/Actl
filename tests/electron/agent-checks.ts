@@ -43,14 +43,15 @@ async function startFixture(processCommands: Map<string, string>, explicitWorksp
       } else if (text.includes('multi-root-fixture')) {
         const last = payload.messages.at(-1);
         const envelope = last?.role === 'tool' ? JSON.parse(String(last.content)) : undefined;
-        const created = envelope?.output?.id && envelope?.output?.revision === 1;
+        const created = envelope?.output?.status === 'pending';
         if (!envelope || created) {
-          const name = created ? 'delegate_task' : 'create_task';
-          const input = created ? { taskId: envelope.output.id, expectedRevision: 1, target: { profileId: 'review' } }
-            : { title: 'Background reviewer', instructions: 'multi-child-fixture', acceptanceCriteria: 'Return review findings.' };
+          const name = created ? 'delegate_task' : 'tasks';
+          const input = created ? { task: envelope.output.task, target: { kind: 'create', role: 'review' } }
+            : { command: { action: 'publish', type: 'review', autoAssign: false,
+                title: 'multi-child-fixture', instructions: 'Review the example.', acceptanceCriteria: 'Return review findings.' } };
           emit({ tool_calls: [{ index: 0, id: `call-${randomUUID()}`, type: 'function', function: { name, arguments: JSON.stringify(input) } }] }, 'tool_calls');
         } else {
-          assert.ok(envelope.ok && envelope.output?.runId);
+          assert.ok(envelope.ok && envelope.output?.status === 'assigned');
           emit({ content: 'Review delegated' }, 'stop');
         }
         done();
@@ -59,7 +60,7 @@ async function startFixture(processCommands: Map<string, string>, explicitWorksp
         assert.ok(match);
         const [, sessionId, runId] = match;
         emit({ tool_calls: [{ index: 0, id: `call-${randomUUID()}`, type: 'function', function: {
-          name: 'wait_agents', arguments: JSON.stringify({ targets: [{ sessionId, runId }], until: 'all' }),
+          name: 'wait', arguments: JSON.stringify({ command: { action: 'start', condition: { kind: 'run_finished', agent: sessionId, run: runId } } }),
         } }] }, 'tool_calls');
         done();
       } else if (text.includes('wait-child-fixture:')) {
@@ -419,23 +420,21 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
       assert.equal(success(await run('multi-root-fixture', undefined, rootSession.id)).status, 'completed');
       await waitFor(async () => {
         const tree = await request<AgentTreeSnapshot>({ operation: 'agents.tree', params: { sessionId: rootSession.id } });
-        return tree.members.length === 2 && tree.members.every((member) => member.response?.status === 'completed');
+        return tree.members.length === 2 && tree.tasks?.[0]?.status === 'review_required' &&
+          tree.members.every((member) => member.response?.status === 'completed');
       }, 'Background child did not complete.');
       await waitFor(() => events.some((event) => event.type === 'response' && event.sessionId !== rootSession.id && event.events.some((item) => item.type === 'response.completed')), 'Tree subscription missed background completion.');
       const tree = await request<AgentTreeSnapshot>({ operation: 'agents.tree', params: { sessionId: rootSession.id } });
       const child = tree.members.find((member) => member.session.parentSessionId === rootSession.id)!;
       assert.ok(child);
       assert.deepEqual(child.session.profile, { id: 'review', name: 'Review' });
-      const task = child.response?.input[0];
-      assert.ok(task?.id && task.source?.kind === 'agent');
-      assert.equal(task.source.sessionId, rootSession.id);
-      assert.equal(task.source.purpose, 'task');
-      const taskId = task.source.taskId;
-      const assignment = tree.tasks?.find(({ id }) => id === taskId);
-      assert.ok(assignment?.assignmentId);
-      assert.equal(assignment.assignmentId, task.source.assignmentId);
-      assert.equal(assignment.ownerSessionId, child.session.id);
-      assert.equal(assignment.status, 'in_progress');
+      const taskInput = child.response?.input[0];
+      assert.equal(taskInput?.source?.kind, 'runtime');
+      const task = tree.tasks?.[0];
+      assert.equal(task?.attempt?.ownerSessionId, child.session.id);
+      assert.equal(task?.status, 'review_required');
+      assert.equal(task?.attempt?.result?.runId, child.response?.id);
+      assert.equal(task?.attempt?.result?.output, 'child running child result ready');
       host.detach(subscription);
       const count = events.length;
       const followUp = await request<{ sessionId: string; messageId: string; accepted: boolean }>({
@@ -459,21 +458,21 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
       const history = await request<{ responses: AgentResponseDto[] }>({ operation: 'sessions.context', params: { sessionId: child.session.id } });
       const firstRun = history.responses[0];
       assert.ok(firstRun);
-      assert.deepEqual(firstRun.input[0], task);
+      assert.deepEqual(firstRun.input[0], taskInput);
       assert.equal(history.responses[1]?.input[0]?.source?.kind, 'user');
 
       const waitEvents: AgentStreamEvent[] = [];
       const parentRun = success(await run(`wait-child-fixture:${child.session.id}:${firstRun.id}`, (events) => waitEvents.push(...events), rootSession.id));
       assert.equal(parentRun.status, 'completed');
-      const waitCall = parentRun.output.find((item) => item.type === 'function_call' && item.name === 'wait_agents');
+      const waitCall = parentRun.output.find((item) => item.type === 'function_call' && item.name === 'wait');
       assert.ok(waitCall?.type === 'function_call');
       const waitResult = parentRun.output.find((item) => item.type === 'function_call_output' && item.call_id === waitCall.call_id);
       assert.ok(waitResult?.type === 'function_call_output');
       const envelope = JSON.parse(waitResult.output);
       assert.equal(envelope.ok, true);
       assert.deepEqual(envelope.output, {
-        statuses: [{ sessionId: child.session.id, runId: firstRun.id, status: 'completed', output: 'child running child result ready' }],
-        pendingSessionIds: [], needsInput: [], timedOut: false,
+        status: 'matched', kind: 'run_finished', run: `r-${firstRun.id.slice(-10)}`, state: 'completed',
+        output: 'child running child result ready',
       });
       const streamed = waitEvents.find((event) => event.type === 'agent.tool.completed' && event.call_id === waitCall.call_id);
       assert.ok(streamed?.type === 'agent.tool.completed' && streamed.result.ok);

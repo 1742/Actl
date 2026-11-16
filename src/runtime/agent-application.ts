@@ -70,9 +70,7 @@ export class AgentApplication {
       case 'agents.message': {
         const sender = await this.session(sessionId());
         const input = z.object({ targetSessionId: z.string().min(1), message: z.string().trim().min(1).max(16000) }).strict().parse(body);
-        const run = sender.runs.at(-1);
-        if (!run) throw new ApiError(400, 'agent_run_required', 'Send an initial task before messaging agents.');
-        return d.agentCoordinator.send(sender, run, input.targetSessionId, input.message, crypto.randomUUID(), { userFollowUp: true });
+        return d.agentCoordinator.sendUserFollowUp(sender, input.targetSessionId, input.message, crypto.randomUUID());
       }
       case 'agents.stop': {
         await d.agentCoordinator.stopTree(await this.session(sessionId()));

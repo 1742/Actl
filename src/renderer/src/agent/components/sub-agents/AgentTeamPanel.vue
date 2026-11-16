@@ -11,9 +11,8 @@ const memberTitles = computed(() => new Map(team?.tree.value?.members.map(({ ses
 const error = computed(() => team?.error.value);
 
 function taskStatus(task: AgentTask) {
-  if (task.status === 'completed') return 'agents.taskStatus.completed';
-  if (task.status === 'in_progress') return 'agents.taskStatus.inProgress';
-  return task.ready ? 'agents.taskStatus.ready' : 'agents.taskStatus.blocked';
+  if (task.status === 'pending') return task.ready ? 'agents.taskStatus.ready' : 'agents.taskStatus.blocked';
+  return `agents.taskStatus.${task.status}`;
 }
 </script>
 
@@ -33,14 +32,16 @@ function taskStatus(task: AgentTask) {
       <li v-for="task in tasks" :key="task.id" class="py-2">
         <details>
           <summary class="cursor-pointer wrap-break-word" :title="task.id">
-            {{ task.title }}
+            <span class="text-gray-500">#{{ task.number }}</span> {{ task.title }}
             <span class="ml-1 text-xs" :class="task.ready ? 'text-primary' : 'text-gray-500'">{{ $t(taskStatus(task)) }}</span>
           </summary>
           <p class="mt-2 whitespace-pre-wrap wrap-break-word text-xs">{{ task.instructions }}</p>
           <p class="mt-2 whitespace-pre-wrap wrap-break-word text-xs">{{ $t('agents.acceptanceCriteria') }} · {{ task.acceptanceCriteria }}</p>
+          <p v-if="task.attempt?.reason" class="mt-2 whitespace-pre-wrap wrap-break-word text-xs">{{ task.attempt.reason }}</p>
+          <p v-if="task.attempt?.result" class="mt-2 whitespace-pre-wrap wrap-break-word text-xs">{{ task.attempt.result.output }}</p>
         </details>
-        <p v-if="task.ownerSessionId" class="mt-1 ml-3 wrap-break-word text-xs text-gray-500">
-          {{ $t('agents.taskOwner') }} · {{ task.ownerSessionId === team?.rootId.value ? $t('agents.parentAgent') : memberTitles.get(task.ownerSessionId) || task.ownerSessionId }}
+        <p v-if="task.attempt" class="mt-1 ml-3 wrap-break-word text-xs text-gray-500">
+          {{ $t('agents.taskOwner') }} · {{ task.attempt.ownerSessionId === team?.rootId.value ? $t('agents.parentAgent') : memberTitles.get(task.attempt.ownerSessionId) || task.attempt.ownerSessionId }}
         </p>
         <p v-if="task.blockedBy.length" class="mt-1 ml-3 wrap-break-word text-xs text-gray-500">
           {{ $t('agents.taskDependencies') }} · {{ task.blockedBy.map((id) => taskTitles.get(id) ?? id).join(', ') }}

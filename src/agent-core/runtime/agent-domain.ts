@@ -75,12 +75,13 @@ export interface PermissionResolution {
   reason?: string;
 }
 
-export type AgentRunStatus = "in_progress" | "waiting_permission" | "completed" | "incomplete" | "failed" | "cancelled";
+export type AgentRunStatus = "in_progress" | "waiting_permission" | "waiting" | "completed" | "incomplete" | "failed" | "cancelled";
 
 export interface AgentRunRecord {
   id: string;
   sessionId: string;
   status: AgentRunStatus;
+  finalOutput?: string;
   modelSnapshot: ModelExecutionSnapshot;
   permissionSnapshot: RunPermissionSnapshot;
   input: TranscriptMessage[];
@@ -94,7 +95,7 @@ export interface AgentRunRecord {
 }
 
 export function isTerminalRun(run: AgentRunRecord): boolean {
-  return run.status === "completed" || run.status === "incomplete" || run.status === "failed" || run.status === "cancelled";
+  return run.status !== "in_progress" && run.status !== "waiting_permission";
 }
 
 export type AgentDomainEvent =
@@ -107,6 +108,7 @@ export type AgentDomainEvent =
   | { type: "tool_completed"; itemId: string; callId: string; result: ToolResult }
   | { type: "permissions_requested"; batch: PendingToolBatch }
   | { type: "permissions_resolved"; batchId: string; decisions: PermissionResolution[] }
+  | { type: "run_waiting"; run: AgentRunRecord }
   | { type: "run_completed"; run: AgentRunRecord }
   | { type: "run_failed"; run: AgentRunRecord }
   | { type: "run_incomplete"; run: AgentRunRecord }

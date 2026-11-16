@@ -12,10 +12,18 @@ export class AgentRunFinalizer {
     private readonly logger: Logger,
   ) {}
 
-  async completed(session: Session, run: AgentRunRecord, onEvent?: AgentDomainEventHandler): Promise<AgentRunRecord> {
+  async completed(session: Session, run: AgentRunRecord, output: string, onEvent?: AgentDomainEventHandler): Promise<AgentRunRecord> {
     run.status = "completed";
+    run.finalOutput = output;
     run.completedAt = nowIso();
     await this.persistAndEmit(session, run, { type: "run_completed", run }, onEvent);
+    return run;
+  }
+
+  async waiting(session: Session, run: AgentRunRecord, onEvent?: AgentDomainEventHandler): Promise<AgentRunRecord> {
+    run.status = "waiting";
+    run.completedAt = nowIso();
+    await this.persistAndEmit(session, run, { type: "run_waiting", run }, onEvent);
     return run;
   }
 

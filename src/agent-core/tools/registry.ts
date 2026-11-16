@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { RichToolOutput, type ToolCall, type ToolResult } from "../runtime/transcript.js";
+import { RichToolOutput, WaitToolOutput, type ToolCall, type ToolResult } from "../runtime/transcript.js";
 import type { ModelCapabilities } from "../model/catalog-types.js";
 import type { SessionProcessAccess } from "../runtime/process/process-types.js";
 
@@ -199,8 +199,9 @@ export class ToolRegistry {
         toolCallId: toolCall.id,
         toolName: toolCall.name,
         ok: true,
-        output: output instanceof RichToolOutput ? output.output : output,
+        output: output instanceof RichToolOutput || output instanceof WaitToolOutput ? output.output : output,
         ...(output instanceof RichToolOutput ? { content: structuredClone(output.content) } : {}),
+        ...(output instanceof WaitToolOutput ? { waitReceipt: output.receipt } : {}),
       };
     } catch (error) {
       if (context.signal?.aborted) throw context.signal.reason;

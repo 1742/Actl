@@ -38,16 +38,20 @@ WorkspaceStore 的 mutationQueue 串行化状态修改，touch 只 upsert 变化
 
 ## 3. 表与关系
 
-当前 [initial-schema.ts](../../src/agent-core/repositories/sqlite/initial-schema.ts) generation 为 multi-user-multi-model，version 为 **25**。
+当前 [initial-schema.ts](../../src/agent-core/repositories/sqlite/initial-schema.ts) generation 为 multi-user-multi-model，version 为 **26**。此版本重建协作任务和邮箱表，开发分支旧任务和邮箱不迁移。
 
 | 表                                            | 用途                                                                 |
 | --------------------------------------------- | -------------------------------------------------------------------- |
 | schema_metadata                               | generation、version、创建时间                                        |
 | projects / sessions                           | owner、目录、绑定和标题                                              |
 | agent_plans                                   | 根会话的结构化计划、revision 和 items JSON                            |
-| agent_tasks / agent_task_assignments           | 根会话任务、依赖、版本、当前归属、验收 Run 和委派幂等记录                 |
-| agent_messages                                | 父子协作消息、收发会话、来源 Run、发送方关系、用途、回复引用、去重键、投递状态和自动唤醒标记 |
-| agent_runs                                    | 状态、顺序、模型/权限快照、pending batch、错误、时间戳、事件序号     |
+| agent_tasks / agent_task_dependencies          | 根会话任务、类型、依赖、验收者和权威状态 |
+| agent_task_attempts / agent_attempt_runs        | 执行尝试、执行者、租约、审查历史和显式 Run 关联 |
+| agent_results / agent_task_decisions            | 每次 Attempt 的唯一成果引用和幂等审查记录 |
+| agent_mail                                     | 同 Root 邮箱、用途、主题、线程、回复关系、已读和投递状态 |
+| agent_waits / agent_stopped_sessions            | 持久等待条件、事件游标、截止时间和显式停止标记 |
+| agent_coordination_events                      | 与领域状态一并写入的事件、分发和投递记录 |
+| agent_runs                                    | 状态、final、顺序、模型/权限快照、pending batch、错误、时间戳、事件序号 |
 | run_messages                                  | 每个 Run 输入消息 JSON                                               |
 | timeline_items                                | 消息/推理/工具/搜索/审批 JSON，按 item_order                         |
 | run_skills                                    | schema 中保留的历史结构；当前创建 Run 不单独写此表，引用在输入消息中 |

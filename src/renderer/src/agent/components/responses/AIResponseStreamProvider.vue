@@ -3,7 +3,7 @@ import type { AIResponseContext, AIResponseInputItem } from './types';
 import type { AgentStreamEvent } from '../../../../../shared/agent/responses';
 
 export type AIResponseProviderStatus =
-  'idle' | 'streaming' | 'completed' | 'failed' | 'incomplete' | 'cancelled';
+  'idle' | 'streaming' | 'completed' | 'failed' | 'incomplete' | 'cancelled' | 'waiting';
 
 export interface AIResponseStreamRequest<TPayload = unknown> {
   sessionId: string;

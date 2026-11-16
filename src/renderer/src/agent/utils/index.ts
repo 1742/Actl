@@ -23,32 +23,24 @@ const toolPresentations: Readonly<Record<string, AgentToolPresentation>> = {
   run_skill_script: 'skill',
   web_search: 'web_search',
   web_fetch: 'web_fetch',
-  spawn_agent: 'agent_team',
   list_agent_profiles: 'agent_team',
-  create_task: 'agent_team',
-  list_tasks: 'agent_team',
+  tasks: 'agent_team',
   delegate_task: 'agent_team',
-  claim_task: 'agent_team',
-  release_task: 'agent_team',
-  complete_task: 'agent_team',
-  send_message: 'agent_team',
-  wait_agents: 'agent_team',
-  wait_for_message: 'agent_team',
-  list_agents: 'agent_team',
+  agents: 'agent_team',
+  mail: 'agent_team',
+  wait: 'agent_team',
   interrupt_agent: 'agent_team',
-  update_plan: 'agent_team',
+  plan: 'agent_team',
 };
 
 const agentTeamToolTitles: Readonly<Record<string, string>> = {
   list_agent_profiles: 'agents.listProfiles',
-  create_task: 'agents.createTask',
-  list_tasks: 'agents.listTasks',
+  tasks: 'agents.tasks',
   delegate_task: 'agents.delegateTask',
-  claim_task: 'agents.claimTask',
-  release_task: 'agents.releaseTask',
-  complete_task: 'agents.completeTask',
-  wait_agents: 'agents.waitForAgents',
-  wait_for_message: 'agents.waitForMessage',
+  agents: 'agents.directory',
+  mail: 'agents.mail',
+  wait: 'agents.wait',
+  plan: 'agents.plan',
 };
 
 const toolLabels: Record<AgentToolPresentation, string> = {
@@ -294,49 +286,25 @@ export function agentToolHeading(block: AgentToolTimelineBlock, view: 'row' | 'a
 
 function agentTeamToolDetail(block: AgentToolTimelineBlock) {
   const args = block.arguments;
+  const command = asRecord(args?.command);
   const result = asRecord(block.result?.output);
   const text = (value: unknown) => typeof value === 'string' ? value : '';
-  const count = (items: unknown, noun: string) =>
-    Array.isArray(items) ? `${items.length} ${items.length === 1 ? noun : noun + 's'}` : '';
 
   switch (block.call.name) {
-    case 'spawn_agent':
-      return text(args?.title);
     case 'list_agent_profiles':
       return Array.isArray(block.result?.output) ? tr('agents.profileCount', { count: block.result.output.length }) : '';
-    case 'list_tasks':
-      return Array.isArray(block.result?.output) ? tr('agents.taskCount', { count: block.result.output.length }) : '';
-    case 'create_task':
-      return text(args?.title);
+    case 'tasks':
+      return Array.isArray(block.result?.output) ? tr('agents.taskCount', { count: block.result.output.length })
+        : text(result?.title) || text(command?.title) || text(command?.task);
     case 'delegate_task':
-    case 'claim_task':
-    case 'release_task':
-    case 'complete_task':
-      return text(asRecord(result?.task)?.title) || text(result?.title) || text(args?.taskId);
-    case 'send_message':
-      return '';
-    case 'wait_agents': {
-      if (Array.isArray(result?.needsInput) && result.needsInput.length) return tr('agents.clarificationRequested');
-      if (result?.timedOut === true) return tr('agents.waitTimedOut');
-      const targets = result?.statuses ?? args?.targets;
-      return Array.isArray(targets) ? tr('agents.waitTargetCount', { count: targets.length }) : '';
-    }
-    case 'wait_for_message':
-      if (result?.timedOut === true) return tr('agents.waitTimedOut');
-      return text(result?.messageId) ? tr('agents.messageReceived') : '';
-    case 'list_agents': {
-      const agents = result?.agents;
-      const children = Array.isArray(agents) && typeof result?.rootSessionId === 'string'
-        ? agents.filter((agent) => asRecord(agent)?.parentSessionId)
-        : agents;
-      return count(children, 'subagent');
-    }
-    case 'interrupt_agent':
-      return '';
-    case 'update_plan':
-      return count(args?.items, 'task');
+      return text(result?.title) || text(args?.task);
+    case 'mail':
+      return text(result?.subject) || text(command?.subject) || text(command?.message);
+    case 'wait':
+      if (result?.status === 'timed_out') return tr('agents.waitTimedOut');
+      return result?.status === 'waiting' ? tr('agents.waiting') : '';
     default:
-      return block.call.name;
+      return '';
   }
 }
 
