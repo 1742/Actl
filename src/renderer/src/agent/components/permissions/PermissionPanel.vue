@@ -5,17 +5,21 @@ import { computed, ref, watch } from 'vue';
 
 import { useNotifyStore } from '../../../composables/notify';
 import { resolveAgentPermissionBatch, stopAgentResponse } from '../../composables/useAgent';
-import { useAgentStore } from '../../stores/agent';
+import { useAgentStore, type TreePermissionRequest } from '../../stores/agent';
 import type { PermissionResolutionDto } from '../../../../../shared/agent/responses';
 
-const agentStore = useAgentStore();
+const props = defineProps<{ request: TreePermissionRequest }>();
+const store = useAgentStore();
 const notify = useNotifyStore();
 const currentIndex = ref(0);
 const previewExpanded = ref(false);
 const decisions = ref<Record<string, PermissionResolutionDto>>({});
 const denialReasons = ref<Record<string, string>>({});
-const batch = computed(() => agentStore.pendingPermissionBatch);
-const permissions = computed(() => batch.value?.permissions || []);
+const submitting = ref(false);
+const runtime = computed(() => store.runtimeBySessionId(props.request.sessionId));
+const stopping = computed(() => runtime.value?.status === 'stopping');
+const busy = computed(() => submitting.value || runtime.value?.status !== 'waiting_permission');
+const permissions = computed(() => props.request.batch.permissions);
 const permission = computed(() => permissions.value[currentIndex.value]);
 const currentDecision = computed(() =>
   permission.value ? decisions.value[permission.value.id] : undefined,
@@ -37,7 +41,7 @@ const currentDenialReason = computed({
     }
   },
 });
-const canDeny = computed(() => Boolean(currentDenialReason.value.trim()) && !agentStore.isRunning);
+const canDeny = computed(() => Boolean(currentDenialReason.value.trim()) && !busy.value);
 const shellCommand = computed(() => {
   if (permission.value?.tool_call.name !== 'shell') return '';
   const input = permission.value.tool_call.input;
@@ -100,14 +104,6 @@ const toolParameters = computed(() => {
 });
 
 watch(
-  () => batch.value?.id,
-  () => {
-    currentIndex.value = 0;
-    decisions.value = {};
-    denialReasons.value = {};
-  },
-);
-watch(
   () => permission.value?.id,
   () => {
     previewExpanded.value = false;
@@ -120,7 +116,6 @@ function move(offset: number) {
 }
 
 async function applyDecision(decision: PermissionResolutionDto) {
-  const sessionId = agentStore.selectedSessionId;
   const updated = { ...decisions.value, [decision.permission_id]: decision };
   decisions.value = updated;
 
@@ -133,12 +128,17 @@ async function applyDecision(decision: PermissionResolutionDto) {
   }
 
   const orderedDecisions = permissions.value.map((item) => updated[item.id]).filter((item): item is PermissionResolutionDto => !!item);
-  const result = await resolveAgentPermissionBatch(orderedDecisions, sessionId);
-  notify.display(result.status, result.message);
+  submitting.value = true;
+  try {
+    const result = await resolveAgentPermissionBatch(props.request, orderedDecisions);
+    notify.display(result.status, result.message);
+  } finally {
+    submitting.value = false;
+  }
 }
 
 async function approve() {
-  if (!permission.value || agentStore.isRunning) return;
+  if (!permission.value || busy.value) return;
   await applyDecision({ permission_id: permission.value.id, decision: 'approve' });
 }
 
@@ -152,14 +152,14 @@ async function deny() {
 }
 
 async function stop() {
-  const result = await stopAgentResponse(agentStore.selectedSessionId);
+  const result = await stopAgentResponse(props.request.sessionId, props.request.responseId);
   notify.display(result.status, result.message);
 }
 </script>
 
 <template>
   <section
-    v-if="batch && permission"
+    v-if="permission"
     class="max-h-[45dvh] w-full min-w-0 overflow-y-auto border-b border-gray-200 bg-white px-2 pt-4 sm:px-4"
   >
     <div class="flex items-start gap-3 px-2">
@@ -170,12 +170,12 @@ async function stop() {
         <button
           class="permission-nav-button w-auto gap-1 px-2 text-xs"
           type="button"
-          :disabled="agentStore.isStopping"
+          :disabled="stopping"
           :title="$t('ui.stopGenerating')"
           @click="stop"
         >
           <Square :size="11" fill="currentColor" />
-          {{ agentStore.isStopping ? $t('ui.stopping') : $t('ui.stop') }}
+          {{ stopping ? $t('ui.stopping') : $t('ui.stop') }}
         </button>
         <div
           v-if="permissions.length > 1"
@@ -187,7 +187,7 @@ async function stop() {
             type="button"
             :title="$t('ui.previousPermissionRequest')"
             :aria-label="$t('ui.previousPermissionRequest')"
-            :disabled="currentIndex === 0 || agentStore.isRunning"
+            :disabled="currentIndex === 0 || busy"
             @click="move(-1)"
           >
             <ChevronLeft :size="15" />
@@ -200,7 +200,7 @@ async function stop() {
             type="button"
             :title="$t('ui.nextPermissionRequest')"
             :aria-label="$t('ui.nextPermissionRequest')"
-            :disabled="currentIndex === permissions.length - 1 || agentStore.isRunning"
+            :disabled="currentIndex === permissions.length - 1 || busy"
             @click="move(1)"
           >
             <ChevronRight :size="15" />
@@ -272,7 +272,7 @@ async function stop() {
         class="choice-row"
         :class="{ 'choice-row-selected': currentDecision?.decision === 'approve' }"
         type="button"
-        :disabled="agentStore.isRunning"
+        :disabled="busy"
         @click="approve"
       >
         <span class="choice-number">1</span>
@@ -286,7 +286,7 @@ async function stop() {
           v-model="currentDenialReason"
           class="min-w-0 flex-1 rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm text-gray-800 outline-none placeholder:text-gray-400 focus:border-primary focus:ring-2 focus:ring-primary/10"
           :placeholder="$t('ui.enterAReasonForDenialAnd')"
-          :disabled="agentStore.isRunning"
+          :disabled="busy"
           @keydown.enter.prevent="deny"
         />
         <button

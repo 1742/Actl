@@ -15,6 +15,7 @@ export class AgentDirectory {
       const task = this.state.activeTask(rootId, member.id);
       agents.push({
         agent: agentReference(member), title: member.title, role: (member.profile ?? DEFAULT_AGENT_PROFILE).id,
+        ...(member.parentSessionId ? { access: (member.profile ?? DEFAULT_AGENT_PROFILE).access } : {}),
         status: directoryState(this.state, member), currentTask: task ? `#${task.number}` : null,
         recentActivity: latest ? { run: runAlias(latest.id), status: latest.status, at: latest.updatedAt } : null,
       });

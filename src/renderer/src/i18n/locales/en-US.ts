@@ -12,6 +12,7 @@ export default {
       review_required: 'Awaiting review', completed: 'Accepted', failed: 'Failed', cancelled: 'Cancelled' },
     profileCount: '1 role | {count} roles', taskCount: '1 task | {count} tasks',
     running: 'Running', approval: 'Needs approval', stopping: 'Stopping', failed: 'Incomplete', cancelled: 'Stopped', done: 'Finished',
+    approvals: 'Agent approvals', openConversation: 'Open subagent chat',
     followup: 'Follow up', followupHint: 'Add instructions for the current task', send: 'Send', stop: 'Stop',
   },
   agentToolCards: {
@@ -54,6 +55,7 @@ export default {
   },
   dynamic: {
     reviewFileCount: 'Files edited: {count}',
+    reviewChangeNumber: 'Change {number}',
     noMatchingResults: 'No results match “{query}”',
     compressionUsage: 'Compress this chat context ({percent}% used)',
     serviceCount: '{count} services',

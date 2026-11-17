@@ -2,6 +2,7 @@
 import { computed, inject } from 'vue';
 import { tr } from '../../../i18n';
 import { agentTreeKey } from '../../composables/useAgentTree';
+import { runtimeResourceKey } from '../../composables/useAgent';
 import type { AIMessageItem } from './types';
 
 const props = defineProps<{ item: AIMessageItem }>();
@@ -11,7 +12,7 @@ const author = computed(() => {
   if (source?.kind === 'agent') {
     const name = tr(source.relationship === 'parent' ? 'agents.parentAgent'
       : source.relationship === 'child' ? 'agents.childAgent' : 'agents.peerAgent');
-    const title = team?.tree.value?.members.find(({ session }) => session.id === source.sessionId)?.session.title;
+    const title = team?.tree.value?.members[runtimeResourceKey('local', source.sessionId)]?.session.title;
     return [name, title, tr(`agents.messagePurpose.${source.purpose}`), source.subject].filter(Boolean).join(' · ');
   }
   if (source?.kind === 'model' && role === 'user')

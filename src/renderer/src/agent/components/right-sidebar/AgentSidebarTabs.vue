@@ -1,9 +1,8 @@
 <script lang="ts">
 import { reactive } from 'vue';
-import type { AgentSession } from '../../../../../shared/agent/sessions';
 type Tab =
   | { id: string; kind: 'home' | 'files' | 'review' | 'subagents' }
-  | { id: string; kind: 'subagent'; session: AgentSession }
+  | { id: string; kind: 'subagent'; sessionId: string }
   | { id: string; kind: 'file'; name: string; path: string; workspaceId: string };
 interface TabGroup {
   tabs: Tab[];
@@ -29,7 +28,9 @@ import AgentWorkspacePanel from '../workspace/AgentWorkspacePanel.vue';
 import AgentWorkspacePreview from '../workspace/AgentWorkspacePreview.vue';
 import AgentSidebarReview from '../review/AgentSidebarReview.vue';
 import AgentSidebarSubagents from '../sub-agents/AgentSidebarSubagents.vue';
-import { reviewTargetKey } from '../review/reviewNavigation';
+import { reviewTargetKey, useTreeReviewTarget } from '../review/reviewNavigation';
+import { agentTreeKey } from '../../composables/useAgentTree';
+import type { RuntimeSession } from '../navigation/types';
 
 const emit = defineEmits<{ close: [] }>();
 const store = useAgentStore();
@@ -46,6 +47,7 @@ const projectLabel = computed(() =>
 const strip = ref<HTMLElement>();
 const visible = ref(true);
 const reviewTarget = inject(reviewTargetKey);
+const team = inject(agentTreeKey);
 
 watch(projectId, (id) => {
   if (groups.has(id)) return;
@@ -54,9 +56,8 @@ watch(projectId, (id) => {
 }, { immediate: true, flush: 'sync' });
 
 const group = computed(() => groups.get(projectId.value)!);
-const rootId = computed(() => store.session?.rootSessionId ?? store.session?.runtimeId);
 const visibleTabs = computed(() => group.value.tabs.filter(
-  (tab) => tab.kind !== 'subagent' || tab.session.parentSessionId === rootId.value,
+  (tab) => tab.kind !== 'subagent' || !!store.currentTree?.members[tab.sessionId],
 ));
 const activeTab = computed(() => visibleTabs.value.find((tab) => tab.id === group.value.activeId));
 const hasFilesTab = computed(() => group.value.tabs.some((tab) => tab.kind === 'files'));
@@ -93,7 +94,7 @@ function openTab(tab: Tab) {
   group.value.activeId = tab.id;
 }
 
-watch(() => reviewTarget?.value, (target) => {
+watch(useTreeReviewTarget(reviewTarget), (target) => {
   if (target) openTab({ id: 'review', kind: 'review' });
 }, { immediate: true });
 
@@ -106,10 +107,14 @@ function openFile(workspaceId: string, entry: RuntimeWorkspaceDirectoryEntry) {
   openTab({ id: `file:${workspaceId}:${entry.path.toLowerCase()}`, kind: 'file', name: entry.name, path: entry.path, workspaceId });
 }
 
-function openSubagent(session: AgentSession) {
-  openTab({ id: `subagent:${session.id}`, kind: 'subagent', session });
+function openSubagent(session: RuntimeSession) {
+  openTab({ id: `subagent:${session.id}`, kind: 'subagent', sessionId: session.id });
 }
 
+watch(() => team?.requestedMember.value, (request) => {
+  const member = request && store.currentTree?.members[request.sessionId];
+  if (member) openSubagent(member.session);
+}, { immediate: true });
 function fileTitle(tab: Extract<Tab, { kind: 'file' }>) {
   const directory = workspaces.value.find(({ id }) => id === tab.workspaceId)?.path;
   return directory ? `${directory} · ${tab.path}` : tab.path;
@@ -124,7 +129,10 @@ const tabLabels = {
 
 function tabLabel(tab: Tab) {
   if (tab.kind === 'file') return tab.name;
-  if (tab.kind === 'subagent') return tab.session.title || tab.session.id;
+  if (tab.kind === 'subagent') {
+    const session = store.sessionById(tab.sessionId);
+    return session?.title || session?.runtimeId || tab.sessionId;
+  }
   return tr(tabLabels[tab.kind]);
 }
 
@@ -214,7 +222,7 @@ function closeTab(tab: Tab, index: number) {
       <AgentSidebarSubagents
         v-if="activeTab?.kind === 'subagents' || activeTab?.kind === 'subagent'"
         :key="activeTab.id"
-        :subagent="activeTab.kind === 'subagent' ? activeTab.session : undefined"
+        :subagent="activeTab.kind === 'subagent' ? store.sessionById(activeTab.sessionId) : undefined"
         :visible="visible"
         @open-subagent="openSubagent"
       />

@@ -21,6 +21,9 @@ import type { Session, WorkspaceStore } from '../workspace-store.js';
 import type { ProcessSupervisor } from '../process/process-supervisor.js';
 import { AgentEventHub } from './agent-event-hub.js';
 import { AgentProfileCatalog, DEFAULT_AGENT_PROFILE } from './agent-profile-catalog.js';
+import { childPermissionMode } from './agent-tool-policy.js';
+import { WorkspaceWrites } from '../workspace-writes.js';
+import { childRunResults } from './child-run-results.js';
 
 const MAX_ACTIVE_CHILDREN = 3;
 const MAX_CHILDREN = 12;
@@ -46,6 +49,7 @@ export class AgentCoordinator {
   private readonly executions = new Set<Promise<unknown>>();
   private readonly runtimes = new Map<string, SessionRuntime>();
   private readonly admission: ExecutionAdmission;
+  private readonly writes = new WorkspaceWrites();
   private readonly stops = new Map<string, Promise<void>>();
   private readonly queues = new Map<string, Promise<void>>();
   private closing = false;
@@ -159,22 +163,27 @@ export class AgentCoordinator {
 
   async snapshot(session: Session): Promise<AgentTreeSnapshot> {
     const rootSessionId = session.rootSessionId ?? session.id;
-    const members = [];
-    for (const item of this.workspace.descendants(rootSessionId)) {
-      const loaded = await this.workspace.getSession(item.id, session.ownerId);
-      if (!loaded) continue;
-      const run = loaded.runs.at(-1);
-      members.push({ session: toSessionJson(loaded), waiting: directoryState(this.state, loaded) === 'waiting', ...(run ? {
-        response: toAgentResponseDto(run, this.services.files.describeForSession.bind(this.services.files)),
-        sequenceNumber: run.nextSequenceNumber - 1,
-      } : {}) });
-    }
-    return { rootSessionId, members, plan: this.state.plan(rootSessionId), tasks: this.state.tasks(rootSessionId) };
+    const sessions = await this.directory.members(rootSessionId, session.ownerId);
+    const members = sessions.map((member) => {
+      const run = member.runs.at(-1);
+      return {
+        session: toSessionJson(member),
+        waiting: directoryState(this.state, member) === 'waiting',
+        ...(run ? {
+          response: toAgentResponseDto(run, this.services.files.describeForSession.bind(this.services.files)),
+          sequenceNumber: run.nextSequenceNumber - 1,
+        } : {}),
+      };
+    });
+    return {
+      rootSessionId, members, plan: this.state.plan(rootSessionId), tasks: this.state.tasks(rootSessionId),
+      childRunResults: sessions.length > 1 ? childRunResults(sessions, this.state.taskSourceRuns(rootSessionId)) : [],
+    };
   }
 
   async listProfiles(session: Session) {
     this.assertRoot(session);
-    return (await this.profiles.list()).map(({ id, name, description }) => ({ id, name, description }));
+    return (await this.profiles.list()).map(({ id, name, description, access }) => ({ id, name, description, access }));
   }
 
   tasks(session: Session) {
@@ -506,7 +515,7 @@ export class AgentCoordinator {
     let runtime = this.runtimes.get(session.id);
     if (!runtime) {
       runtime = new SessionRuntime(
-        session, this.workspace, this.state, this.admission,
+        session, this.workspace, this.state, this.admission, this.writes,
         this.processes.forSession(session.id), this.services, this.eventHandler(session),
       );
       this.runtimes.set(session.id, runtime);
@@ -520,7 +529,7 @@ export class AgentCoordinator {
       const terminal = event.type === 'run_completed' || event.type === 'run_failed' || event.type === 'run_cancelled' || event.type === 'run_incomplete';
       const events = this.events.project(run, event);
       this.events.publish({ type: 'response', rootSessionId, sessionId: session.id, events });
-      if (terminal || event.type === 'run_created' || event.type === 'permissions_requested') this.changed(rootSessionId);
+      if (terminal || event.type === 'run_created' || event.type === 'permissions_requested' || event.type === 'permissions_resolved') this.changed(rootSessionId);
       if (listener) {
         for (const item of events) {
           try { listener(structuredClone(item)); } catch { /* A subscriber cannot fail an agent run. */ }
@@ -618,9 +627,14 @@ export class AgentCoordinator {
         continue;
       }
       if (this.closing || this.stops.has(member.id) || this.stops.has(rootId)) continue;
+      const parentMode = root.runs.at(-1)?.permissionSnapshot.permissionMode ?? 'plan';
+      const sourceRunId = task?.attempt && this.state.taskSourceRun(task.attempt.id);
+      const taskMode = sourceRunId ? root.runs.find((run) => run.id === sourceRunId)?.permissionSnapshot.permissionMode : undefined;
       const running = this.begin(member, async () => wake.input, {
         ...this.childModel(previous, member.profile),
-        permissionMode: previous.permissionSnapshot.permissionMode,
+        permissionMode: member.parentSessionId
+          ? childPermissionMode(member, parentMode, taskMode)
+          : previous.permissionSnapshot.permissionMode,
       }, this.eventHandler(member), wake.activation);
       void running.catch((error) => {
         // Admission conflicts are transient. The wake is still in durable storage.

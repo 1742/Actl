@@ -1,5 +1,5 @@
 import type { AgentSession } from './sessions.js';
-import type { AgentStreamEvent, AgentResponseDto } from './responses.js';
+import type { AgentItemDto, AgentStreamEvent, AgentResponseDto } from './responses.js';
 
 export interface PlanItem {
   id: string;
@@ -53,11 +53,21 @@ export interface AgentTreeMember {
   response?: AgentResponseDto;
   sequenceNumber?: number;
 }
+
+export interface ChildRunResult {
+  parentRunId: string;
+  sessionId: string;
+  runId: string;
+  hasFileChanges: boolean;
+  searchOutput: AgentItemDto[];
+}
+
 export interface AgentTreeSnapshot {
   rootSessionId: string;
   members: AgentTreeMember[];
   plan: AgentPlan;
   tasks?: AgentTask[];
+  childRunResults: ChildRunResult[];
 }
 export type AgentTreeEvent =
   | { type: 'snapshot'; snapshot: AgentTreeSnapshot }

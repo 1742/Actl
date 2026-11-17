@@ -104,7 +104,7 @@ function isPermissionItem(
 }
 
 function toolStatus(
-  context: AIResponseContext,
+  responseStatus: AIResponseContext['response']['status'],
   call: AIFunctionCallItem,
   result: AgentToolResultEnvelope | undefined,
   permission: PermissionRequestItemDto | undefined,
@@ -113,12 +113,12 @@ function toolStatus(
   if (permission?.status === 'denied' || result?.ok === false) return 'error';
   if (result?.ok) return 'success';
   if (call.status === 'in_progress') return 'preparing';
-  if (['completed', 'failed', 'incomplete', 'cancelled'].includes(context.response.status))
+  if (['completed', 'failed', 'incomplete', 'cancelled'].includes(responseStatus))
     return 'incomplete';
   return 'running';
 }
 
-export function buildAgentOutputBlocks(context: AIResponseContext): AgentOutputBlock[] {
+export function buildAgentOutputBlocks(context: Pick<AIResponseContext, 'response'>): AgentOutputBlock[] {
   const outputs = context.response.output;
   const results = new Map<string, AIFunctionCallOutputItem>();
   const permissions = new Map<string, PermissionRequestItemDto>();
@@ -159,7 +159,7 @@ export function buildAgentOutputBlocks(context: AIResponseContext): AgentOutputB
           presentation: toolPresentations[call.name] || 'generic',
           arguments: parseToolArguments(call.arguments),
           ...(result ? { result } : {}),
-          status: toolStatus(context, call, result, permission),
+          status: toolStatus(context.response.status, call, result, permission),
         },
       ];
     }

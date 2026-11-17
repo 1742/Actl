@@ -3,12 +3,13 @@ import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { reasoningEfforts } from "../../../shared/agent/models.js";
-import type { AgentProfile } from "../../../shared/agent/profiles.js";
+import { agentProfileAccess, type AgentProfile } from "../../../shared/agent/profiles.js";
 
 const profileIdSchema = z.string().regex(/^[a-z][a-z0-9-]{0,63}$/);
 const frontmatterSchema = z.object({
   name: z.string().trim().min(1).max(100),
   description: z.string().trim().min(1).max(500),
+  access: z.enum(agentProfileAccess).default("read_only"),
   modelTargetId: z.string().trim().min(1).max(200).optional(),
   reasoningEffort: z.enum(reasoningEfforts).optional(),
 }).strict();
@@ -21,6 +22,7 @@ export const agentProfileSchema = frontmatterSchema.extend({
 export const DEFAULT_AGENT_PROFILE: AgentProfile = Object.freeze({
   id: "general",
   name: "General",
+  access: "read_only",
   description: "Investigate a read-only task and report findings with evidence.",
   instructions: "Work toward the assigned deliverable. Identify the evidence for your findings and any limits on what you verified.",
 });
@@ -30,14 +32,23 @@ const builtInProfiles: readonly AgentProfile[] = [
   {
     id: "explore",
     name: "Explore",
+    access: "read_only",
     description: "Trace code, data flow, or behavior through the workspace.",
     instructions: "Find relevant entry points, trace the paths that execute, and report the supporting files and line locations. Distinguish observed behavior from inferred behavior.",
   },
   {
     id: "review",
     name: "Review",
+    access: "read_only",
     description: "Review changes or existing code for correctness and regressions.",
     instructions: "Prioritize actionable findings. For each finding, cite its location, explain the conditions that trigger it and its impact, and identify a useful verification step.",
+  },
+  {
+    id: "edit",
+    name: "Editor",
+    access: "edit",
+    description: "Implement a scoped change in the shared workspace and report what changed.",
+    instructions: "Read the assigned files before editing, keep changes within the task, and report changed paths and what you verified. Coordinate overlapping changes with your parent.",
   },
 ];
 

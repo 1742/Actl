@@ -57,10 +57,21 @@ export class SqliteAgentCoordinationRepository implements AgentCoordinationRepos
     return this.db.prepare(`${ATTEMPT_QUERY} ORDER BY a.rowid`).all(taskId).map(toAttempt);
   }
 
+  /** Find task attempt source run id. */
   taskSourceRun(attemptId: string): string {
     const row = this.db.prepare('SELECT source_run_id FROM agent_task_attempts WHERE id = ?').get(attemptId);
     if (!row) throw new Error('Unknown task attempt.');
     return String(row.source_run_id);
+  }
+
+  /** @returns Key: run id of the task execution. Value: task source run id. */
+  taskSourceRuns(rootId: string): ReadonlyMap<string, string> {
+    const rows = this.db.prepare(`SELECT link.run_id, attempt.source_run_id
+      FROM agent_tasks task
+      JOIN agent_task_attempts attempt ON attempt.task_id = task.id
+      JOIN agent_attempt_runs link ON link.attempt_id = attempt.id
+      WHERE task.root_id = ?`).all(rootId);
+    return new Map(rows.map((row) => [String(row.run_id), String(row.source_run_id)]));
   }
 
   createTask(rootId: string, publisherId: string, draft: AgentTaskInput, operation: string): AgentTask {

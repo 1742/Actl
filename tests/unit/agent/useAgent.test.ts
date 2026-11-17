@@ -1,14 +1,18 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createPinia, setActivePinia } from 'pinia';
-import { applyAgentTreeSnapshot, applyRuntimeEvent, loadSubagentHistory, resolveAgentPermissionBatch, selectAgentSession, stopAgentResponse } from '../../../src/renderer/src/agent/composables/useAgent';
+import { effectScope, shallowRef } from 'vue';
+import { applyAgentTreeSnapshot, applyRuntimeEvent, loadSubagentHistory, resolveAgentPermissionBatch, selectAgentSession, sendAgentMessage, stopAgentResponse } from '../../../src/renderer/src/agent/composables/useAgent';
+import { useAgentTree } from '../../../src/renderer/src/agent/composables/useAgentTree';
+import { useRunReview } from '../../../src/renderer/src/agent/components/review/useRunReview';
+import { useFileChanges } from '../../../src/renderer/src/agent/components/review/useFileChanges';
 import { useAgentStore } from '../../../src/renderer/src/agent/stores/agent';
 import { localClient } from '../../../src/renderer/src/agent/services/localClient';
 import { conversationMessageKind, isMessageItem, normalizeResponseContext, subagentRunContexts } from '../../../src/renderer/src/agent/utils/aiResponse';
 import { buildAgentOutputGroups } from '../../../src/renderer/src/agent/utils';
 import { agentTeamCard, agentTeamCardKind } from '../../../src/renderer/src/agent/utils/agentTeamCards';
 import type { AgentResponseDto, PendingPermissionBatchDto, AgentStreamEvent, ResponseMessageItemDto } from '../../../src/shared/agent/responses';
-import type { SessionContext } from '../../../src/shared/agent/sessions';
+import type { AgentSession, SessionContext } from '../../../src/shared/agent/sessions';
 
 const pending = (id: string): PendingPermissionBatchDto => ({
   id, response_id: 'response', created_at: '2026-11-06T00:00:00Z', permissions: [{
@@ -33,7 +37,8 @@ function setup(id: string) {
   setActivePinia(createPinia());
   Object.assign(globalThis, { window: { actlAgent: { notify: async () => {} } }, localStorage: { setItem() {} } });
   const store = useAgentStore();
-  store.setSessions([{ id, runtimeId: 'session', runtimeKind: 'local', title: 'Fixture', created_at: '', updated_at: '' }]);
+  store.upsertSession({ id, runtimeId: 'session', runtimeKind: 'local', projectId: null, runtimeProjectId: null,
+    title: 'Fixture', created_at: '', updated_at: '' });
   store.selectSession(id);
   store.addResponse(id, normalizeResponseContext({ response: response(pending('a')) }));
   store.setActiveResponseId(id, 'response');
@@ -41,7 +46,61 @@ function setup(id: string) {
   store.setStatus(id, 'waiting_permission');
   return store;
 }
-const approve = (id: string, batch = 'a') => resolveAgentPermissionBatch([{ permission_id: `permission-${batch}`, decision: 'approve' }], id);
+const approve = (id: string, batch = 'a', responseId = 'response') => resolveAgentPermissionBatch(
+  { sessionId: id, responseId, batchId: batch }, [{ permission_id: `permission-${batch}`, decision: 'approve' }],
+);
+
+for (const projectId of [undefined, 'project'] as const) {
+  test(`first send from a ${projectId ? 'project' : 'standalone'} draft registers the new tree before streaming`, async (t) => {
+    setActivePinia(createPinia());
+    Object.assign(globalThis, {
+      window: { actlAgent: {
+        watchTree: async () => ({ ok: true, value: undefined }),
+        onTreeEvents: () => () => {},
+        detach: () => {},
+      } },
+    });
+    const store = useAgentStore();
+    if (projectId) {
+      store.setProjects([{
+        id: 'local:project', runtimeId: projectId, runtimeKind: 'local', cwd: 'D:/project',
+        workspaces: [], primaryWorkspaceId: '', created_at: '', updated_at: '',
+      }]);
+      store.startDraft('local:project');
+    }
+    store.selectedModel = 'fixture-model';
+    const rawId = 'new-session';
+    const sessionId = `local:${rawId}`;
+    const created: AgentSession = { id: rawId, rootSessionId: rawId, projectId: projectId ?? null, created_at: '', updated_at: '' };
+    const content = [{ type: 'input_text' as const, text: 'First message' }];
+    const completed = { ...response(), session_id: rawId, input: [{ type: 'message' as const, role: 'user' as const, content }] };
+    const create = t.mock.method(localClient, 'createSession', async () => created);
+    const stream = t.mock.method(localClient, 'streamResponse', async (target, _model, input, _effort, _mode, emit) => {
+      assert.equal(target, rawId);
+      assert.deepEqual(input, content);
+      assert.equal(store.selectedSessionId, sessionId);
+      assert.equal(store.currentTree?.members[sessionId]?.runtime.status, 'running');
+      emit({ type: 'response.created', response_id: completed.id, sequence_number: 0,
+        response: { ...completed, status: 'in_progress' } });
+      return completed;
+    });
+    t.mock.method(localClient, 'getContext', async () => ({
+      session_id: rawId, responses: [completed], context: { summarized_run_count: 0, compressions: [] },
+    }));
+    t.mock.method(localClient, 'renameSession', async (_id, title) => ({ ...created, title: title ?? undefined }));
+    const scope = effectScope();
+    try {
+      scope.run(useAgentTree);
+      assert.deepEqual(await sendAgentMessage(content), { status: 'success', data: { sessionId } });
+      assert.deepEqual(create.mock.calls.map(({ arguments: args }) => args), [[projectId]]);
+      assert.equal(stream.mock.callCount(), 1);
+      assert.equal(store.session?.title, 'First message');
+      assert.deepEqual(store.responses.map((context) => context.response.id), [completed.id]);
+    } finally {
+      scope.stop();
+    }
+  });
+}
 
 function toolCard(name: string, output: unknown) {
   const kind = agentTeamCardKind(name);
@@ -109,7 +168,7 @@ test('tree and request streams deduplicate approval events and reject stale snap
   emit({ type: 'agent.permissions.requested', response_id: 'response', sequence_number: 3, batch: pending('b') });
   assert.equal(store.pendingPermissionBatch, undefined);
   assert.equal(store.status, 'running');
-  applyAgentTreeSnapshot({ rootSessionId: 'session', plan: { revision: 0, items: [] }, members: [{
+  applyAgentTreeSnapshot({ rootSessionId: 'session', plan: { revision: 0, items: [] }, childRunResults: [], members: [{
     session: { id: 'session', rootSessionId: 'session', projectId: null, created_at: '', updated_at: '' },
     response: response(pending('b')), sequenceNumber: 3,
   }] });
@@ -121,7 +180,7 @@ test('a delayed tree snapshot cannot replace a newer automatic run', () => {
   const id = 'local:session'; const store = setup(id);
   const newer = { ...response(), id: 'new-response', status: 'in_progress' as const, created_at: '2026-11-06T00:00:03Z' };
   applyRuntimeEvent(id, { type: 'response.created', response_id: newer.id, sequence_number: 0, response: newer });
-  applyAgentTreeSnapshot({ rootSessionId: 'session', plan: { revision: 0, items: [] }, members: [{
+  applyAgentTreeSnapshot({ rootSessionId: 'session', plan: { revision: 0, items: [] }, childRunResults: [], members: [{
     session: { id: 'session', rootSessionId: 'session', projectId: null, created_at: '', updated_at: '' },
     response: response(), sequenceNumber: 10,
   }] });
@@ -129,12 +188,49 @@ test('a delayed tree snapshot cannot replace a newer automatic run', () => {
   assert.equal(store.status, 'running');
 });
 
+test('the parent collects sibling approvals and an approval only resumes its own run', async () => {
+  const root = 'local:session';
+  const store = setup(root);
+  const member = (id: string, rootId: string, run: AgentResponseDto) => ({
+    session: { id, projectId: null, rootSessionId: rootId,
+      ...(id === rootId ? {} : { parentSessionId: rootId }), title: id, created_at: '', updated_at: '' },
+    response: { ...run, session_id: id }, sequenceNumber: 1,
+  });
+  const plan = { revision: 0, items: [] };
+  applyAgentTreeSnapshot({ rootSessionId: 'session', plan, childRunResults: [], members: [
+    member('session', 'session', { ...response(), status: 'in_progress' }),
+    member('first', 'session', response(pending('first'))),
+    member('second', 'session', response(pending('second'))),
+  ] });
+  applyAgentTreeSnapshot({ rootSessionId: 'other', plan, childRunResults: [], members: [
+    member('other', 'other', response(pending('other'))),
+  ] });
+  assert.equal(Object.keys(store.trees).length, 2);
+  assert.deepEqual(store.permissionRequests.map(({ sessionId }) => sessionId), ['local:first', 'local:second']);
+  const original = localClient.streamPermission;
+  let resumes = 0;
+  localClient.streamPermission = async (sessionId, responseId, batchId) => {
+    resumes++;
+    assert.deepEqual([sessionId, responseId, batchId], ['second', 'response', 'second']);
+    return { ...response(), session_id: sessionId };
+  };
+  try {
+    assert.equal((await approve('local:second', 'second', 'stale-run')).status, 'error');
+    assert.equal((await approve('local:second', 'first')).status, 'error');
+    assert.equal((await approve('local:second', 'second')).status, 'success');
+    assert.equal(resumes, 1);
+    assert.equal(store.status, 'running');
+    assert.equal(store.selectedSessionId, root);
+    assert.deepEqual(store.permissionRequests.map(({ sessionId }) => sessionId), ['local:first']);
+  } finally { localClient.streamPermission = original; }
+});
+
 test('loading subagent history keeps live output and the parent selection', async () => {
   const store = setup('local:session');
   const sessionId = 'local:child';
   const old = { ...response(), id: 'older', session_id: 'child' };
   const live = { ...response(), id: 'live', session_id: 'child', status: 'in_progress' as const };
-  applyAgentTreeSnapshot({ rootSessionId: 'session', plan: { revision: 0, items: [] }, members: [{
+  applyAgentTreeSnapshot({ rootSessionId: 'session', plan: { revision: 0, items: [] }, childRunResults: [], members: [{
     session: { id: 'child', parentSessionId: 'session', rootSessionId: 'session', projectId: null, created_at: '', updated_at: '' },
     response: live, sequenceNumber: 1,
   }] });
@@ -157,6 +253,90 @@ test('loading subagent history keeps live output and the parent selection', asyn
     assert.equal(visible[1]?.response.output[0]?.id, 'live-item');
   } finally {
     localClient.getContext = originalGet;
+  }
+});
+
+test('parent and later child edits share file rows while retaining both review targets', async (t) => {
+  const store = setup('local:session');
+  store.upsertSession({
+    id: 'local:child', runtimeKind: 'local', runtimeId: 'child', parentSessionId: 'session', rootSessionId: 'session',
+    projectId: null, runtimeProjectId: null, created_at: '', updated_at: '',
+  });
+  const getReview = t.mock.method(localClient, 'getSessionReview', async (id, options) => ({
+    runId: options?.runId ?? null,
+    files: id === 'session'
+      ? [{ id: 'parent-file', path: 'src/main.ts', additions: 2, deletions: 1, unavailable: false }]
+      : [
+          { id: 'child-file', path: 'SRC/main.ts', additions: 3, deletions: 0, unavailable: false },
+          { id: 'other-file', path: 'other.ts', additions: 1, deletions: 0, unavailable: false },
+        ],
+  }));
+  const parent = { sessionId: 'local:session', runId: 'parent-run' };
+  const child = { sessionId: 'local:child', runId: 'child-run' };
+  const runs = shallowRef([parent]);
+  const scope = effectScope();
+  try {
+    const files = scope.run(() => useFileChanges(() => runs.value))!;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(files.value.map(({ path }) => path), ['src/main.ts']);
+    runs.value = [parent, child];
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.deepEqual(files.value.map(({ path }) => path), ['src/main.ts', 'other.ts']);
+    const shared = files.value[0]!;
+    assert.deepEqual([shared.additions, shared.deletions], [5, 1]);
+    assert.deepEqual(shared.changes.map(({ target }) => target), [
+      { ...parent, fileId: 'parent-file' },
+      { ...child, fileId: 'child-file' },
+    ]);
+    assert.deepEqual(getReview.mock.calls.map((call) => Array.from(call.arguments)), [
+      ['session', { runId: 'parent-run' }],
+      ['child', { runId: 'child-run' }],
+    ]);
+  } finally {
+    scope.stop();
+  }
+});
+
+test('a child file selection opens its exact run and diff in the parent sidebar', async (t) => {
+  const store = setup('local:session');
+  const child = { id: 'child', parentSessionId: 'session', rootSessionId: 'session', projectId: null, created_at: '', updated_at: '' };
+  const result = { parentRunId: 'response', runId: 'child-old-run', sessionId: 'child', hasFileChanges: true, searchOutput: [] };
+  applyAgentTreeSnapshot({
+    rootSessionId: 'session', plan: { revision: 0, items: [] }, childRunResults: [result],
+    members: [{ session: child, response: { ...response(), id: 'child-new-run', session_id: child.id } }],
+  });
+  assert.deepEqual(store.currentTree?.childRunResults, [result]);
+  const files = ['other-file', 'selected-file'].map((id) => ({
+    id, path: `${id}.txt`, additions: 1, deletions: 0, unavailable: false,
+  }));
+  const getReview = t.mock.method(localClient, 'getSessionReview', async (_id, options) => ({
+    runId: options?.runId ?? 'other-run', files,
+    ...(options?.fileId ? { lines: [{ kind: 'added' as const, text: options.fileId, newLine: 1 }] } : {}),
+  }));
+  const request = shallowRef({ sessionId: 'local:child', runId: result.runId, fileId: 'selected-file' });
+  const scope = effectScope();
+  try {
+    const review = scope.run(() => useRunReview(request))!;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(store.selectedSessionId, 'local:session');
+    assert.equal(review.session.value?.id, 'local:child');
+    assert.equal(review.selectedFile.value?.id, 'selected-file');
+    assert.deepEqual(review.lines.value, [{ kind: 'added', text: 'selected-file', newLine: 1 }]);
+    assert.deepEqual(getReview.mock.calls.map((call) => Array.from(call.arguments)), [
+      ['child', { runId: 'child-old-run' }],
+      ['child', { runId: 'child-old-run', fileId: 'selected-file' }],
+    ]);
+
+    store.upsertSession({ id: 'local:other', runtimeKind: 'local', runtimeId: 'other', projectId: null,
+      runtimeProjectId: null, created_at: '', updated_at: '' });
+    store.selectSession('local:other');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(review.target.value, undefined);
+    assert.equal(review.session.value?.id, 'local:other');
+    assert.equal(review.review.value?.runId, 'other-run');
+    assert.equal(getReview.mock.calls[2]?.arguments[0], 'other');
+  } finally {
+    scope.stop();
   }
 });
 

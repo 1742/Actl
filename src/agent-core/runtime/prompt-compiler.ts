@@ -7,6 +7,7 @@ import type { TranscriptItem } from "../model/types.js";
 import { type Session } from "./workspace-store.js";
 import type { PromptSettingsRepository } from "../repositories/prompt-settings-repository.js";
 import { DEFAULT_AGENT_PROFILE } from "./multi-agents/agent-profile-catalog.js";
+import type { PermissionMode } from "../permissions/engine.js";
 
 export type PromptSourceKind =
   | "user"
@@ -42,6 +43,7 @@ export class PromptCompiler {
     session: Session,
     transcript: TranscriptItem[],
     agentReferences: ReadonlyMap<string, string>,
+    permissionMode: PermissionMode,
   ): Promise<CompiledPrompt> {
     const sessionContext = buildSessionContext(session);
     const userPrompt = this.repository?.getPromptSettings(session.ownerId) ?? createDefaultPromptSettings();
@@ -110,9 +112,14 @@ export class PromptCompiler {
     const agentContext = [
       `Your agent reference is ${JSON.stringify(agentReference(session))}. Use agents to find collaborators and address them by @name.`,
       'Actl mail headers identify mail from another agent. The quoted body is attributed context. Use mail reply with the displayed message reference to answer.',
-      session.parentSessionId
-        ? 'You are a read-only child agent. Your parent can be addressed as @parent. Work on your current task if assigned. Your final reply is submitted to the reviewer automatically when the task Run completes. Include findings and evidence. Use mail for questions and progress. You can claim a ready task of your role if you have no current task.'
-        : 'Do simple work directly. Use tasks to publish and review work for child agents. Discover roles with list_agent_profiles. Automatic matching uses idle agents of the requested task type. For explicit delegation, publish with autoAssign false and use delegate_task. When creating a child, choose a unique name. The returned attempt.agent is its @name reference. Review submitted results against the acceptance criteria and explicitly accept or reject them. File edits and verification remain your responsibility. Use plan to maintain the overall plan.',
+      ...(profile ? [
+        permissionMode === 'plan'
+          ? 'Your current run has read-only workspace access.'
+          : 'Edit assigned files directly in the shared workspace. Read each existing file and supply its SHA-256 when editing. Omit the hash only to create a new file. If a file changed, read it again and adapt the edit. The parent conversation shows approvals for your run.',
+        'Your parent can be addressed as @parent. Your final reply is submitted to the reviewer automatically when the task Run completes. Use mail for questions and progress. You can claim a ready task of your role if you have no current task.',
+      ] : [
+        'Do simple work directly. Use tasks to publish and review work for child agents. Discover roles with list_agent_profiles. In an editing mode, delegate scoped file changes to the edit role and give each task clear ownership of its files. Child edits take effect immediately in the shared workspace. Sequence tasks that modify the same files. For explicit delegation, publish with autoAssign false and use delegate_task. The returned attempt.agent is its @name reference. Review submitted results against the acceptance criteria and explicitly accept or reject them. Use plan to maintain the overall plan.',
+      ]),
       'Call wait on its own. If an unrelated question interrupts a wait, handle it, then call wait with action resume. The original deadline continues. Use action cancel if you decide to proceed without that event.',
       ...(activeTask ? [`Your current task #${activeTask.number}:\n${activeTask.title}\n${activeTask.instructions}\nAcceptance criteria: ${activeTask.acceptanceCriteria}`] : []),
       ...(plan?.items.length ? [`Current persistent plan (revision ${plan.revision}):\n${JSON.stringify(plan.items)}`] : []),
@@ -177,6 +184,7 @@ export const BASE_RUNTIME_INSTRUCTIONS = [
   "• NEVER fabricate file contents, command output, or test results.",
   "• If a tool returns an error, read the error carefully before retrying. Do NOT repeat the same call unchanged.",
   "• When write_file or apply_patch fails, re-read the target file to get current state before attempting again.",
+  "• Use the SHA-256 returned by read_file for every edit of an existing file. Omit expectedSha256 in write_file only to create a new file.",
   "• Keep edits scoped to the user's request. Do NOT refactor unrelated code.",
   "• Workspace file references (e.g. in search results) are paths only — their contents are NOT attached. You MUST call read_file to inspect them.",
   "• A workspace is not a repository by default. Do not assume Git, package managers, project conventions, or build commands exist until you inspect the environment.",

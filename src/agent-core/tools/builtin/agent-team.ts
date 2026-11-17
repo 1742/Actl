@@ -72,7 +72,7 @@ export class AgentTeamToolProvider implements ToolProvider {
 
   async listTools(): Promise<ToolDefinition[]> {
     return [
-      { name: 'list_agent_profiles', inputSchema: empty, description: 'Read available role IDs and descriptions.' },
+      { name: 'list_agent_profiles', inputSchema: empty, description: 'Read available role IDs, workspace access, and descriptions. Use the edit role for scoped file changes.' },
       { name: 'tasks', inputSchema: tasksInput, description: 'Manage shared tasks. Use #number references. Publish with a role ID as type; autoAssign defaults to true. A child may claim matching ready tasks. The reviewer can accept or reject a submitted result, cancel a task, or retry a failed task. Show includes result and attempt history.' },
       { name: 'delegate_task', inputSchema: delegate, description: 'Root: delegate a ready task to an idle matching child by @name, create a child of the matching role with a unique name, or omit target for automatic matching. Publish with autoAssign false before explicit delegation. Use the returned attempt.agent to address the child.' },
       { name: 'agents', inputSchema: empty, description: 'List same-root agents by name and @name reference, with role, status, current task, and recent run.' },

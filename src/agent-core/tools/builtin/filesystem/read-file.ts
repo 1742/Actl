@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
@@ -9,6 +8,7 @@ import {
 } from "../../registry.js";
 import { pathsEqual, resolveToolPath, toolBaseDirectory } from "../../path-security.js";
 import type { FilesystemToolHandler } from "./types.js";
+import { sha256 } from "./file-edits.js";
 
 export const readFileInputSchema = z.object({
   path: z.string().trim().min(1).describe("Absolute path or path relative to the Session cwd."),
@@ -49,8 +49,8 @@ export class ReadFileToolHandler implements FilesystemToolHandler {
     const fileStat = await stat(resolvedPath);
     if (!fileStat.isFile()) throw new Error("read_file path must be a regular file.");
 
-    const content = await readFile(resolvedPath, { encoding: "utf8", signal: context.signal });
-    const lines = content.split(/\r?\n/);
+    const content = await readFile(resolvedPath, { signal: context.signal });
+    const lines = content.toString("utf8").split("\n");
     const startIndex = parsedInput.startLine - 1;
     const selected: string[] = [];
     let bytes = 0;
@@ -67,6 +67,7 @@ export class ReadFileToolHandler implements FilesystemToolHandler {
     }
     const endLine = selected.length === 0 ? null : parsedInput.startLine + selected.length - 1;
     const truncated = byteLimited || startIndex + selected.length < lines.length;
+    const selectedContent = selected.join("\n");
 
     return {
       path: path.isAbsolute(parsedInput.path)
@@ -75,10 +76,10 @@ export class ReadFileToolHandler implements FilesystemToolHandler {
       startLine: parsedInput.startLine,
       endLine,
       totalLines: lines.length,
-      sizeBytes: fileStat.size,
-      sha256: createHash("sha256").update(content, "utf8").digest("hex"),
+      sizeBytes: content.length,
+      sha256: sha256(content),
       truncated,
-      content: selected.join("\n"),
+      content: endLine !== null && endLine < lines.length ? selectedContent.replace(/\r$/, "") : selectedContent,
     };
   }
 }

@@ -2,18 +2,21 @@
 import { tr } from '../../../i18n';
 import { computed, ref, watch } from 'vue';
 import { ChevronRight } from '@lucide/vue';
+import type { ChildRunResult } from '../../../../../shared/agent/coordination';
 import MessageOutput from '../responses/MessageOutput.vue';
 import MessageTools from '../responses/MessageTools.vue';
 import type { AIResponseContext } from '../responses/types';
-import { buildAgentOutputGroups, type AgentOutputGroup } from '../../utils';
-import { conversationMessageKind } from '../../utils/aiResponse';
+import { buildAgentOutputBlocks, buildAgentOutputGroups, type AgentOutputGroup } from '../../utils';
+import { conversationMessageKind, normalizeResponse } from '../../utils/aiResponse';
 import { collectWebQueries, collectWebSources } from '../../utils/webSearch';
+import { runtimeResourceKey } from '../../composables/useAgent';
+import type { ReviewRun } from '../review/reviewNavigation';
 import AgentActivityGroup from './AgentActivityGroup.vue';
 import AgentReasoningBlock from './AgentReasoningBlock.vue';
 import AgentWebSearchSourcesCard from '../web-search/AgentWebSearchSourcesCard.vue';
 import AgentFileChangesCard from '../review/AgentFileChangesCard.vue';
 
-const props = defineProps<{ context: AIResponseContext }>();
+const props = defineProps<{ context: AIResponseContext; sessionId: string; childResults?: ChildRunResult[] }>();
 const groups = computed(() => buildAgentOutputGroups(props.context));
 const completedHistoryExpanded = ref(false);
 const isActive = computed(() =>
@@ -22,10 +25,21 @@ const isActive = computed(() =>
 const finalMessageIndex = computed(() =>
   groups.value.findIndex((group) => group.type === 'message' && group.isFinal),
 );
-const finalWebSearch = computed(() => {
-  if (props.context.response.status !== 'completed' || finalMessageIndex.value < 0)
-    return { sources: [], queries: '' };
-  const blocks = groups.value.flatMap((group) => (group.type === 'activity' ? group.blocks : []));
+const reviewRuns = computed<ReviewRun[]>(() => {
+  const runs = isActive.value ? [] : [{ sessionId: props.sessionId, runId: props.context.response.id }];
+  for (const child of props.childResults ?? []) {
+    if (child.hasFileChanges) runs.push({ sessionId: runtimeResourceKey('local', child.sessionId), runId: child.runId });
+  }
+  return runs;
+});
+const webSearch = computed(() => {
+  const blocks = props.context.response.status === 'completed' && finalMessageIndex.value >= 0
+    ? groups.value.flatMap((group) => group.type === 'activity' ? group.blocks : [])
+    : [];
+  for (const child of props.childResults ?? []) {
+    const response = normalizeResponse({ id: child.runId, status: 'completed', output: child.searchOutput });
+    blocks.push(...buildAgentOutputBlocks({ response }).filter((block) => block.type !== 'message'));
+  }
   return { sources: collectWebSources(blocks), queries: collectWebQueries(blocks) };
 });
 const completedHistory = computed(() => {
@@ -102,15 +116,6 @@ watch(isActive, (active, wasActive) => {
     <template v-for="group in displayedGroups" :key="group.key">
       <MessageOutput v-if="group.type === 'message'" :item="group.item" :show-tools="false">
         <template v-if="group.isFinal" #footer="{ content }">
-          <AgentFileChangesCard
-            v-if="!isActive"
-            :session-id="context.sessionId"
-            :run-id="context.response.id"
-          />
-          <AgentWebSearchSourcesCard
-            :sources="finalWebSearch.sources"
-            :queries="finalWebSearch.queries"
-          />
           <MessageTools
             v-if="!isActive"
             :content="content"
@@ -120,11 +125,8 @@ watch(isActive, (active, wasActive) => {
       </MessageOutput>
       <AgentActivityGroup v-else :blocks="group.blocks" :response-active="isActive" />
     </template>
-    <AgentFileChangesCard
-      v-if="!isActive && finalMessageIndex < 0"
-      :session-id="context.sessionId"
-      :run-id="context.response.id"
-    />
+    <AgentFileChangesCard v-if="reviewRuns.length" :runs="reviewRuns" />
+    <AgentWebSearchSourcesCard :sources="webSearch.sources" :queries="webSearch.queries" />
     <div v-if="!groups.length && isActive" class="flex items-center py-0.5 text-sm text-gray-500">
       <span :class="{ 'status-shimmer': context.response.status === 'in_progress' }">{{
         context.response.status === 'waiting_permission'

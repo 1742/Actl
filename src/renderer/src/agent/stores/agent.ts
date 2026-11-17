@@ -7,6 +7,7 @@ import type { SessionContextSummary } from '../../../../shared/agent/sessions';
 import type { RuntimeModel, RuntimeModelCatalog, RuntimeProviderAccount, ReasoningEffort } from '../../../../shared/agent/models';
 import type { RuntimeProject, RuntimeSession } from '../components/navigation/types';
 import type { RuntimeSkill } from '../../../../shared/agent/skills';
+import type { AgentPlan, AgentTask, ChildRunResult } from '../../../../shared/agent/coordination';
 
 type AgentRuntimeAvailability = "idle" | "checking" | "available" | "unavailable";
 
@@ -29,6 +30,37 @@ interface AgentSessionRuntime {
 }
 
 type AgentViewStatus = "idle" | "running" | "waiting_permission" | "stopping";
+
+interface AgentTreeMember {
+  session: RuntimeSession;
+  runtime: AgentSessionRuntime;
+  waiting: boolean;
+}
+
+interface AgentTree {
+  rootId: string;
+  runtimeKind: AgentRuntimeKind;
+  members: Record<string, AgentTreeMember>;
+  plan: AgentPlan;
+  tasks: AgentTask[];
+  childRunResults: ChildRunResult[];
+}
+
+export interface PermissionTarget {
+  sessionId: string;
+  responseId: string;
+  batchId: string;
+}
+
+export interface TreePermissionRequest extends PermissionTarget {
+  session: RuntimeSession;
+  batch: PendingPermissionBatchDto;
+  task?: AgentTask | undefined;
+}
+
+export function sessionTreeId(session: RuntimeSession) {
+  return session.rootSessionId ? `${session.runtimeKind}:${session.rootSessionId}` : session.id;
+}
 
 const byUpdated = (a: RuntimeSession, b: RuntimeSession) => b.updated_at.localeCompare(a.updated_at);
 function projectActivityAt(project: RuntimeProject, sessions: RuntimeSession[]) {
@@ -82,10 +114,9 @@ export const useAgentStore = defineStore("agent", {
     skillsError: "",
     skillsContextKey: "",
     projects: [] as RuntimeProject[],
-    sessions: [] as RuntimeSession[],
+    trees: {} as Record<string, AgentTree>,
     selectedSessionId: "",
     draftProjectId: "",
-    runtimeBySessionId: {} as Record<string, AgentSessionRuntime>,
     composerDrafts: {} as Record<string, AgentComposerDocument>,
     attachmentDrafts: {} as Record<string, AgentComposerAttachment[]>,
     generalError: "",
@@ -93,65 +124,61 @@ export const useAgentStore = defineStore("agent", {
   }),
 
   getters: {
-    session: (state) => state.sessions.find((item) => item.id === state.selectedSessionId),
+    membersBySessionId: (state): Record<string, AgentTreeMember> => Object.assign(
+      {}, ...Object.values(state.trees).map((tree) => tree.members),
+    ),
+    sessions(): RuntimeSession[] { return Object.values(this.membersBySessionId).map(({ session }) => session); },
+    sessionById() { return (id: string) => this.membersBySessionId[id]?.session; },
+    runtimeBySessionId() { return (id: string) => this.membersBySessionId[id]?.runtime; },
+    session(): RuntimeSession | undefined { return this.sessionById(this.selectedSessionId); },
+    currentTree(): AgentTree | undefined { return this.session && this.trees[sessionTreeId(this.session)]; },
+    currentRuntime(): AgentSessionRuntime | undefined { return this.runtimeBySessionId(this.selectedSessionId); },
+    permissionRequests(): TreePermissionRequest[] {
+      const tree = this.currentTree;
+      if (!tree) return [];
+      return Object.values(tree.members).flatMap(({ session, runtime }) => {
+        const batch = runtime.pendingPermissionBatch;
+        if (!batch || runtime.activeResponseId !== batch.response_id) return [];
+        return [{
+          sessionId: session.id, responseId: batch.response_id, batchId: batch.id, session, batch,
+          task: tree.tasks.find(({ attempt }) => attempt?.ownerSessionId === session.runtimeId && attempt.outcome === 'active'),
+        }];
+      }).sort((a, b) => Number(b.sessionId === tree.rootId) - Number(a.sessionId === tree.rootId)
+        || a.batch.created_at.localeCompare(b.batch.created_at));
+    },
     draftProject: (state) => state.projects.find((item) => item.id === state.draftProjectId),
-    currentRuntime: (state) => (
-      state.selectedSessionId ? state.runtimeBySessionId[state.selectedSessionId] : undefined
-    ),
-    responses: (state): AIResponseContext[] => (
-      state.runtimeBySessionId[state.selectedSessionId]?.responses || []
-    ),
-    status: (state): AgentViewStatus => (
-      state.runtimeBySessionId[state.selectedSessionId]?.status || "idle"
-    ),
-    pendingPermissionBatch: (state) => (
-      state.runtimeBySessionId[state.selectedSessionId]?.pendingPermissionBatch
-    ),
-    activeResponseId: (state) => (
-      state.runtimeBySessionId[state.selectedSessionId]?.activeResponseId || ""
-    ),
-    errorMessage: (state) => (
-      state.runtimeBySessionId[state.selectedSessionId]?.errorMessage || state.generalError
-    ),
-    loadingHistory: (state) => (
-      state.runtimeBySessionId[state.selectedSessionId]?.loadingHistory || false
-    ),
+    responses(): AIResponseContext[] { return this.currentRuntime?.responses ?? []; },
+    status(): AgentViewStatus { return this.currentRuntime?.status ?? "idle"; },
+    pendingPermissionBatch(): PendingPermissionBatchDto | undefined { return this.currentRuntime?.pendingPermissionBatch; },
+    activeResponseId(): string { return this.currentRuntime?.activeResponseId ?? ""; },
+    errorMessage(): string { return this.currentRuntime?.errorMessage || this.generalError; },
+    loadingHistory(): boolean { return this.currentRuntime?.loadingHistory ?? false; },
     draftContextKey: (state): AgentComposerContextKey => (
       state.selectedSessionId
         ? `session:${state.selectedSessionId}`
         : state.draftProjectId ? `project:${state.draftProjectId}:draft` : `standalone:${state.runtimeKind}:draft`
     ),
-    mostRecentlyEditedProject: (state) => [...state.projects].sort((a, b) => (
-      projectActivityAt(b, state.sessions).localeCompare(projectActivityAt(a, state.sessions))
-    ))[0],
-    isRunning: (state): boolean => {
-      const status = state.runtimeBySessionId[state.selectedSessionId]?.status;
-      return status === "running" || status === "stopping";
+    mostRecentlyEditedProject(): RuntimeProject | undefined {
+      return [...this.projects].sort((a, b) => projectActivityAt(b, this.sessions).localeCompare(projectActivityAt(a, this.sessions)))[0];
     },
-    isStopping: (state): boolean => (
-      state.runtimeBySessionId[state.selectedSessionId]?.status === "stopping"
-    ),
-    isWaitingPermission: (state): boolean => (
-      state.runtimeBySessionId[state.selectedSessionId]?.status === "waiting_permission"
-    ),
-    activeSessionIds: (state) => Object.entries(state.runtimeBySessionId)
-      .filter(([, runtime]) => isActiveStatus(runtime.status))
-      .map(([sessionId]) => sessionId),
-    hasActiveResponse: (state): boolean => Object.values(state.runtimeBySessionId)
-      .some((runtime) => isActiveStatus(runtime.status)),
-    projectActivityOwner: (state) => (projectId: string) => {
-      const session = state.sessions.find((item) => (
-        item.projectId === projectId && isActiveStatus(state.runtimeBySessionId[item.id]?.status || "idle")
-      ));
-      return session?.id;
+    isRunning(): boolean { return this.status === "running" || this.status === "stopping"; },
+    isStopping(): boolean { return this.status === "stopping"; },
+    isWaitingPermission(): boolean { return this.status === "waiting_permission"; },
+    activeSessionIds(): string[] {
+      return Object.values(this.membersBySessionId).filter(({ runtime }) => isActiveStatus(runtime.status))
+        .map(({ session }) => session.id);
     },
-    sessionIsActive: (state) => (sessionId: string) => (
-      isActiveStatus(state.runtimeBySessionId[sessionId]?.status || "idle")
-    ),
-    standaloneSessions: (state) => state.sessions.filter((item) => !item.projectId && !item.parentSessionId).sort(byUpdated),
-    sessionsByProject: (state) => (projectId: string) => (
-      state.sessions.filter((item) => item.projectId === projectId && !item.parentSessionId).sort(byUpdated)
-    ),
+    hasActiveResponse(): boolean { return this.activeSessionIds.length > 0; },
+    projectActivityOwner() {
+      return (projectId: string) => this.activeSessionIds.find((id) => this.sessionById(id)?.projectId === projectId);
+    },
+    sessionIsActive() {
+      return (id: string) => isActiveStatus(this.runtimeBySessionId(id)?.status ?? "idle");
+    },
+    standaloneSessions(): RuntimeSession[] { return this.sessions.filter((item) => !item.projectId && !item.parentSessionId).sort(byUpdated); },
+    sessionsByProject() {
+      return (projectId: string) => this.sessions.filter((item) => item.projectId === projectId && !item.parentSessionId).sort(byUpdated);
+    },
   },
 
   actions: {
@@ -222,30 +249,75 @@ export const useAgentStore = defineStore("agent", {
       this.selectedPermissionMode = mode;
     },
     setProjects(projects: RuntimeProject[]) { this.projects = projects; },
-    setSessions(sessions: RuntimeSession[]) { this.sessions = sessions; },
     setRuntimeProjects(kind: AgentRuntimeKind, projects: RuntimeProject[]) {
       this.projects = [...this.projects.filter((item) => item.runtimeKind !== kind), ...projects];
     },
     setRuntimeSessions(kind: AgentRuntimeKind, sessions: RuntimeSession[]) {
-      this.sessions = [...this.sessions.filter((item) => item.runtimeKind !== kind), ...sessions];
+      const seen = new Set(sessions.map(({ id }) => id));
+      for (const session of this.sessions) {
+        if (session.runtimeKind === kind && !seen.has(session.id)) this.removeSession(session.id);
+      }
+      for (const session of sessions) this.upsertSession(session);
+    },
+    upsertSession(session: RuntimeSession) {
+      const rootId = sessionTreeId(session);
+      const tree = this.trees[rootId];
+      const existing = tree?.members[session.id];
+      if (existing) {
+        existing.session = session;
+        return;
+      }
+
+      const member = { session, runtime: createSessionRuntime(), waiting: false };
+      if (tree) {
+        tree.members[session.id] = member;
+      } else {
+        // Publish the new tree and its first member together for synchronous watchers.
+        this.trees[rootId] = {
+          rootId, runtimeKind: session.runtimeKind, members: { [session.id]: member },
+          plan: { revision: 0, items: [] }, tasks: [], childRunResults: [],
+        };
+      }
+    },
+    setTreeDetails(rootId: string, members: { session: RuntimeSession; waiting?: boolean | undefined }[],
+      plan: AgentPlan, tasks: AgentTask[], childRunResults: ChildRunResult[]) {
+      for (const { session, waiting } of members) {
+        this.upsertSession(session);
+        this.trees[rootId]!.members[session.id]!.waiting = waiting ?? false;
+      }
+      const tree = this.trees[rootId];
+      if (!tree) return;
+      const seen = new Set(members.map(({ session }) => session.id));
+      for (const id of Object.keys(tree.members)) {
+        if (id !== rootId && !seen.has(id)) this.removeSession(id);
+      }
+      tree.plan = plan;
+      tree.tasks = tasks;
+      tree.childRunResults = childRunResults;
     },
     selectSession(sessionId: string) {
-      const session = this.sessions.find((item) => item.id === sessionId);
+      const session = this.sessionById(sessionId);
       if (session) this.runtimeKind = session.runtimeKind;
       this.selectedSessionId = sessionId;
       this.draftProjectId = "";
-      this.ensureRuntime(sessionId);
     },
     ensureRuntime(sessionId: string) {
-      if (!this.runtimeBySessionId[sessionId]) {
-        this.runtimeBySessionId[sessionId] = createSessionRuntime();
-      }
-      return this.runtimeBySessionId[sessionId];
+      const runtime = this.runtimeBySessionId(sessionId);
+      if (!runtime) throw new Error(`Unknown agent session: ${sessionId}`);
+      return runtime;
     },
-    removeRuntime(sessionId: string) {
-      delete this.runtimeBySessionId[sessionId];
-      delete this.composerDrafts[`session:${sessionId}`];
-      delete this.attachmentDrafts[`session:${sessionId}`];
+    removeSession(sessionId: string) {
+      const session = this.sessionById(sessionId);
+      if (!session) return;
+      const rootId = sessionTreeId(session);
+      const tree = this.trees[rootId]!;
+      const removed = sessionId === rootId ? Object.keys(tree.members) : [sessionId];
+      for (const id of removed) {
+        delete tree.members[id];
+        this.clearComposerDraft(`session:${id}`);
+        this.clearAttachmentDraft(`session:${id}`);
+      }
+      if (!Object.keys(tree.members).length) delete this.trees[rootId];
     },
     setResponses(sessionId: string, responses: AIResponseContext[]) {
       this.ensureRuntime(sessionId).responses = responses;
@@ -258,7 +330,7 @@ export const useAgentStore = defineStore("agent", {
       runtime.responses = runtime.responses.filter((context) => context.response.id !== responseId);
     },
     findResponse(sessionId: string, responseId: string) {
-      return this.ensureRuntime(sessionId).responses.find((context) => context.response.id === responseId);
+      return this.runtimeBySessionId(sessionId)?.responses.find((context) => context.response.id === responseId);
     },
     upsertResponse(sessionId: string, context: AIResponseContext) {
       const runtime = this.ensureRuntime(sessionId);

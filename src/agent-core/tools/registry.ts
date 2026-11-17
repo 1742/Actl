@@ -47,6 +47,7 @@ export interface ToolExecutionAuthorization {
 
 export interface ToolCallContext {
   cwd: string | null;
+  fileEditRoots?: readonly string[];
   runId: string;
   callId: string;
   sessionId: string;

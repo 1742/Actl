@@ -86,6 +86,7 @@ export interface TaskStore {
   activeTask(rootId: string, agentId: string): AgentTask | undefined;
   attemptHistory(rootId: string, taskId: string): TaskAttempt[];
   taskSourceRun(attemptId: string): string;
+  taskSourceRuns(rootId: string): ReadonlyMap<string, string>;
   createTask(rootId: string, publisherId: string, draft: AgentTaskInput, operation: string): AgentTask;
   assignTask(rootId: string, taskId: string, agentId: string, assignment: Assignment, operation: string): AgentTask;
   assignmentOwner(operation: string, taskId: string): string | undefined;

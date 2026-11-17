@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { tr } from '../../../i18n';
 import { computed } from 'vue';
+import type { ChildRunResult } from '../../../../../shared/agent/coordination';
 import { AlertCircle } from '@lucide/vue';
 import AIResponseConversation from '../responses/AIResponseConversation.vue';
 import type { AIFileContent } from '../responses/types';
@@ -21,10 +22,22 @@ const props = withDefaults(defineProps<{
 const agentStore = useAgentStore();
 const notify = useNotifyStore();
 const targetId = computed(() => props.sessionId ?? agentStore.selectedSessionId);
-const runtime = computed(() => agentStore.runtimeBySessionId[targetId.value]);
+const runtime = computed(() => agentStore.runtimeBySessionId(targetId.value));
 const contexts = computed(() => {
   const responses = runtime.value?.responses ?? [];
   return props.runsOnly ? subagentRunContexts(responses) : responses;
+});
+const childResultsByRun = computed(() => {
+  const byRun = new Map<string, ChildRunResult[]>();
+  const tree = agentStore.currentTree;
+  if (tree?.rootId === targetId.value) {
+    for (const result of tree.childRunResults) {
+      const results = byRun.get(result.parentRunId);
+      if (results) results.push(result);
+      else byRun.set(result.parentRunId, [result]);
+    }
+  }
+  return byRun;
 });
 const error = computed(() => props.sessionId ? runtime.value?.errorMessage : agentStore.errorMessage);
 const emptyText = computed(() => {
@@ -70,7 +83,7 @@ async function loadFilePreview(file: AIFileContent, sessionId: string) {
     @download-file="downloadFile"
   >
     <template #output="{ context }">
-      <AgentResponseOutput :context="context" />
+      <AgentResponseOutput :context="context" :session-id="targetId" :child-results="childResultsByRun.get(context.response.id)" />
     </template>
     <div
       v-if="error"

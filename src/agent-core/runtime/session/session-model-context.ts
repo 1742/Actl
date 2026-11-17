@@ -75,7 +75,7 @@ export class SessionModelContext {
     );
     const transcriptWithSkills = materializeSelectedSkillReferences(transcriptWithFiles, run.input, references.skills);
     const transcript = materializeSelectedMcpReferences(transcriptWithSkills, run.input, references.mcp);
-    const prompt = await this.services.promptCompiler.compile(session, transcript, this.agentReferences(session));
+    const prompt = await this.services.promptCompiler.compile(session, transcript, this.agentReferences(session), run.permissionSnapshot.permissionMode);
     return { prompt, tools, search, nativeWebSearch };
   }
 

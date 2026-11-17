@@ -7,7 +7,8 @@ const team = inject(agentTreeKey);
 const items = computed(() => team?.tree.value?.plan.items ?? []);
 const tasks = computed(() => team?.tree.value?.tasks ?? []);
 const taskTitles = computed(() => new Map(tasks.value.map(({ id, title }) => [id, title])));
-const memberTitles = computed(() => new Map(team?.tree.value?.members.map(({ session }) => [session.id, session.title])));
+const memberTitles = computed(() => new Map(Object.values(team?.tree.value?.members ?? {})
+  .map(({ session }) => [session.runtimeId, session.title])));
 const error = computed(() => team?.error.value);
 
 function taskStatus(task: AgentTask) {

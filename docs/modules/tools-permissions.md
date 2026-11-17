@@ -15,8 +15,8 @@ toolCalling=false 不暴露工具；requiresImageInput 工具只暴露给有图�
 | 工具                   | 核心参数                                        | 权限                          | 执行策略  |
 | ---------------------- | ----------------------------------------------- | ----------------------------- | --------- |
 | read_file              | path、startLine、maxLines、maxBytes             | filesystem.read               | parallel  |
-| write_file             | path、content                                   | filesystem.write              | exclusive |
-| apply_patch            | patches：path、expectedSha256?、replacements    | filesystem.patch              | exclusive |
+| write_file             | path、content、expectedSha256?                  | filesystem.write              | exclusive |
+| apply_patch            | patches：path、expectedSha256、replacements     | filesystem.patch              | exclusive |
 | search_files           | pattern(glob)、path?、maxResults、includeHidden | filesystem.search             | parallel  |
 | search_content         | pattern(regex)、path?、fileTypes?、contextLines | filesystem.search             | parallel  |
 | list_directory         | path、depth、maxEntries、includeHidden          | filesystem.read/list          | parallel  |
@@ -50,9 +50,9 @@ move/delete 保留最后一级目录项语义，并禁止文件系统根目录�
 
 ## 4. 文本读写与补丁
 
-read_file 读取 UTF-8，默认从第 1 行返回最多 2000 行/256 KiB，最大参数为 10000 行/1 MiB，附 SHA-256、总行数、大小和 truncated。此限制是返回内容限制，内部仍读取整个文件。
+read_file 读取 UTF-8，默认从第 1 行返回最多 2000 行/256 KiB，最大参数为 10000 行/1 MiB，附原始文件字节的 SHA-256、总行数、大小和 truncated。返回的文本保留所选行之间原有的换行符。此限制是返回内容限制，内部仍读取整个文件。
 
-write_file 写 UTF-8 文本，创建缺失父目录，已有文件覆盖。没有 expected hash 参数；需要保留原内容时由模型先读取或使用补丁。
+write_file 省略 `expectedSha256` 时只创建新文件，可以创建缺失的父目录。替换已有文件时，用 `read_file` 返回的 `sha256` 作为 `expectedSha256`。目标不存在或版本已变更时，读取当前内容后再尝试编辑。
 
 apply_patch 采用**JSON 精确字符串替换**，不接受 unified diff 或 Begin Patch 文本。示例：
 
@@ -61,6 +61,7 @@ apply_patch 采用**JSON 精确字符串替换**，不接受 unified diff 或 Be
   "patches": [
     {
       "path": "src/example.ts",
+      "expectedSha256": "8de5c07db8deb3b75dedd9b5bc999669936cea181ae0033c27c4e2071a6e434d",
       "replacements": [
         {
           "oldText": "const value = 1;",
@@ -73,7 +74,9 @@ apply_patch 采用**JSON 精确字符串替换**，不接受 unified diff 或 Be
 }
 ```
 
-最多 50 个文件；可传 read_file 返回的 expectedSha256。先校验全部文件、哈希和每次匹配数量，全部通过再写入。写入失败尝试逆序恢复已写内容，回滚失败也报告；这不是 OS 层多文件原子事务。
+每批最多 50 个文件。先校验全部文件的哈希和文本匹配数量，全部通过才开始逐个替换文件。写入失败时尝试逆序恢复本批已写的内容，并报告任何恢复失败。
+
+项目内所有 Run 的内置写入、补丁、移动和删除共用一把写锁，独立会话以根会话为范围。锁覆盖执行时的路径解析、版本校验和落盘，审批和模型推理期间不会占用锁。外部编辑器和命令进程可独立修改文件。
 
 搜索使用 TypeScript 文件遍历和自定义 glob/regex，不依赖 rg 命令。默认跳过隐藏文件、符号链接、.git/node_modules/dist/build，并应用根 .gitignore 的实现规则。search_content 跳过超过 5 MiB 或前段含 NUL 的文件；不要将这套简化忽略匹配称为完整 Git ignore 语义。
 

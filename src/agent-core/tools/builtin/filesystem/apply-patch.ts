@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
 import { reviewText, tracksFile } from "../../review-snapshot.js";
 import path from "node:path";
 import { z } from "zod";
@@ -8,8 +6,9 @@ import {
   type ToolDefinition,
   type ToolPermissionRequirement,
 } from "../../registry.js";
-import { resolveToolPath, toolBaseDirectory } from "../../path-security.js";
+import { toolBaseDirectory, workspacePathKey } from "../../path-security.js";
 import type { FilesystemToolHandler } from "./types.js";
+import { readFileVersion, replaceFile, resolveEditPath, sha256, sha256Schema } from "./file-edits.js";
 
 const filePathSchema = z.string().trim().min(1)
   .describe("Absolute path or path relative to the Session cwd.");
@@ -24,24 +23,10 @@ const replacementSchema = z.object({
 export const applyPatchInputSchema = z.object({
   patches: z.array(z.object({
     path: filePathSchema,
-    expectedSha256: z.string().regex(/^[a-f\d]{64}$/i).optional()
-      .describe("Optional SHA-256 precondition from read_file."),
+    expectedSha256: sha256Schema.describe("SHA-256 of the current file, returned by read_file."),
     replacements: z.array(replacementSchema).min(1),
   }).strict()).min(1).max(50),
-}).strict().superRefine((value, context) => {
-  const paths = new Set<string>();
-  for (const [index, patch] of value.patches.entries()) {
-    const key = process.platform === "win32" ? patch.path.toLowerCase() : patch.path;
-    if (paths.has(key)) {
-      context.addIssue({
-        code: "custom",
-        path: ["patches", index, "path"],
-        message: "Each path may appear only once per apply_patch call.",
-      });
-    }
-    paths.add(key);
-  }
-});
+}).strict();
 
 type ApplyPatchInput = z.infer<typeof applyPatchInputSchema>;
 
@@ -51,7 +36,7 @@ interface StagedPatch {
   originalContent: string;
   newContent: string;
   originalSha256: string;
-  newSha256: string;
+  mode: number;
   replacementsApplied: number;
 }
 
@@ -60,7 +45,7 @@ export class ApplyPatchToolHandler implements FilesystemToolHandler {
   async listTools(): Promise<ToolDefinition[]> {
     return [{
       name: "apply_patch",
-      description: "Apply a validated batch of exact text replacements to accessible files. Every replacement and optional SHA-256 precondition is checked before writing.",
+      description: "Apply exact UTF-8 text replacements to existing files. Read each file first. All SHA-256 preconditions and replacements are checked before writing.",
       inputSchema: applyPatchInputSchema,
     }];
   }
@@ -71,38 +56,31 @@ export class ApplyPatchToolHandler implements FilesystemToolHandler {
     context: ToolCallContext,
   ): Promise<ToolPermissionRequirement> {
     if (name !== "apply_patch") throw new Error(`Unsupported builtin tool: ${name}`);
-    const paths = await Promise.all((input as ApplyPatchInput).patches.map((patch) =>
-      resolveToolPath(context.cwd, patch.path)));
+    const paths = await this.resolvePaths(input as ApplyPatchInput, context);
     return { capability: "filesystem.patch", resource: JSON.stringify(paths), action: "write" };
   }
 
   async callTool(name: string, input: unknown, context: ToolCallContext): Promise<unknown> {
     if (name !== "apply_patch") throw new Error(`Unsupported builtin tool: ${name}`);
     const parsedInput = input as ApplyPatchInput;
-    const authorizedPaths = await Promise.all(parsedInput.patches.map((patch) => resolveToolPath(context.cwd, patch.path)));
+    const resolvedPaths = await this.resolvePaths(parsedInput, context);
     const authorization = context.authorization;
     if (
       !authorization ||
       authorization.requirement.capability !== "filesystem.patch" ||
-      authorization.requirement.resource !== JSON.stringify(authorizedPaths)
+      authorization.requirement.resource !== JSON.stringify(resolvedPaths)
     ) {
       throw new Error("apply_patch does not have authorization for the resolved files.");
     }
 
     const staged: StagedPatch[] = [];
-    const resolvedPaths = new Set<string>();
-    for (const patch of parsedInput.patches) {
+    for (const [index, patch] of parsedInput.patches.entries()) {
       context.signal?.throwIfAborted();
-      const resolvedPath = await resolveToolPath(context.cwd, patch.path);
-      const resolvedKey = process.platform === "win32" ? resolvedPath.toLowerCase() : resolvedPath;
-      if (resolvedPaths.has(resolvedKey)) {
-        throw new Error(`Multiple patch paths resolve to the same file: ${patch.path}`);
-      }
-      resolvedPaths.add(resolvedKey);
-      const originalContent = await readFile(resolvedPath, { encoding: "utf8", signal: context.signal });
-      const originalSha256 = sha256(originalContent);
-      if (patch.expectedSha256 && patch.expectedSha256.toLowerCase() !== originalSha256) {
-        throw new Error(`SHA-256 precondition failed for ${patch.path}.`);
+      const resolvedPath = resolvedPaths[index]!;
+      const version = await readFileVersion(resolvedPath, patch.path, patch.expectedSha256, context.signal);
+      const originalContent = version.content.toString("utf8");
+      if (!Buffer.from(originalContent, "utf8").equals(version.content)) {
+        throw new Error(`Patch target is not valid UTF-8: ${patch.path}`);
       }
 
       let newContent = originalContent;
@@ -123,8 +101,8 @@ export class ApplyPatchToolHandler implements FilesystemToolHandler {
         resolvedPath,
         originalContent,
         newContent,
-        originalSha256,
-        newSha256: sha256(newContent),
+        originalSha256: version.sha256,
+        mode: version.mode,
         replacementsApplied,
       });
     }
@@ -133,14 +111,17 @@ export class ApplyPatchToolHandler implements FilesystemToolHandler {
     try {
       for (const patch of staged) {
         context.signal?.throwIfAborted();
+        if (patch.originalContent === patch.newContent) continue;
+        await replaceFile(patch.resolvedPath, patch.newContent, patch.mode);
         written.push(patch);
-        await writeFile(patch.resolvedPath, patch.newContent, { encoding: "utf8", signal: context.signal });
       }
     } catch (error) {
       const rollbackErrors: string[] = [];
       for (const patch of written.reverse()) {
         try {
-          await writeFile(patch.resolvedPath, patch.originalContent, "utf8");
+          // A user or shell command may have edited a file outside the runtime's write queue.
+          await readFileVersion(patch.resolvedPath, patch.path, sha256(patch.newContent));
+          await replaceFile(patch.resolvedPath, patch.originalContent, patch.mode);
         } catch (rollbackError) {
           rollbackErrors.push(`${patch.path}: ${errorMessage(rollbackError)}`);
         }
@@ -159,16 +140,24 @@ export class ApplyPatchToolHandler implements FilesystemToolHandler {
       });
     }
     return {
-      filesChanged: staged.length,
+      filesChanged: written.length,
       files: staged.map((patch) => ({
         path: path.isAbsolute(patch.path)
           ? patch.resolvedPath
           : normalizeRelative(toolBaseDirectory(context.cwd), patch.resolvedPath),
         replacementsApplied: patch.replacementsApplied,
         previousSha256: patch.originalSha256,
-        sha256: patch.newSha256,
+        sha256: sha256(patch.newContent),
       })),
     };
+  }
+
+  private async resolvePaths(input: ApplyPatchInput, context: ToolCallContext): Promise<string[]> {
+    const paths = await Promise.all(input.patches.map((patch) => resolveEditPath(context, patch.path)));
+    if (new Set(paths.map(workspacePathKey)).size !== paths.length) {
+      throw new Error("Each resolved file may appear only once per patch.");
+    }
+    return paths;
   }
 }
 
@@ -180,10 +169,6 @@ function countOccurrences(content: string, search: string): number {
     offset += search.length;
   }
   return count;
-}
-
-function sha256(content: string): string {
-  return createHash("sha256").update(content, "utf8").digest("hex");
 }
 
 function normalizeRelative(root: string, candidate: string): string {

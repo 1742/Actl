@@ -12,6 +12,7 @@ export default {
       review_required: '待验收', completed: '已验收', failed: '失败', cancelled: '已取消' },
     profileCount: '{count} 个角色', taskCount: '{count} 项任务',
     running: '运行中', approval: '等待审批', stopping: '正在停止', failed: '未完成', cancelled: '已停止', done: '已结束',
+    approvals: '代理审批', openConversation: '查看子会话',
     followup: '追加指令', followupHint: '为当前任务追加说明', send: '发送', stop: '停止',
   },
   agentToolCards: {
@@ -54,6 +55,7 @@ export default {
   },
   dynamic: {
     reviewFileCount: '已编辑 {count} 个文件',
+    reviewChangeNumber: '改动记录 {number}',
     noMatchingResults: '没有匹配“{query}”的结果',
     compressionUsage: '压缩此聊天的上下文（已使用 {percent}%）',
     serviceCount: '{count} 个服务',

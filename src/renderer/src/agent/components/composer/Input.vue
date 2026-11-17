@@ -5,7 +5,7 @@ import { useRouter } from 'vue-router';
 import { CircleAlert, FileText, LoaderCircle, Plus, X } from '@lucide/vue';
 
 import AgentMessageInputFloating from './AgentMessageInputFloating.vue';
-import PermissionPanel from '../permissions/PermissionPanel.vue';
+import AgentTreePermissions from '../permissions/AgentTreePermissions.vue';
 import PermissionModeSelector from '../permissions/PermissionModeSelector.vue';
 import AgentComposerEditor from './AgentComposerEditor.vue';
 import SearchChatDialog from '../dialogs/SearchChatDialog.vue';
@@ -528,10 +528,10 @@ watch(
         @stop="stop"
       >
         <template #attachments>
-          <PermissionPanel v-if="agentStore.pendingPermissionBatch" />
+          <AgentTreePermissions />
           <div
             ref="attachmentPanelRef"
-            v-else-if="attachments.length"
+            v-if="attachments.length && !agentStore.pendingPermissionBatch"
             class="flex flex-wrap gap-2 px-4 pb-2 pt-3"
           >
             <div

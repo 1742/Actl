@@ -5,7 +5,7 @@ import { releaseSelections } from './useFileBridge';
 import type { AIFileContent, AIResponseContext } from '../components/responses/types';
 import { normalizeResponseContext } from '../utils/aiResponse';
 import { getAgentRuntimeContext, RuntimeRequestError } from '../services/runtimeClient';
-import { useAgentStore } from '../stores/agent';
+import { sessionTreeId, useAgentStore, type PermissionTarget } from '../stores/agent';
 import type { AgentComposerAttachment } from '../components/composer/types';
 import type {
   ResponseInputPartDto, PermissionMode, PendingPermissionBatchDto, AgentResponseDto,
@@ -176,7 +176,7 @@ function sessionActivityBlocked(sessionId: string, action: string): ActionResult
         status: 'error',
         message: tr('dynamic.beforeActionStopSession', {
           state:
-            store.runtimeBySessionId[sessionId]?.status === 'waiting_permission'
+            store.runtimeBySessionId(sessionId)?.status === 'waiting_permission'
               ? tr('ui.awaitingPermission')
               : tr('ui.runningWord'),
           action,
@@ -543,11 +543,13 @@ export function refreshAgentSession() {
 
 export async function loadSubagentHistory(sessionId: string, isCurrent: () => boolean): Promise<void> {
   const store = useAgentStore();
-  const runtime = store.ensureRuntime(sessionId);
+  const runtime = store.runtimeBySessionId(sessionId);
+  if (!runtime) return;
   const version = (historyRequestVersions.get(sessionId) ?? 0) + 1;
   historyRequestVersions.set(sessionId, version);
   store.setLoadingHistory(sessionId, true);
-  const current = () => isCurrent() && historyRequestVersions.get(sessionId) === version;
+  const current = () => isCurrent() && store.runtimeBySessionId(sessionId) === runtime
+    && historyRequestVersions.get(sessionId) === version;
   try {
     const { session, client } = sessionContext(sessionId);
     const history = await client.getContext(session.runtimeId);
@@ -570,7 +572,9 @@ export async function loadSubagentHistory(sessionId: string, isCurrent: () => bo
   } catch (error) {
     if (current()) store.setError(sessionId, errorResult(error).message);
   } finally {
-    if (historyRequestVersions.get(sessionId) === version) store.setLoadingHistory(sessionId, false);
+    if (historyRequestVersions.get(sessionId) === version && store.runtimeBySessionId(sessionId) === runtime) {
+      store.setLoadingHistory(sessionId, false);
+    }
   }
 }
 
@@ -593,7 +597,7 @@ export async function createNewAgentSession(projectId?: string): Promise<ActionR
     const { client } = getAgentRuntimeContext(kind);
     const created = await client.createSession(project?.runtimeId);
     const session = decorateSession(kind, created);
-    store.setSessions([session, ...store.sessions]);
+    store.upsertSession(session);
     store.selectSession(session.id);
     store.setHydrated(session.id, true);
     return { status: 'success', message: tr('ui.newConversationCreated') };
@@ -643,8 +647,7 @@ export async function deleteAgentProject(projectId: string): Promise<ActionResul
       store.sessions.filter((item) => item.projectId === projectId).map((item) => item.id),
     );
     store.setProjects(store.projects.filter((item) => item.id !== projectId));
-    store.setSessions(store.sessions.filter((item) => item.projectId !== projectId));
-    removedIds.forEach((sessionId) => store.removeRuntime(sessionId));
+    removedIds.forEach((sessionId) => store.removeSession(sessionId));
     if (removedIds.has(store.selectedSessionId) || store.draftProjectId === projectId) {
       const fallbackProject = store.mostRecentlyEditedProject;
       if (fallbackProject) startNewAgentDraft(fallbackProject.id);
@@ -664,7 +667,7 @@ export async function renameAgentSession(sessionId: string, title: string): Prom
       current.runtimeKind,
       await client.renameSession(current.runtimeId, title.trim() || null),
     );
-    store.setSessions(store.sessions.map((item) => (item.id === sessionId ? session : item)));
+    if (store.sessionById(sessionId)) store.upsertSession(session);
     return { status: 'success', message: tr('ui.conversationRenamed') };
   } catch (error) {
     return errorResult(error);
@@ -678,9 +681,8 @@ export async function deleteAgentSession(sessionId: string): Promise<ActionResul
   try {
     const { session, client } = sessionContext(sessionId);
     await client.deleteSession(session.runtimeId);
-    store.setSessions(store.sessions.filter((session) => session.id !== sessionId));
-    store.removeRuntime(sessionId);
-    if (store.selectedSessionId === sessionId) {
+    store.removeSession(sessionId);
+    if (store.selectedSessionId && !store.session) {
       const fallbackProject = store.mostRecentlyEditedProject;
       if (fallbackProject) startNewAgentDraft(fallbackProject.id);
       else startNewAgentDraft();
@@ -688,7 +690,7 @@ export async function deleteAgentSession(sessionId: string): Promise<ActionResul
     return { status: 'success', message: tr('ui.conversationDeleted') };
   } catch (error) {
     const result = errorResult(error);
-    if (store.runtimeBySessionId[sessionId]) store.setError(sessionId, result.message);
+    if (store.runtimeBySessionId(sessionId)) store.setError(sessionId, result.message);
     else store.setGeneralError(result.message);
     return result;
   }
@@ -732,7 +734,7 @@ export async function sendAgentMessage(
       const kind = project?.runtimeKind ?? store.runtimeKind;
       const { client } = getAgentRuntimeContext(kind);
       const created = decorateSession(kind, await client.createSession(project?.runtimeId));
-      store.setSessions([created, ...store.sessions]);
+      store.upsertSession(created);
       store.setHydrated(created.id, true);
       sessionId = created.id;
       if (store.draftContextKey === draftContextKey && !store.selectedSessionId) {
@@ -761,12 +763,11 @@ export async function sendAgentMessage(
   }
   if (session.projectId) {
     const ownerId = store.projectActivityOwner(session.projectId);
-    const ownerSession = store.sessions.find((item) => item.id === ownerId);
-    if (ownerId && ownerId !== sessionId && (ownerSession?.rootSessionId ?? ownerSession?.runtimeId) !== (session.rootSessionId ?? session.runtimeId)) {
-      const owner = store.sessions.find((item) => item.id === ownerId);
+    const owner = ownerId ? store.sessionById(ownerId) : undefined;
+    if (owner && sessionTreeId(owner) !== sessionTreeId(session)) {
       store.setConflict(sessionId, {
-        sessionId: ownerId,
-        responseId: store.runtimeBySessionId[ownerId]?.activeResponseId,
+        sessionId: owner.id,
+        responseId: store.runtimeBySessionId(owner.id)?.activeResponseId,
       });
       return {
         status: 'error',
@@ -858,9 +859,7 @@ export async function sendAgentMessage(
     }),
   );
   store.setActiveResponseId(sessionId, localResponseId);
-  store.setSessions(
-    store.sessions.map((item) => (item.id === sessionId ? { ...item, updated_at: now } : item)),
-  );
+  store.upsertSession({ ...session, updated_at: now });
   const controller = new AbortController();
   activeStreamControllers.set(sessionId, controller);
   try {
@@ -916,15 +915,16 @@ export async function downloadAgentFile(file: AIFileContent, targetSessionId?: s
   }
 }
 
-export async function stopAgentResponse(sessionId?: string): Promise<ActionResult> {
+export async function stopAgentResponse(sessionId?: string, expectedResponseId?: string): Promise<ActionResult> {
   const store = useAgentStore();
   const targetSessionId = sessionId || store.selectedSessionId;
-  const runtime = targetSessionId ? store.runtimeBySessionId[targetSessionId] : undefined;
+  const runtime = store.runtimeBySessionId(targetSessionId);
   const responseId = runtime?.activeResponseId;
   if (!targetSessionId || !responseId || responseId.startsWith('local-')) {
     return { status: 'error', message: tr('ui.theResponseHasNotBeenCreated') };
   }
-  if (!runtime || (runtime.status !== 'running' && runtime.status !== 'waiting_permission')) {
+  if (!runtime || (expectedResponseId && expectedResponseId !== responseId)
+    || (runtime.status !== 'running' && runtime.status !== 'waiting_permission')) {
     return { status: 'error', message: tr('ui.noResponseIsCurrentlyGenerating') };
   }
 
@@ -957,7 +957,7 @@ async function setInitialSessionTitle(
       current.runtimeKind,
       await client.renameSession(current.runtimeId, titleFromInput(content, skills)),
     );
-    store.setSessions(store.sessions.map((item) => (item.id === sessionId ? session : item)));
+    if (store.sessionById(sessionId)) store.upsertSession(session);
   } catch (error) {
     store.setError(
       sessionId,
@@ -967,48 +967,46 @@ async function setInitialSessionTitle(
 }
 
 export async function resolveAgentPermissionBatch(
+  { sessionId, responseId, batchId }: PermissionTarget,
   decisions: PermissionResolutionDto[],
-  sessionId?: string,
 ): Promise<ActionResult> {
   const store = useAgentStore();
-  const targetSessionId = sessionId || store.selectedSessionId;
-  const runtime = targetSessionId ? store.runtimeBySessionId[targetSessionId] : undefined;
+  const runtime = store.runtimeBySessionId(sessionId);
   const batch = runtime?.pendingPermissionBatch;
-  const responseId = runtime?.activeResponseId;
-  if (!targetSessionId || !batch || !responseId) {
+  if (batch?.id !== batchId || batch.response_id !== responseId || runtime?.activeResponseId !== responseId) {
     return { status: 'error', message: tr('ui.noPendingPermissionRequests') };
   }
   if (decisions.length !== batch.permissions.length) {
     return { status: 'error', message: tr('ui.resolveAllPermissionRequestsInThis') };
   }
-  advanceSessionState(targetSessionId);
-  store.setStatus(targetSessionId, 'running');
-  store.setError(targetSessionId);
+  advanceSessionState(sessionId);
+  store.setStatus(sessionId, 'running');
+  store.setError(sessionId);
   const controller = new AbortController();
-  activeStreamControllers.set(targetSessionId, controller);
+  activeStreamControllers.set(sessionId, controller);
   try {
-    const { session, client } = sessionContext(targetSessionId);
+    const { session, client } = sessionContext(sessionId);
     const response = await client.streamPermission(
       session.runtimeId,
       responseId,
-      batch.id,
+      batchId,
       decisions,
-      (event) => applyRuntimeEvent(targetSessionId, event),
+      (event) => applyRuntimeEvent(sessionId, event),
       controller.signal,
     );
-    if (activeStreamControllers.get(targetSessionId) === controller) {
-      applyStreamResponseSnapshot(targetSessionId, response);
+    if (activeStreamControllers.get(sessionId) === controller) {
+      applyStreamResponseSnapshot(sessionId, response);
     }
     return { status: 'success' };
   } catch (error) {
     if (controller.signal.aborted) return { status: 'cancelled' };
-    const result = await handleRuntimeRequestError(targetSessionId, '', error);
-    await reconcileSessionContext(targetSessionId);
-    store.setError(targetSessionId, result.message);
+    const result = await handleRuntimeRequestError(sessionId, '', error);
+    await reconcileSessionContext(sessionId);
+    if (store.sessionById(sessionId)) store.setError(sessionId, result.message);
     return result;
   } finally {
-    if (activeStreamControllers.get(targetSessionId) === controller) {
-      activeStreamControllers.delete(targetSessionId);
+    if (activeStreamControllers.get(sessionId) === controller) {
+      activeStreamControllers.delete(sessionId);
     }
   }
 }
@@ -1033,6 +1031,11 @@ async function reconcileSessionContext(sessionId: string) {
 
 function applyStreamResponseSnapshot(sessionId: string, response: AgentResponseDto) {
   const store = useAgentStore();
+  const runtime = store.runtimeBySessionId(sessionId);
+  if (!runtime) return;
+  const latest = runtime.responses.at(-1);
+  if (latest && latest.response.id !== response.id && !latest.response.id.startsWith('local-')
+    && (runtime.responses.some((item) => item.response.id === response.id) || latest.createdAt > response.created_at)) return;
   const previous = store.findResponse(sessionId, response.id);
   const context = normalizeResponseContext({
     session_id: response.session_id || sessionId,
@@ -1103,11 +1106,12 @@ async function handleRuntimeRequestError(
 
 export function applyRuntimeEvent(sessionId: string, event: AgentStreamEvent) {
   const store = useAgentStore();
+  const runtime = store.runtimeBySessionId(sessionId);
+  if (!runtime) return;
   const existingId = 'response_id' in event ? event.response_id : undefined;
   const existing = existingId ? store.findResponse(sessionId, existingId) : undefined;
   if (existing?.lastSequenceNumber !== undefined && event.sequence_number <= existing.lastSequenceNumber) return;
   advanceSessionState(sessionId);
-  const runtime = store.ensureRuntime(sessionId);
   if (event.type === 'response.created') {
     const response = event.response;
     const optimistic = runtime.responses.find(
@@ -1124,6 +1128,7 @@ export function applyRuntimeEvent(sessionId: string, event: AgentStreamEvent) {
       store.removeResponse(sessionId, optimistic.response.id);
     }
     const reduced = reduceResponseEvent(initial, event);
+    store.setPendingPermissionBatch(sessionId);
     store.upsertResponse(sessionId, reduced.context);
     store.setActiveResponseId(sessionId, reduced.context.response.id);
     store.setStatus(sessionId, 'running');
@@ -1133,7 +1138,7 @@ export function applyRuntimeEvent(sessionId: string, event: AgentStreamEvent) {
   const responseId =
     typeof event.response_id === 'string' ? event.response_id : runtime.activeResponseId;
   const context = store.findResponse(sessionId, responseId);
-  if (!context) return;
+  if (!context || responseId !== runtime.activeResponseId) return;
   if (event.type === 'agent.permissions.requested') {
     context.lastSequenceNumber = event.sequence_number;
     applyPendingPermissionBatch(sessionId, context, event.batch);
@@ -1160,11 +1165,13 @@ export function applyRuntimeEvent(sessionId: string, event: AgentStreamEvent) {
   if (reduced.status === 'failed' || reduced.status === 'incomplete') {
     store.setError(sessionId, reduced.message || tr('ui.agentFailedToRun'));
   }
-  if (reduced.status !== 'streaming')
+  if (reduced.status !== 'streaming') {
+    if (reduced.context.response.status !== 'waiting_permission') store.setPendingPermissionBatch(sessionId);
     syncStateFromResponse(sessionId, {
       id: reduced.context.response.id,
       status: reduced.context.response.status,
     });
+  }
   if (reduced.status === 'completed' && previousStatus !== 'completed') {
     notifyAgentEvent(sessionId, 'completed', tr('ui.agentFinishedResponding'));
   }
@@ -1172,11 +1179,10 @@ export function applyRuntimeEvent(sessionId: string, event: AgentStreamEvent) {
 
 export function applyAgentTreeSnapshot(snapshot: AgentTreeSnapshot): void {
   const store = useAgentStore();
-  for (const member of snapshot.members) {
-    const session = decorateSession('local', member.session);
-    const known = store.sessions.findIndex((item) => item.id === session.id);
-    if (known < 0) store.sessions.push(session);
-    else store.sessions[known] = session;
+  const members = snapshot.members.map((member) => ({ ...member, session: decorateSession('local', member.session) }));
+  store.setTreeDetails(runtimeResourceKey('local', snapshot.rootSessionId), members, snapshot.plan, snapshot.tasks ?? [], snapshot.childRunResults);
+  for (const member of members) {
+    const { session } = member;
     if (!member.response) continue;
     const runtime = store.ensureRuntime(session.id);
     const latest = runtime.responses.at(-1);

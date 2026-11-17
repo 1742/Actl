@@ -19,7 +19,7 @@ const visibleSources = computed(() => (expanded.value ? props.sources : props.so
 </script>
 
 <template>
-  <AgentResultCard v-if="sources.length" class="mt-3">
+  <AgentResultCard v-if="sources.length">
     <template #icon><Globe :size="16" /></template>
     <template #title>{{ $t('dynamic.searchedSources', { count: sources.length }) }}</template>
     <template #detail>

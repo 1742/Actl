@@ -11,6 +11,6 @@ export function toSessionJson(session: Session): AgentSession {
   const { id, projectId, title, parentSessionId, rootSessionId, created_at, updated_at } = session;
   const profile = parentSessionId ? session.profile ?? DEFAULT_AGENT_PROFILE : undefined;
   return { id, projectId, ...(parentSessionId ? { parentSessionId } : {}), rootSessionId: rootSessionId ?? id,
-    ...(profile ? { profile: { id: profile.id, name: profile.name } } : {}),
+    ...(profile ? { profile: { id: profile.id, name: profile.name, access: profile.access } } : {}),
     ...(title === undefined ? {} : { title }), created_at, updated_at };
 }

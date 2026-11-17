@@ -1,23 +1,22 @@
 <script setup lang="ts">
-import { computed, inject, ref, shallowRef, watch } from 'vue';
+import { computed, inject, ref } from 'vue';
 import { ChevronDown, FileDiff } from '@lucide/vue';
 import { useRouter } from 'vue-router';
-import type { ReviewFile } from '../../../../../shared/agent/review';
-import { getAgentRuntimeContext } from '../../services/runtimeClient';
-import { reviewTargetKey } from './reviewNavigation';
+import { reviewTargetKey, type ReviewRun, type ReviewTarget } from './reviewNavigation';
+import { useFileChanges } from './useFileChanges';
 import AgentResultCard from '../conversation/AgentResultCard.vue';
 
-const props = defineProps<{ sessionId: string; runId: string }>();
+const props = defineProps<{ runs: ReviewRun[] }>();
 const previewCount = 2;
-const files = shallowRef<ReviewFile[]>([]);
+const files = useFileChanges(() => props.runs);
 const expanded = ref(false);
 const visibleFiles = computed(() => expanded.value ? files.value : files.value.slice(0, previewCount));
 const reviewTarget = inject(reviewTargetKey);
 const router = useRouter();
 
-async function openFile(fileId: string) {
+async function openFile(target: ReviewTarget) {
   if (!reviewTarget) return;
-  reviewTarget.value = { sessionId: props.sessionId, runId: props.runId, fileId };
+  reviewTarget.value = { ...target };
   if (router.currentRoute.value.name !== 'aiAgentRightSidebarHome') {
     await router.push({ name: 'aiAgentRightSidebarHome' });
   }
@@ -27,24 +26,10 @@ const totals = computed(() => files.value.reduce(
   { additions: 0, deletions: 0 },
 ));
 
-watch(() => [props.sessionId, props.runId] as const, async ([sessionId, runId], _, onCleanup) => {
-  let current = true;
-  onCleanup(() => { current = false; });
-  expanded.value = false;
-  files.value = [];
-  if (!sessionId || !runId || runId.startsWith('local-')) return;
-  try {
-    const { client } = getAgentRuntimeContext('local');
-    const review = await client.getSessionReview(sessionId, { runId });
-    if (current) files.value = review.files;
-  } catch {
-    // The summary is supplementary to the message.
-  }
-}, { immediate: true });
 </script>
 
 <template>
-  <AgentResultCard v-if="files.length" class="mt-3">
+  <AgentResultCard v-if="files.length">
     <template #icon><FileDiff :size="16" /></template>
     <template #title>{{ $t('dynamic.reviewFileCount', { count: files.length }) }}</template>
     <template #detail>
@@ -54,19 +39,34 @@ watch(() => [props.sessionId, props.runId] as const, async ([sessionId, runId], 
       </span>
     </template>
     <ul class="inset-scrollbar max-h-56 divide-y divide-gray-100 overflow-y-auto">
-      <li v-for="file in visibleFiles" :key="file.id">
-        <button
-          class="flex min-h-11 w-full min-w-0 items-center gap-2 px-3 py-2 text-left text-sm hover:bg-gray-50"
-          type="button"
-          :title="file.path"
-          @click="openFile(file.id)"
-        >
-          <span class="min-w-0 flex-1 truncate text-gray-700">{{ file.path }}</span>
-          <template v-if="!file.unavailable">
-            <span class="shrink-0 text-green-700">+{{ file.additions }}</span>
-            <span class="shrink-0 text-red-700">−{{ file.deletions }}</span>
+      <li v-for="file in visibleFiles" :key="file.key">
+        <component :is="file.changes.length > 1 ? 'details' : 'div'" class="group">
+          <component
+            :is="file.changes.length > 1 ? 'summary' : 'button'"
+            class="flex min-h-11 w-full min-w-0 cursor-pointer list-none items-center gap-2 px-3 py-2 text-left text-sm hover:bg-gray-50"
+            :type="file.changes.length === 1 ? 'button' : undefined"
+            :title="file.path"
+            @click="file.changes.length === 1 && openFile(file.changes[0]!.target)"
+          >
+            <span class="min-w-0 flex-1 truncate text-gray-700">{{ file.path }}</span>
+            <template v-if="file.available">
+              <span class="shrink-0 text-green-700">+{{ file.additions }}</span>
+              <span class="shrink-0 text-red-700">−{{ file.deletions }}</span>
+            </template>
+            <ChevronDown v-if="file.changes.length > 1" :size="14" class="shrink-0 transition-transform group-open:rotate-180" />
+          </component>
+          <template v-if="file.changes.length > 1">
+            <button v-for="(change, index) in file.changes" :key="change.target.fileId"
+              class="flex w-full items-center gap-2 border-t border-gray-100 py-2 pr-3 pl-6 text-left text-xs text-gray-600 hover:bg-gray-50"
+              type="button" @click="openFile(change.target)">
+              <span class="flex-1">{{ $t('dynamic.reviewChangeNumber', { number: index + 1 }) }}</span>
+              <template v-if="!change.file.unavailable">
+                <span class="shrink-0 text-green-700">+{{ change.file.additions }}</span>
+                <span class="shrink-0 text-red-700">−{{ change.file.deletions }}</span>
+              </template>
+            </button>
           </template>
-        </button>
+        </component>
       </li>
     </ul>
     <button

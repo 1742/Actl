@@ -1,25 +1,25 @@
 <script setup lang="ts">
 import { computed, inject, ref, watch } from 'vue';
 import { LoaderCircle } from '@lucide/vue';
-import type { AgentSession } from '../../../../../shared/agent/sessions';
+import type { RuntimeSession } from '../navigation/types';
 import { agentTreeKey } from '../../composables/useAgentTree.ts';
-import { loadSubagentHistory, runtimeResourceKey } from '../../composables/useAgent.ts';
+import { loadSubagentHistory } from '../../composables/useAgent.ts';
 import { desktopRequest } from '../../services/desktopTransport.ts';
 import { useAgentStore } from '../../stores/agent.ts';
 import MessagesArea from '../conversation/MessagesArea.vue';
 import AgentTeamPanel from './AgentTeamPanel.vue';
 
-const props = defineProps<{ visible: boolean; subagent?: AgentSession | undefined }>();
-defineEmits<{ openSubagent: [session: AgentSession] }>();
+const props = defineProps<{ visible: boolean; subagent?: RuntimeSession | undefined }>();
+defineEmits<{ openSubagent: [session: RuntimeSession] }>();
 const team = inject(agentTreeKey)!;
 const store = useAgentStore();
 const error = ref('');
-const members = computed(() => team.tree.value?.members.filter(
+const members = computed(() => Object.values(team.tree.value?.members ?? {}).filter(
   ({ session }) => session.parentSessionId === team.rootId.value,
-) ?? []);
-const selectedKey = computed(() => props.subagent ? key(props.subagent.id) : '');
-const active = computed(() => team.tree.value?.members.some(({ session, waiting }) => waiting || store.sessionIsActive(key(session.id))) ?? false);
-const selectedWaiting = computed(() => members.value.some(({ session, waiting }) => session.id === props.subagent?.id && waiting));
+));
+const selectedKey = computed(() => props.subagent?.id ?? '');
+const active = computed(() => Object.values(team.tree.value?.members ?? {}).some(({ session, waiting }) => waiting || store.sessionIsActive(session.id)));
+const selectedWaiting = computed(() => members.value.some(({ session, waiting }) => session.id === selectedKey.value && waiting));
 
 watch(team.rootId, () => {
   error.value = '';
@@ -32,8 +32,10 @@ watch([selectedKey, () => props.visible], ([id, visible], _, onCleanup) => {
   void loadSubagentHistory(id, () => current && selectedKey.value === id && props.visible);
 }, { immediate: true });
 
-function key(id: string) {
-  return runtimeResourceKey('local', id);
+function runStatusLabel(status?: string) {
+  if (status === 'cancelled') return 'agents.cancelled';
+  if (status === 'failed' || status === 'incomplete') return 'agents.failed';
+  return 'agents.done';
 }
 
 async function stop(id: string) {
@@ -60,7 +62,7 @@ async function stop(id: string) {
         v-if="selectedWaiting || store.sessionIsActive(selectedKey)"
         class="h-8 shrink-0 rounded-full border border-gray-200 bg-white px-3 text-xs shadow-sm transition-colors hover:bg-gray-100"
         type="button"
-        @click="stop(subagent.id)"
+        @click="stop(subagent.runtimeId)"
       >
         {{ $t('agents.stop') }}
       </button>
@@ -76,23 +78,23 @@ async function stop(id: string) {
       </div>
       <p v-if="!members.length" class="py-2 text-sm text-gray-500">{{ $t('agents.empty') }}</p>
       <ul v-else class="space-y-1">
-        <li v-for="{ session, response, waiting } in members" :key="session.id" class="flex min-w-0 items-center rounded-lg hover:bg-gray-100">
+        <li v-for="{ session, runtime, waiting } in members" :key="session.id" class="flex min-w-0 items-center rounded-lg hover:bg-gray-100">
           <button class="flex min-w-0 flex-1 items-center gap-2 px-2 py-2 text-left text-sm" type="button" @click="$emit('openSubagent', session)">
             <span class="min-w-0 flex-1">
-              <span class="block truncate">{{ session.title || session.id }}</span>
+              <span class="block truncate">{{ session.title || session.runtimeId }}</span>
               <span v-if="session.profile" class="block truncate text-xs text-gray-500">{{ session.profile.name }}</span>
             </span>
-            <span v-if="store.runtimeBySessionId[key(session.id)]?.status === 'waiting_permission'" class="shrink-0 rounded bg-amber-100 px-1.5 text-xs text-amber-800">
+            <span v-if="runtime.status === 'waiting_permission'" class="shrink-0 rounded bg-amber-100 px-1.5 text-xs text-amber-800">
               {{ $t('agents.approval') }}
             </span>
             <span v-else-if="waiting" class="shrink-0 text-xs text-gray-500">{{ $t('agents.waiting') }}</span>
-            <LoaderCircle v-else-if="store.sessionIsActive(key(session.id))" :size="14" class="shrink-0 animate-spin text-primary"
-              :aria-label="$t(store.runtimeBySessionId[key(session.id)]?.status === 'stopping' ? 'agents.stopping' : 'ui.sessionRunning')" />
-            <span v-else-if="response" class="shrink-0 text-xs text-gray-500">
-              {{ $t(response.status === 'cancelled' ? 'agents.cancelled' : response.status === 'failed' || response.status === 'incomplete' ? 'agents.failed' : 'agents.done') }}
+            <LoaderCircle v-else-if="store.sessionIsActive(session.id)" :size="14" class="shrink-0 animate-spin text-primary"
+              :aria-label="$t(runtime.status === 'stopping' ? 'agents.stopping' : 'ui.sessionRunning')" />
+            <span v-else-if="runtime.responses.length" class="shrink-0 text-xs text-gray-500">
+              {{ $t(runStatusLabel(runtime.responses.at(-1)?.response.status)) }}
             </span>
           </button>
-          <button v-if="waiting || store.sessionIsActive(key(session.id))" class="shrink-0 rounded px-2 py-1 text-xs hover:bg-gray-200" type="button" @click="stop(session.id)">
+          <button v-if="waiting || store.sessionIsActive(session.id)" class="shrink-0 rounded px-2 py-1 text-xs hover:bg-gray-200" type="button" @click="stop(session.runtimeId)">
             {{ $t('agents.stop') }}
           </button>
         </li>

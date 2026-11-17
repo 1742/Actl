@@ -1,73 +1,11 @@
 <script setup lang="ts">
-import { computed, inject, ref, shallowRef, watch } from 'vue';
+import { inject } from 'vue';
 import { FileDiff, RefreshCw } from '@lucide/vue';
-import type { ReviewLine, SessionReview } from '../../../../../shared/agent/review';
-import { getAgentRuntimeContext } from '../../services/runtimeClient';
-import { useAgentStore } from '../../stores/agent';
 import { reviewTargetKey } from './reviewNavigation';
+import { useRunReview } from './useRunReview';
 
-const store = useAgentStore();
-const sessionId = computed(() => store.session?.runtimeId);
-const reviewTarget = inject(reviewTargetKey);
-const target = computed(() => {
-  const request = reviewTarget?.value;
-  return request?.sessionId === sessionId.value ? request : undefined;
-});
-const latest = computed(() => store.responses.at(-1)?.response);
-const review = shallowRef<SessionReview>();
-const lines = shallowRef<ReviewLine[]>([]);
-const selectedId = ref('');
-const loading = ref(false);
-const loadingDiff = ref(false);
-const failed = ref(false);
-const diffFailed = ref(false);
-const refresh = ref(0);
-const { client } = getAgentRuntimeContext('local');
-const selectedFile = computed(() => review.value?.files.find((file) => file.id === selectedId.value));
-
-watch([sessionId, target, () => target.value ? undefined : latest.value?.id, () => target.value ? undefined : latest.value?.status, refresh], async ([id, requested], _, onCleanup) => {
-  let current = true;
-  onCleanup(() => { current = false; });
-  const previousId = selectedId.value;
-  review.value = undefined;
-  selectedId.value = '';
-  failed.value = false;
-  loading.value = Boolean(id);
-  if (!id) return;
-  try {
-    const result = await client.getSessionReview(id, requested ? { runId: requested.runId } : undefined);
-    if (!current) return;
-    review.value = result;
-    const preferredId = requested?.fileId ?? previousId;
-    selectedId.value = result.files.find((file) => file.id === preferredId)?.id ?? result.files[0]?.id ?? '';
-  } catch {
-    if (current) failed.value = true;
-  } finally {
-    if (current) loading.value = false;
-  }
-}, { immediate: true });
-
-watch([sessionId, selectedFile, () => review.value?.runId], async ([id, file, runId], _, onCleanup) => {
-  let current = true;
-  onCleanup(() => { current = false; });
-  lines.value = [];
-  diffFailed.value = false;
-  loadingDiff.value = Boolean(id && file && !file.unavailable);
-  if (!id || !file || file.unavailable) return;
-  try {
-    const result = await client.getSessionReview(id, { fileId: file.id, ...(runId ? { runId } : {}) });
-    if (!current) return;
-    if (result.runId !== runId) {
-      refresh.value++;
-      return;
-    }
-    lines.value = result.lines ?? [];
-  } catch {
-    if (current) diffFailed.value = true;
-  } finally {
-    if (current) loadingDiff.value = false;
-  }
-});
+const { failed, diffFailed, lines, loading, loadingDiff, refresh, review, selectedFile, selectedId, session, target } =
+  useRunReview(inject(reviewTargetKey));
 </script>
 
 <template>
@@ -75,11 +13,14 @@ watch([sessionId, selectedFile, () => review.value?.runId], async ([id, file, ru
     <header class="flex shrink-0 items-center justify-between gap-2 px-3 py-2">
       <span class="flex min-w-0 items-center gap-2 rounded-full border border-gray-200 px-3 py-1.5 text-xs text-gray-700 shadow-xs">
         <FileDiff :size="14" class="shrink-0" />
-        <span class="truncate">{{ $t(target ? 'ui.review' : 'ui.lastRunChanges') }}</span>
+        <span class="truncate">
+          {{ $t(target ? 'ui.review' : 'ui.lastRunChanges') }}
+          <template v-if="session?.parentSessionId"> · {{ session.title || session.profile?.name || $t('agents.childAgent') }}</template>
+        </span>
       </span>
       <button
         class="flex size-8 shrink-0 items-center justify-center rounded-full border border-gray-200 text-gray-600 shadow-xs enabled:hover:bg-gray-100 disabled:opacity-50"
-        type="button" :disabled="!sessionId || loading" :aria-label="$t('ui.refresh')" :title="$t('ui.refresh')"
+        type="button" :disabled="!session || loading" :aria-label="$t('ui.refresh')" :title="$t('ui.refresh')"
         @click="refresh++"
       >
         <RefreshCw :size="14" />

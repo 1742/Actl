@@ -13,6 +13,7 @@ import type { SessionProcessScope } from "../process/process-types.js";
 import type { Session, WorkspaceStore } from "../workspace-store.js";
 import { SessionModelContext, type SessionContextServices } from "./session-model-context.js";
 import { SessionTools } from "./session-tools.js";
+import type { WorkspaceWrites } from "../workspace-writes.js";
 
 export interface AgentRunOptions {
   model: string;
@@ -46,11 +47,12 @@ export class SessionRuntime {
     private readonly workspace: WorkspaceStore,
     inbox: AgentCoordinationRepository,
     private readonly admission: ExecutionAdmission,
+    writes: WorkspaceWrites,
     private readonly processes: SessionProcessScope,
     private readonly services: SessionRuntimeServices,
     private readonly onEvent: AgentDomainEventHandler,
   ) {
-    const tools = new SessionTools(session, services.toolRegistry, workspace, processes, services.logger);
+    const tools = new SessionTools(session, services.toolRegistry, workspace, writes, processes, services.logger);
     this.context = new SessionModelContext(session, workspace, inbox, services, tools);
     this.loop = new AgentLoop(this.context, services.models, services.hooks, workspace, services.logger, tools, services.permissions);
   }
@@ -78,7 +80,7 @@ export class SessionRuntime {
         const prepared = await this.context.prepareInput(input, snapshot, signal);
         signal.throwIfAborted();
         run = await this.workspace.createResponse(session, prepared, snapshot, {
-          permissionMode: session.parentSessionId ? "plan" : options.permissionMode,
+          permissionMode: options.permissionMode,
         }, activation);
         this.admission.activate(reservation, activeResponseReference(run, session));
       } catch (error) {

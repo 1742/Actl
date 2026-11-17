@@ -54,7 +54,10 @@ const dialog = ref<{
 const dialogLoading = ref(false);
 
 function sessionStatus(sessionId: string) {
-  return store.runtimeBySessionId[sessionId]?.status || 'idle';
+  const tree = store.trees[sessionId];
+  const statuses = Object.values(tree?.members ?? {}).map(({ runtime }) => runtime.status);
+  if (statuses.includes('waiting_permission')) return 'waiting_permission';
+  return statuses.find((status) => status === 'running' || status === 'stopping') ?? 'idle';
 }
 
 async function openSession(sessionId: string) {

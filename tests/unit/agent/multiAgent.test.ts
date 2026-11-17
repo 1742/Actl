@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, mkdir, rm, access } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, access, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -41,7 +41,7 @@ const snapshot: ModelExecutionSnapshot = { targetId: 'fake', displayName: 'Fake'
 const text = (value: string): TranscriptItem => ({ type: 'message', id: randomUUID(), role: 'assistant', content: [{ type: 'text', text: value }] });
 const call = (name: string, input: unknown, id = randomUUID()): TranscriptItem => ({ type: 'tool_call', id, callId: id, name, argumentsJson: JSON.stringify(input) });
 const input = (value: string) => async () => [{ type: 'message' as const, id: randomUUID(), role: 'user' as const, content: [{ type: 'text' as const, text: value }] }];
-const isChild = (request: ModelTurnRequest) => request.instructions.includes('You are a read-only child');
+const isChild = (request: ModelTurnRequest) => request.instructions.includes('Your parent can be addressed as @parent.');
 const calls = (request: ModelTurnRequest, name: string) => request.transcript.filter((item) => item.type === 'tool_call' && item.name === name);
 const options = { model: 'fake', permissionMode: 'ask' as const };
 
@@ -63,6 +63,7 @@ const team = (name: string, command: unknown) => call(name, { command });
 const taskDraft = (title: string, instructions = 'Inspect the example.') =>
   ({ title, instructions, acceptanceCriteria: 'Report evidence.', type: 'review', autoAssign: false });
 const publish = (title: string) => team('tasks', { action: 'publish', ...taskDraft(title) });
+const publishEdit = (title: string) => team('tasks', { action: 'publish', ...taskDraft(title, 'Edit the shared file.'), type: 'edit' });
 
 function requestText(request: ModelTurnRequest) {
   return request.transcript.filter((item) => item.type === 'message' && item.role === 'user')
@@ -127,8 +128,138 @@ async function fixture(handler: (request: ModelTurnRequest, signal?: AbortSignal
 
 async function childOf(f: Awaited<ReturnType<typeof fixture>>, title: string) {
   return f.workspace.createSession(owner, { projectId: f.project.id, parentSessionId: f.root.id, title,
-    profile: { id: 'review', name: 'Review', description: 'Review work.', instructions: 'Report findings.' } });
+    profile: { id: 'review', name: 'Review', access: 'read_only', description: 'Review work.', instructions: 'Report findings.' } });
 }
+
+test('the parent tree keeps search results with their delegating run across restart and child reuse', async () => {
+  const f = await fixture(async () => [text('Idle')]);
+  try {
+    await f.coordinator.close();
+    const complete = async (session: typeof f.root, run: AgentRunRecord, output: string) => {
+      run.status = 'completed';
+      run.finalOutput = output;
+      run.completedAt = new Date().toISOString();
+      run.timeline.push(text(output));
+      await f.workspace.touch(session, run);
+      f.coordination.finishRun(run.id);
+    };
+    const child = await childOf(f, 'Search worker');
+    const firstParent = await f.workspace.createResponse(f.root, await input('Find sources')(), snapshot, { permissionMode: 'ask' });
+    await complete(f.root, firstParent, 'Search delegated');
+    const task = f.coordination.createTask(f.root.id, f.root.id, taskDraft('Search'), 'search-task');
+    const assigned = f.coordination.assignTask(f.root.id, task.id, child.id, { kind: 'delegate', sourceRunId: firstParent.id }, 'search-delegation');
+    const searchRun = await f.workspace.createResponse(child, await input('Search the web')(), snapshot, { permissionMode: 'plan' },
+      { work: { kind: 'attempt', attemptId: assigned.attempt!.id }, mailIds: [], notificationIds: [] });
+    const latestParent = await f.workspace.createResponse(f.root, await input('Another request')(), snapshot, { permissionMode: 'ask' });
+    await complete(f.root, latestParent, 'Another reply');
+    const callId = randomUUID();
+    searchRun.timeline.push(
+      { type: 'web_search', id: 'native-search', status: 'completed',
+        action: { type: 'search', queries: ['native'], sources: [{ type: 'url', url: 'https://example.com/native' }] } },
+      call('read_file', { path: 'unrelated.txt' }),
+      call('web_search', { query: 'local tool' }, callId),
+      { type: 'tool_result', id: 'search-result', callId, isError: false,
+        content: [{ type: 'json', value: { ok: true, output: { results: [{ url: 'https://example.com/local', title: 'Local search' }] } } }] },
+    );
+    await complete(child, searchRun, 'Search found two sources');
+    const latestChild = await f.workspace.createResponse(child, await input('Follow up')(), snapshot, { permissionMode: 'plan' });
+    await complete(child, latestChild, 'No new sources');
+    const tree = await f.coordinator.snapshot(f.root);
+    assert.equal(tree.members.find(({ session }) => session.id === child.id)?.response?.id, latestChild.id);
+    assert.equal(tree.childRunResults.length, 1);
+    const [result] = tree.childRunResults;
+    assert.deepEqual({ ...result!, searchOutput: undefined },
+      { parentRunId: firstParent.id, sessionId: child.id, runId: searchRun.id, hasFileChanges: false, searchOutput: undefined });
+    assert.deepEqual(result!.searchOutput.map(({ type }) => type), ['web_search_call', 'function_call', 'function_call_output']);
+    assert.match(JSON.stringify(result!.searchOutput), /example\.com\/native/);
+    assert.match(JSON.stringify(result!.searchOutput), /example\.com\/local/);
+
+    await f.restart();
+    assert.deepEqual((await f.coordinator.snapshot(f.root)).childRunResults, tree.childRunResults);
+  } finally { await f.close(); }
+});
+
+test('concurrent editor approvals validate the shared file version under the project write lock', async () => {
+  const f = await fixture(async (request) => {
+    if (isChild(request)) {
+      assert.ok(request.tools.some(({ name }) => name === 'write_file'));
+      assert.ok(!request.tools.some(({ name }) => ['shell', 'move_path', 'delete_path', 'call_mcp_tool'].includes(name)));
+      if (!calls(request, 'read_file').length) return [call('read_file', { path: 'shared.txt' })];
+      if (!calls(request, 'write_file').length) {
+        const read = toolOutput<{ sha256: string; content: string }>(request, 'read_file');
+        assert.equal(read.content, 'original\r\ntext\r\n');
+        const content = request.instructions.includes('Your current task #1') ? 'first' : 'second';
+        return [call('write_file', { path: 'shared.txt', content, expectedSha256: read.sha256 })];
+      }
+      const { result, envelope } = toolResult(request, calls(request, 'write_file').at(-1)?.callId);
+      if (result.isError) {
+        assert.match(envelope.error ?? '', /SHA-256 precondition failed for shared.txt/);
+        return [text('Version conflict')];
+      }
+      return [text('Updated the shared file')];
+    }
+    const published = calls(request, 'tasks').length;
+    if (published < 2) return [publishEdit(`Edit shared file ${published + 1}`)];
+    const delegated = calls(request, 'delegate_task').length;
+    if (delegated < 2) return [call('delegate_task', { task: `#${delegated + 1}`,
+      target: { kind: 'create', role: 'edit', name: `Editor ${delegated + 1}` } })];
+    return [text('Delegated both edits')];
+  });
+  try {
+    const file = path.join(f.projectPath, 'shared.txt');
+    await writeFile(file, 'original\r\ntext\r\n');
+    assert.equal((await f.coordinator.start(f.root, input('Start concurrent edits'), options)).status, 'completed');
+    const pending = await until(async () => {
+      const tree = await f.coordinator.snapshot(f.root);
+      const members = tree.members.filter(({ response, session }) =>
+        session.parentSessionId === f.root.id && response?.status === 'waiting_permission');
+      return members.length === 2 ? members : undefined;
+    }, 'Both editors should request approval after reading the same file.');
+    assert.equal(await readFile(file, 'utf8'), 'original\r\ntext\r\n');
+    const finished = await Promise.all(pending.map(async ({ session, response }) => {
+      const child = (await f.workspace.getSession(session.id, owner))!;
+      const run = child.runs.at(-1)!;
+      const batch = response!.pending_permission_batch!;
+      assert.equal(response!.permission_mode, 'ask');
+      return f.coordinator.resume(child, run, batch.id, batch.permissions.map(({ id }) => ({ permissionId: id, decision: 'approve' })));
+    }));
+    assert.deepEqual(finished.map(({ finalOutput }) => finalOutput).sort(), ['Updated the shared file', 'Version conflict']);
+    assert.match(await readFile(file, 'utf8'), /^(first|second)$/);
+  } finally { await f.close(); }
+});
+
+test('the edit role shares the root permission ceiling and may only edit bound workspace files', async () => {
+  const f = await fixture(async (request) => {
+    if (isChild(request)) {
+      if (request.instructions.includes('read-only workspace access')) {
+        assert.ok(!request.tools.some(({ name }) => ['write_file', 'apply_patch'].includes(name)));
+        return [text('Read-only editor')];
+      }
+      if (!calls(request, 'write_file').length) return [
+        call('write_file', { path: '../outside.txt', content: 'outside' }),
+        call('write_file', { path: 'inside.txt', content: 'inside' }),
+      ];
+      const [outside, inside] = calls(request, 'write_file');
+      assert.match(toolResult(request, outside?.callId).envelope.error ?? '', /outside its workspace/);
+      assert.ok(!toolResult(request, inside?.callId).result.isError);
+      return [text('Edited inside the workspace')];
+    }
+    if (!calls(request, 'tasks').length) return [publishEdit('Edit if permitted')];
+    if (!calls(request, 'delegate_task').length) return [call('delegate_task', { task: '#1', target: { kind: 'create', role: 'edit' } })];
+    return [text('Delegated')];
+  });
+  try {
+    for (const mode of ['plan', 'accept_edits'] as const) {
+      const root = await f.workspace.createSession(owner, { projectId: f.project.id });
+      await f.coordinator.start(root, input('Delegate an edit'), { ...options, permissionMode: mode });
+      const result = await until(async () => (await f.coordinator.snapshot(root)).tasks?.[0]?.attempt?.result, 'Editor should finish.');
+      assert.equal(result.output, mode === 'plan' ? 'Read-only editor' : 'Edited inside the workspace');
+      await f.coordinator.stopTree(root);
+    }
+    await assert.rejects(access(path.join(f.directory, 'outside.txt')), { code: 'ENOENT' });
+    assert.equal(await readFile(path.join(f.projectPath, 'inside.txt'), 'utf8'), 'inside');
+  } finally { await f.close(); }
+});
 
 function post(f: Awaited<ReturnType<typeof fixture>>, from: string, to: string, body: string,
   purpose: 'information' | 'question' | 'progress' | 'urgent', replyTo: string | null = null) {

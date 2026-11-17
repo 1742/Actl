@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { app } from 'electron';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
 import { access, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { DatabaseSync } from 'node:sqlite';
@@ -58,6 +58,34 @@ async function startFixture(processCommands: Map<string, string>, explicitWorksp
           emit({ content: 'Handled the interruption' }, 'stop');
         } else invoke('wait', { command: { action: 'start', timeoutMs: 10000, condition: { kind: 'mail', from: waitPeer, purpose: 'information' } } });
         done();
+      } else if (text.includes('edit-child-fixture')) {
+        const last = payload.messages.at(-1);
+        const envelope = last?.role === 'tool' ? JSON.parse(String(last.content)) : undefined;
+        if (!envelope) invoke('read_file', { path: 'child-edit.txt' });
+        else if (envelope.output?.content) invoke('apply_patch', { patches: [{
+          path: 'child-edit.txt', expectedSha256: envelope.output.sha256,
+          replacements: [{ oldText: 'original', newText: 'edited by child' }],
+        }] });
+        else {
+          assert.equal(envelope.output?.filesChanged, 1);
+          emit({ content: 'Edited the shared file' }, 'stop');
+        }
+        done();
+      } else if (text.includes('edit-root-fixture')) {
+        const last = payload.messages.at(-1);
+        const envelope = last?.role === 'tool' ? JSON.parse(String(last.content)) : undefined;
+        if (!envelope) invoke('tasks', { command: { action: 'publish', type: 'edit', autoAssign: false,
+          title: 'edit-child-fixture', instructions: 'Edit the shared file.', acceptanceCriteria: 'Replace the original text.' } });
+        else if (envelope.output?.status === 'pending') invoke('delegate_task', {
+          task: envelope.output.task, target: { kind: 'create', role: 'edit', name: 'EditorBot' },
+        });
+        else if (envelope.output?.status === 'assigned') invoke('wait', { command: { action: 'start', timeoutMs: 10000,
+          condition: { kind: 'task_state', task: '#1', states: ['review_required'] } } });
+        else {
+          assert.equal(envelope.output?.state, 'review_required');
+          emit({ content: 'Child edit ready for review' }, 'stop');
+        }
+        done();
       } else if (text.includes('multi-child-fixture')) {
         emit({ content: 'child running' });
         const timer = setTimeout(() => { emit({ content: ' child result ready' }, 'stop'); done(); }, 350);
@@ -114,9 +142,11 @@ async function startFixture(processCommands: Map<string, string>, explicitWorksp
         done();
       } else if (text.includes('review-fixture') && payload.messages.at(-1)?.role !== 'tool') {
         const toolCalls = [
-          { name: 'write_file', arguments: JSON.stringify({ path: 'review.txt', content: 'intermediate\n' }) },
+          { name: 'write_file', arguments: JSON.stringify({ path: 'review.txt', content: 'intermediate\n',
+            expectedSha256: createHash('sha256').update('original\n').digest('hex') }) },
           { name: 'apply_patch', arguments: JSON.stringify({ patches: [{
-            path: 'review.txt', replacements: [{ oldText: 'intermediate', newText: 'final', expectedOccurrences: 1 }],
+            path: 'review.txt', expectedSha256: createHash('sha256').update('intermediate\n').digest('hex'),
+            replacements: [{ oldText: 'intermediate', newText: 'final', expectedOccurrences: 1 }],
           }] }) },
         ];
         emit({ tool_calls: toolCalls.map((fn, index) => ({
@@ -434,6 +464,45 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
       await request({ operation: 'responses.cancel', params: { sessionId, responseId: next.id } });
       assert.equal(success(await next.running).status, 'cancelled');
     });
+    await step('Editing subagent requests approval and reports shared edits through the root tree', async () => {
+      const rootSession = await request<{ id: string }>({ operation: 'sessions.create', body: { projectId } });
+      const editedPath = path.join(workspace, 'child-edit.txt');
+      await writeFile(editedPath, 'original\r\n');
+      const events: AgentTreeEvent[] = [];
+      const subscription = randomUUID();
+      assert.ok((await host.watchTree(subscription, rootSession.id, (event) => events.push(event))).ok);
+      const running = run('edit-root-fixture', undefined, rootSession.id);
+      try {
+        await waitFor(() => events.some((event) => event.type === 'response' && event.sessionId !== rootSession.id
+          && event.events.some((item) => item.type === 'agent.permissions.requested')),
+        'The child approval was missing from the parent tree subscription.');
+        const tree = await request<AgentTreeSnapshot>({ operation: 'agents.tree', params: { sessionId: rootSession.id } });
+        const child = tree.members.find((member) => member.session.parentSessionId === rootSession.id);
+        assert.equal(child?.session.profile?.access, 'edit');
+        assert.equal(child?.response?.status, 'waiting_permission');
+        assert.equal(tree.members.find((member) => member.session.id === rootSession.id)?.response?.status, 'in_progress');
+        assert.equal(await readFile(editedPath, 'utf8'), 'original\r\n');
+        const completed = await resume(child!.response!, 'approve', child!.session.id);
+        assert.equal(completed.status, 'completed');
+        const parentRun = success(await running);
+        assert.equal(parentRun.status, 'completed');
+        assert.equal(await readFile(editedPath, 'utf8'), 'edited by child\r\n');
+        const updated = await request<AgentTreeSnapshot>({ operation: 'agents.tree', params: { sessionId: rootSession.id } });
+        const result = updated.childRunResults.find(({ runId }) => runId === completed.id);
+        assert.deepEqual(result, { parentRunId: parentRun.id, sessionId: child!.session.id, runId: completed.id,
+          hasFileChanges: true, searchOutput: [] });
+        const review = await request<SessionReview>({ operation: 'sessions.review', params: { sessionId: result!.sessionId },
+          query: { runId: result!.runId } });
+        assert.deepEqual(review.files.map(({ path }) => path), ['child-edit.txt']);
+        const diff = await request<SessionReview>({ operation: 'sessions.review', params: { sessionId: result!.sessionId },
+          query: { runId: result!.runId, fileId: review.files[0]!.id } });
+        assert.deepEqual(diff.lines?.map(({ text }) => text), ['original\r\n', 'edited by child\r\n']);
+      } finally {
+        host.detach(subscription);
+        await request({ operation: 'agents.stop', params: { sessionId: rootSession.id } });
+        await running;
+      }
+    });
     await step('Background agent tree, follow-up and exact result after restart', async () => {
       const rootSession = await request<{ id: string }>({ operation: 'sessions.create', body: { projectId } });
       const events: AgentTreeEvent[] = [];
@@ -451,7 +520,7 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
       const child = tree.members.find((member) => member.session.parentSessionId === rootSession.id)!;
       assert.ok(child);
       assert.equal(child.session.title, 'ReviewBot');
-      assert.deepEqual(child.session.profile, { id: 'review', name: 'Review' });
+      assert.deepEqual(child.session.profile, { id: 'review', name: 'Review', access: 'read_only' });
       const taskInput = child.response?.input[0];
       assert.equal(taskInput?.source?.kind, 'runtime');
       const task = tree.tasks?.[0];
