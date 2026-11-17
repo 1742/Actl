@@ -1,26 +1,55 @@
 # 多 Agent 协作
 
-Root 会话及其子 Agent 共享工作目录。每个 Agent 都有持久的身份、角色快照和自己的 Session。同一个 Agent 可以用原 Session 处理多个任务。同一个 Session 沿用已有上下文装配和压缩。每个 Agent 一次只执行一个 Run，等待期间继续使用当前 Run。
+Actl 的协作范围是同一个根会话（Root）。Root 及其子 Agent 共享工作目录，每个 Agent 有独立的身份、角色快照和 Session，可以复用同一个 Session 处理多个任务。Runtime 沿用已有的上下文装配和压缩。空闲 Agent 收到需要处理的事件时可以启动新 Run，执行中的 `wait` 在当前 Run 内恢复。
 
-## 状态和持久化
+## 架构与数据边界
 
-- 根会话的 Plan 保存一份当前计划，根 Agent 可以按 revision 覆盖。更新 Plan 不会驱动调度或取消任务。
-- Task 保存目标、类型、依赖和验收者。Task Store 管理状态和原子认领。依赖在发布时引用同 Root 的已有任务，只有全部依赖被验收后才能分派。依赖的取消或失败会让依赖方继续等待。
-- Attempt 保存一次执行尝试、执行者和审查结论。认领或分派创建 Attempt，一个 Attempt 可以关联多个 Run。单个 Agent 最多拥有一个活跃 Attempt。
-- 正常结束的任务 Run 有非空 final 时，Runtime 创建唯一的 Result 并将 Task 转到 `review_required`。Result 引用 Run 中保存的 final。接受将 Task 转为 `completed`。退回要求理由，会保留原 Attempt 和 Result，并让 Task 重新排队。失败或超时退出的 Run 进入失败处理，可由验收者重试。
-- Mailbox 保存信件、线程、回复关系以及已读和投递状态。同 Root 中的父子和兄弟 Agent 都可通信。派单通过任务事件驱动。进度、问题和回复只更新邮箱。
-- SQLite 在同一事务内写入状态变更和待分发事件。分发可以重试，过期或已撤销 Attempt 的 Run 不能提交成果。停止会取消相关等待和正在执行的任务。重启会接续队列和未分发事件。异常退出遗留的活跃 Run 会标为失败，其等待会清除，已排队的邮件仍可投递。
+`AgentCoordinator` 在 Electron Agent Runtime 内编排任务分配、Run 启动和事件分发。Task 状态机和原子认领由 SQLite 持久层实现。`AgentMailbox` 负责邮件查询和回复，`AgentDirectory` 负责成员查找和短引用，`CoordinationWaits` 负责匹配等待条件。工具把参数解析为明确的命令，由各自的模块校验权限并执行。
 
-任务经历 `pending → assigned → running → review_required → completed`。主动认领会在调用的 Run 开始执行。取消和失败是独立状态。没有匹配 Agent 时任务保留在 Pending，自动分配按任务发布顺序和 Agent 空闲时间选择，角色必须匹配任务类型。指定已有 Agent 时要求其空闲。需要明确指定或新建 Agent 时，发布任务可设置 `autoAssign: false`，然后调用 `delegate_task`。匹配了任务的 Agent 如果仍在等待当前 Attempt，不会接新任务。
+| 概念 | 权威来源和职责 |
+| --- | --- |
+| Root Plan | 每个 Root 保存一份当前计划。根 Agent 按当前 revision 替换，用于展示和提醒。Task 调度读取任务及其依赖 |
+| Agent / Session | Session 持久层保存身份、Root 关系、角色快照和会话历史。Directory 从 Session、Run 和 Task 投影成员状态 |
+| Run | 执行持久层保存一次 Session 执行的状态、时间线和 final。每个 Agent 最多有一个活跃 Run |
+| Task / Attempt | Task Store 保存工作目标、类型、依赖、状态和验收者。每次分配或认领创建一个 Attempt，记录执行者、关联 Run、交付与审查历史 |
+| Result | 每个 Attempt 至多有一份 Result，引用已完成 Run 的 final。验收决定保存在 Task 和 Attempt 历史 |
+| Mailbox | 保存同 Root 邮件、线程、回复关系以及已读和投递标记。邮件可以用于报告进度，任务变更走 Task 工具 |
+| Wait / 事件 | Wait 记录绑定到当前 Run。协调事件记录邮件到达、任务或 Agent 状态变化、Run 结束和待验收通知等事实 |
+
+## 任务分配与验收
+
+任务的正常路径是 `pending → assigned → running → review_required → completed`。子 Agent 主动认领时，在调用工具的 Run 中直接进入 `running`。
+
+- 根 Agent 发布任务并担任验收者。依赖只能引用同 Root 的已有任务，发布时确定，由此形成有向无环图。任务在所有依赖验收后可分配。依赖失败或取消时，任务保持 `pending`。
+- 根 Agent 可委派给指定的空闲子 Agent、创建匹配角色的子 Agent，或请求自动匹配。需要指定目标时，发布任务可设置 `autoAssign: false`，再调用 `delegate_task`。自动分配按任务发布顺序和 Agent 空闲时间匹配，角色 ID 必须与任务类型一致。当前没有匹配者时，任务会留在 `pending` 等待后续调度。
+- 分配与主动认领使用同一套原子占有规则。一个 Task 最多有一个有效执行者，一个 Agent 最多有一个活跃 Attempt。竞争失败的调用直接收到工具错误。等待中的 Agent 继续占有当前 Attempt。
+- 关联 Run 正常结束并产出非空 final 时，Runtime 写入 Result，把任务推进到 `review_required`，并向验收者发送含成果引用的系统通知。验收者通过 `tasks show` 查看成果，显式接受后任务进入 `completed`，Runtime 据此重新计算依赖方的可分配性。
+- 退回时记录理由，保留原 Attempt 和 Result，任务回到 `pending`。再次分配或认领创建新 Attempt，可以复用原 Session。Run 失败、未完整结束或缺少非空 final 时，Attempt 进入失败处理，验收者可重试。显式取消会终止相关的活跃 Attempt。
+
+## 邮箱与代理目录
+
+同 Root 的父子和兄弟 Agent 可以定向通信。邮件包含发件人、收件人、主题、正文、用途和时间，可选关联原邮件。搜索支持发件人、关键词、主题、时间范围、用途、已读状态和线程。未指定原邮件的回复仅在待回复的问题唯一时自动关联。
+
+`agents` 返回同 Root 成员的名称、别名、角色、状态、当前任务以及最近一次 Run。工具使用 `#1`、`m#2`、`@root`、`@parent` 和 Agent 短别名等引用。角色别名有多个匹配时，调用方需从目录中选择具体 Agent。Runtime 在处理命令时校验 Root 和所需权限。
+
+运行中的 Agent 在模型步骤间接收可投递邮件。空闲 Agent 可以由问题或紧急邮件启动，同一次启动会合并待投递内容。普通信息和进度邮件默认等到下一次执行或有匹配的等待条件。
 
 ## 等待和唤醒
 
-`wait` 支持等待邮件、Task 状态、Agent 状态和指定 Run 结束。初次调用持久化条件、事件游标和截止时间。工具在 Root 串行锁外等候，当前 Run 和 Attempt 继续有效，子 Agent 仍占用执行名额。
+`wait` 每次单独调用，可等待邮件（含指定回复）、任务状态、Agent 状态或指定 Run 结束。首次调用持久化条件、事件游标和截止时间。工具在 Root 串行锁外等待，保持原 Run 和 Attempt，并继续占用子 Agent 并发名额。
 
-- `wait` 在当前 Run 返回工具结果。匹配事件返回 `matched`，到达截止时间返回 `timed_out`。
-- 无关的 `question` 或 `urgent` 可使 `wait` 提前返回 `interrupted`。邮件进入当前 Run 的上下文，原条件和截止时间继续有效。`progress` 和 `information` 默认排队。
-- 处理来信后可调用 `wait resume`。若模型直接输出 final，Runtime 在调用 Stop hook 和提交成果之前生成同样的工具调用，继续原等待。这段模型输出保留在对话历史。
-- 匹配结果、超时或显式 `wait cancel` 的工具结果与等待清除一起提交。超时后到达的回复仍可按自己的用途投递。
+1. 条件满足时返回 `matched`。到达截止时间时返回 `timed_out`。结果作为当前 Run 的工具结果交给模型。
+2. 不匹配原条件的 `question` 或 `urgent` 可以提前返回 `interrupted`。来信进入当前 Run 的上下文，原条件和截止时间继续有效。`progress` 和 `information` 默认排队。
+3. 处理来信后，Agent 可调用 `wait resume` 继续原等待。如果模型直接输出 final，Runtime 会保留该回复，并在调用 Stop hook 和提交任务成果前补一条 `wait resume` 工具调用。若匹配事件此时已到，工具立即返回。
+4. `wait cancel` 可以显式结束等待。匹配、超时或取消的工具结果和等待清除在同一事务提交。匹配邮件的投递确认也包含在该事务里。超时后到达的邮件仍可按自己的用途投递。
+
+## 持久化与故障恢复
+
+- SQLite 在同一事务内写入领域状态和待分发事件（事务性 Outbox）。事件有唯一序号，分发可重试。等待用事件游标和条件复查处理登记期间的状态变化。
+- Task Store 校验 Attempt 的执行归属并维护租约。`agent_results` 对 Attempt 有唯一约束，重复结束事件或旧 Attempt 的晚到结果不会覆盖当前成果。
+- 停止会话会取消对应子树中相关的等待和执行。异常退出遗留的活跃 Run 在恢复时标为失败并清除等待，队列中的邮件和未分发事件继续处理。失败任务可由验收者发起重试。
+
+表结构和 schema 版本见[存储模块](storage.md)。
 
 ## 工具
 
@@ -29,20 +58,24 @@ Root 会话及其子 Agent 共享工作目录。每个 Agent 都有持久的身�
 | `plan` | 读取或替换根 Plan |
 | `tasks` | 发布、列表、查看含 Attempt 历史和 Result 的任务、认领、接受、退回、取消、重试 |
 | `delegate_task` | 指定已有 Agent、新建匹配角色的 Agent，或请求自动匹配 |
-| `agents` | 查找同 Root 上的 Agent，显示角色、状态、当前任务和最近 Run |
-| `mail` | 发送、回复、搜索、阅读，支持按时间、关键词、主题、已读状态和线程筛选 |
-| `wait` | 开始、继续或取消等待。每次单独调用 |
+| `agents` | 查询同 Root 的代理目录 |
+| `mail` | 发送、回复、搜索、阅读 |
+| `wait` | 开始、继续或取消等待 |
 | `list_agent_profiles` | 查询可分配的角色 |
 | `interrupt_agent` | 父 Agent 停止直属子 Agent |
 
-模型使用 `#1`、`m#2`、`@parent` 等引用。角色别名有多个匹配时，需从 `agents` 结果中选择具体 Agent。
-
 ## 角色、权限和界面
 
-内置角色为 `general`、`explore` 和 `review`。用户可在 Actl 数据目录下创建 `agents/<id>.md` 覆盖或增加角色。文件名是角色 ID，YAML frontmatter 中 `name` 和 `description` 必填，正文提供角色指令。可选的 `modelTargetId` 和 `reasoningEffort` 决定该角色首选的模型配置。角色快照在 Agent 创建时保存。
+内置角色为 `general`、`explore` 和 `review`。用户可在 Actl 数据目录下创建 `agents/<id>.md` 覆盖或增加角色。文件名是角色 ID，YAML frontmatter 中 `name` 和 `description` 必填，正文提供角色指令。`modelTargetId` 和 `reasoningEffort` 可选，用于配置角色首选的模型。角色快照在 Agent 创建时保存。
 
-子 Agent 继续使用只读工具和 `plan` 权限模式。文件修改与最终整合由根 Agent 执行。当前限制为每个 Root 最多 12 个子 Session、最多 3 个同时执行的子 Agent。只读并行会话使用根工作目录，可以看到根 Agent 对文件的实时修改。
+子 Agent 使用只读工具和 `plan` 权限模式，也可以执行获准的协作命令。文件修改与最终整合由根 Agent 执行。每个 Root 最多有 12 个子 Session，最多同时执行 3 个子 Agent，等待计入该上限。子 Agent 可看到共享工作目录的实时修改。
 
-右侧栏显示根 Plan、任务状态、当前 Attempt 成果和子 Agent Run。暂停等待和审批等待单独显示。界面通过根会话订阅接收自动唤醒的 Run 和任务更新。停止操作处理对应子树，关闭订阅只解除显示。
+右侧栏显示 Plan、任务状态、当前 Attempt 成果和子 Agent Run，分别标注工具等待和审批等待。界面通过根会话订阅接收 Run 和任务更新，关闭订阅只解除显示。时间线展开 `Roles`、`Plan`、`Tasks`、`Delegate`、`Agents`、`Mail` 和 `Wait` 时，通过卡片显示适合阅读的字段。
 
-主要实现见[协调器](../../src/agent-core/runtime/multi-agents/agent-coordinator.ts)、[等待条件](../../src/agent-core/runtime/multi-agents/coordination-waits.ts)、[SQLite 协作持久层](../../src/agent-core/repositories/sqlite/agent-coordination-repository.ts)和[工具入口](../../src/agent-core/tools/builtin/agent-team.ts)。
+## 实现与验证
+
+- [协调器](../../src/agent-core/runtime/multi-agents/agent-coordinator.ts)、[等待条件](../../src/agent-core/runtime/multi-agents/coordination-waits.ts)和 [Run 收尾](../../src/agent-core/runtime/agent-loop/agent-loop.ts)
+- [SQLite 协作持久层](../../src/agent-core/repositories/sqlite/agent-coordination-repository.ts)、[协作表与事件](../../src/agent-core/repositories/sqlite/coordination-schema.ts)和[工具入口](../../src/agent-core/tools/builtin/agent-team.ts)
+- [工具卡片](../../src/renderer/src/agent/components/conversation/AgentTeamToolCard.vue)和[字段展示](../../src/renderer/src/agent/utils/agentTeamCards.ts)
+
+多 Agent 单元测试覆盖原子认领、依赖解锁、重复成果与旧 Attempt、跨 Root 隔离、意外来信后的同 Run 续等、超时及并发名额。Electron 集成测试验证同一 Run 中的自动续等调用及工具结果能通过流式事件和持久历史读取。相关命令为 `pnpm test:multi-agent`、`pnpm test:agent-ui` 和 `pnpm verify:agent`。
