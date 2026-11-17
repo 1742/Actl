@@ -9,13 +9,23 @@ import { downloadAgentFile } from '../../composables/useAgent';
 import { getAgentRuntimeContext } from '../../services/runtimeClient';
 import { useAgentStore } from '../../stores/agent.ts';
 import { projectName } from '../../utils';
+import { subagentRunContexts } from '../../utils/aiResponse';
 import AgentResponseOutput from './AgentResponseOutput.vue';
 
-const props = withDefaults(defineProps<{ bottomInset?: number; sessionId?: string; compact?: boolean }>(), { bottomInset: 140 });
+const props = withDefaults(defineProps<{
+  bottomInset?: number;
+  sessionId?: string;
+  compact?: boolean;
+  runsOnly?: boolean;
+}>(), { bottomInset: 140 });
 const agentStore = useAgentStore();
 const notify = useNotifyStore();
 const targetId = computed(() => props.sessionId ?? agentStore.selectedSessionId);
 const runtime = computed(() => agentStore.runtimeBySessionId[targetId.value]);
+const contexts = computed(() => {
+  const responses = runtime.value?.responses ?? [];
+  return props.runsOnly ? subagentRunContexts(responses) : responses;
+});
 const error = computed(() => props.sessionId ? runtime.value?.errorMessage : agentStore.errorMessage);
 const emptyText = computed(() => {
   if (props.sessionId) return tr(runtime.value?.loadingHistory ? 'agents.loadingHistory' : 'agents.noMessages');
@@ -49,14 +59,14 @@ async function loadFilePreview(file: AIFileContent, sessionId: string) {
 
 <template>
   <AIResponseConversation
-    :contexts="runtime?.responses ?? []"
+    :contexts="contexts"
     :bottom-inset="bottomInset"
     :display-mode="compact ? 'compact' : 'default'"
     :empty-text="emptyText"
     :skill-names="skillNames"
     :load-file-preview="loadFilePreview"
-    :compressions="runtime?.context?.compressions || []"
-    :compression-in-progress="runtime?.compressionInProgress || false"
+    :compressions="runsOnly ? [] : runtime?.context?.compressions || []"
+    :compression-in-progress="!runsOnly && !!runtime?.compressionInProgress"
     @download-file="downloadFile"
   >
     <template #output="{ context }">

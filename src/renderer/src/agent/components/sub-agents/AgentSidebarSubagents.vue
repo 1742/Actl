@@ -66,7 +66,7 @@ async function stop(id: string) {
       </button>
     </header>
     <p v-if="error" class="px-3 py-2 text-sm text-red-600" role="alert">{{ error }}</p>
-    <MessagesArea v-if="subagent" :session-id="selectedKey" :bottom-inset="0" compact />
+    <MessagesArea v-if="subagent" :session-id="selectedKey" :bottom-inset="0" compact runs-only />
     <div v-else class="min-h-0 flex-1 overflow-y-auto p-3">
       <AgentTeamPanel />
       <div class="mb-2 flex items-center justify-between gap-2">

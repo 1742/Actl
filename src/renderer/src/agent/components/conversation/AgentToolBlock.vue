@@ -239,10 +239,8 @@ function formatUnknown(value: unknown) {
           >
             <pre
               class="tool-output border-b border-red-950/80 bg-red-950/25 p-2 text-red-100 md:border-b-0 md:border-r"
-            >
-- {{ stringAt(replacement, 'oldText') }}</pre>
-            <pre class="tool-output bg-emerald-950/25 p-2 text-emerald-100">
-+ {{ stringAt(replacement, 'newText') }}</pre>
+            >- {{ stringAt(replacement, 'oldText') }}</pre>
+            <pre class="tool-output bg-emerald-950/25 p-2 text-emerald-100">+ {{ stringAt(replacement, 'newText') }}</pre>
           </div>
         </div>
       </div>

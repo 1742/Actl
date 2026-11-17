@@ -4,7 +4,7 @@ import { createPinia, setActivePinia } from 'pinia';
 import { applyAgentTreeSnapshot, applyRuntimeEvent, loadSubagentHistory, resolveAgentPermissionBatch, selectAgentSession, stopAgentResponse } from '../../../src/renderer/src/agent/composables/useAgent';
 import { useAgentStore } from '../../../src/renderer/src/agent/stores/agent';
 import { localClient } from '../../../src/renderer/src/agent/services/localClient';
-import { conversationMessageKind, isMessageItem, normalizeResponseContext } from '../../../src/renderer/src/agent/utils/aiResponse';
+import { conversationMessageKind, isMessageItem, normalizeResponseContext, subagentRunContexts } from '../../../src/renderer/src/agent/utils/aiResponse';
 import { buildAgentOutputGroups } from '../../../src/renderer/src/agent/utils';
 import { agentTeamCard, agentTeamCardKind } from '../../../src/renderer/src/agent/utils/agentTeamCards';
 import type { AgentResponseDto, PendingPermissionBatchDto, AgentStreamEvent, ResponseMessageItemDto } from '../../../src/shared/agent/responses';
@@ -152,6 +152,9 @@ test('loading subagent history keeps live output and the parent selection', asyn
     assert.deepEqual(store.ensureRuntime(sessionId).responses.map((context) => context.response.id), ['older', 'live']);
     assert.equal(store.findResponse(sessionId, 'live')?.lastSequenceNumber, 2);
     assert.match(JSON.stringify(store.findResponse(sessionId, 'live')), /Live text/);
+    const visible = subagentRunContexts(store.ensureRuntime(sessionId).responses);
+    assert.deepEqual(visible.map((context) => context.response.id), ['older', 'live']);
+    assert.equal(visible[1]?.response.output[0]?.id, 'live-item');
   } finally {
     localClient.getContext = originalGet;
   }
@@ -187,6 +190,40 @@ test('conversation uses attribution for agent messages in history and live outpu
   ] } });
   const final = buildAgentOutputGroups(replayed).find((group) => group.type === 'message' && group.isFinal);
   assert.equal(final?.key, 'final');
+});
+
+test('subagent transcript keeps the run and its activity while hiding incoming messages', () => {
+  const message = (id: string, role: ResponseMessageItemDto['role'], text = id): ResponseMessageItemDto => ({
+    id, role, type: 'message', status: 'completed', content: [{ type: 'output_text', text, annotations: [] }],
+  });
+  const history = normalizeResponseContext({
+    input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Task instructions' }] }],
+    response: {
+      ...response(),
+      output: [
+        message('progress', 'assistant'),
+        { id: 'thought', type: 'reasoning', status: 'completed', summary: [] },
+        { id: 'tool', type: 'function_call', status: 'completed', call_id: 'call', name: 'wait', arguments: '{}' },
+        { id: 'tool-result', type: 'function_call_output', status: 'completed', call_id: 'call', output: '{"ok":true}' },
+        { id: 'search', type: 'web_search_call', status: 'completed', action: { type: 'search', queries: ['Actl'] } },
+        { ...message('parent-mail', 'user'), source: {
+          kind: 'agent', sessionId: 'parent', relationship: 'parent', purpose: 'question', mailNumber: 1, subject: 'Question',
+        } },
+        { ...message('runtime-note', 'assistant'), source: { kind: 'runtime' } },
+        message('system', 'system'),
+        message('final', 'assistant'),
+      ],
+    },
+  });
+  const pending = normalizeResponseContext({ response: {
+    ...response(), id: 'pending', status: 'in_progress', output: [message('empty', 'assistant', '')],
+  } });
+  const visible = subagentRunContexts([history, pending]);
+  assert.deepEqual(visible.map((context) => context.response.id), ['response', 'pending']);
+  assert.deepEqual(visible[0]?.input, []);
+  assert.deepEqual(visible[0]?.response.output.map((item) => item.id), ['progress', 'thought', 'tool', 'tool-result', 'search', 'final']);
+  assert.equal(history.input.length, 1);
+  assert.equal(history.response.output.length, 9);
 });
 
 test('permission stream reply restores the next approval if its last IPC event is absent', async () => {

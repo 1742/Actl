@@ -11,7 +11,7 @@ const asRecord = (value: unknown): Record<string, unknown> =>
 const asString = (value: unknown, fallback = '') => (typeof value === 'string' ? value : fallback);
 const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
 
-export function isMessageItem(item: AIResponseInputItem): item is AIMessageItem {
+export function isMessageItem(item: AIResponseInputItem | AIResponseOutputItem): item is AIMessageItem {
   return item.type === 'message' && 'content' in item && Array.isArray(item.content);
 }
 
@@ -21,6 +21,15 @@ export function conversationMessageKind(item: AIMessageItem) {
   // Older delegated inputs have the model source used for local assistant output.
   if (source === 'model' && item.role === 'user') return 'agent';
   return item.role;
+}
+
+export function subagentRunContexts(contexts: readonly AIResponseContext[]): AIResponseContext[] {
+  return contexts.map((context) => {
+    const output = context.response.output.filter((item) =>
+      !isMessageItem(item) || conversationMessageKind(item) === 'assistant',
+    );
+    return { ...context, input: [], response: { ...context.response, output } };
+  });
 }
 
 export function normalizeContent(source: unknown): AIResponseContent {
