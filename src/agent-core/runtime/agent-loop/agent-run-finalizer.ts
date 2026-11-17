@@ -20,13 +20,6 @@ export class AgentRunFinalizer {
     return run;
   }
 
-  async waiting(session: Session, run: AgentRunRecord, onEvent?: AgentDomainEventHandler): Promise<AgentRunRecord> {
-    run.status = "waiting";
-    run.completedAt = nowIso();
-    await this.persistAndEmit(session, run, { type: "run_waiting", run }, onEvent);
-    return run;
-  }
-
   async incomplete(session: Session, run: AgentRunRecord, onEvent?: AgentDomainEventHandler): Promise<AgentRunRecord> {
     run.status = "incomplete";
     run.completedAt = nowIso();

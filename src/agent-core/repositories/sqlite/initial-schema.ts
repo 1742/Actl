@@ -3,7 +3,7 @@ import { nowIso } from "../../utils.js";
 import { COORDINATION_SCHEMA } from "./coordination-schema.js";
 
 export const SQLITE_SCHEMA_GENERATION = "multi-user-multi-model";
-export const SQLITE_SCHEMA_VERSION = 26;
+export const SQLITE_SCHEMA_VERSION = 27;
 
 // New databases start at the current version. Historical upgrades live in migrations/.
 const METADATA_SQL = `

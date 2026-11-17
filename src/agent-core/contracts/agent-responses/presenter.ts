@@ -75,6 +75,7 @@ export function toAgentItemDto(item: AgentTimelineItem, status: "in_progress" | 
     call_id: item.callId,
     name: item.name,
     arguments: item.argumentsJson,
+    ...(item.source ? { source: item.source } : {}),
   };
   if (item.type === "tool_result") return {
     id: item.id,

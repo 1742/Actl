@@ -51,8 +51,10 @@ export class AgentDirectory {
 export function directoryState(state: Pick<AgentCoordinationRepository, 'isStopped' | 'wait' | 'activeTask'>, session: Session): DirectoryState {
   if (state.isStopped(session.id)) return 'stopped';
   const latest = session.runs.at(-1);
-  if (latest?.status === 'in_progress') return 'running';
   if (latest?.status === 'waiting_permission') return 'waiting_permission';
-  if (state.wait(session.id)) return 'waiting';
+  if (latest?.status === 'in_progress') {
+    const wait = state.wait(session.id);
+    return wait?.runId === latest.id && wait.interruptedCallId === null ? 'waiting' : 'running';
+  }
   return state.activeTask(session.rootSessionId ?? session.id, session.id)?.status === 'assigned' ? 'assigned' : 'idle';
 }

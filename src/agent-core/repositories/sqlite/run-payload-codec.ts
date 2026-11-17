@@ -51,6 +51,7 @@ const reasoningSchema = z.object({
 
 const toolCallItemSchema = z.object({
   type: z.literal("tool_call"),
+  source: z.literal("runtime").optional(),
   id: z.string(),
   callId: z.string(),
   name: z.string(),

@@ -76,7 +76,7 @@ export class AgentTeamToolProvider implements ToolProvider {
       { name: 'agents', inputSchema: empty, description: 'Find same-root agents by short alias, role, status, current task, and recent run.' },
       { name: 'mail', inputSchema: mailInput, description: 'Communicate with agents in the same root. Use their alias or @parent. Use m#number to read/reply or filter by thread. Use question or urgent for input that may interrupt a wait. Mail does not change task state.' },
       { name: 'wait', inputSchema: waitInput, execution: { concurrency: 'exclusive', standalone: true },
-        description: 'Call alone. Start a wait for mail, a task state, an agent state, or a finished run. A durable wait parks this run; the next run receives the matching event, timeout or an unrelated question. After handling an interruption, call resume to keep waiting until the original deadline, or cancel explicitly.' },
+        description: 'Call alone. Start a wait for mail, a task state, an agent state, or a finished run. The current run waits for a matching event, timeout, or an unrelated question or urgent message. After handling an interruption, call resume to keep the original deadline or cancel explicitly.' },
       { name: 'interrupt_agent', inputSchema: interrupt, description: 'Root: stop a child, including its active wait and task execution.' },
       { name: 'plan', inputSchema: planInput, description: 'Read or replace the root plan using its revision. The plan is independent of task scheduling.' },
     ];
@@ -119,7 +119,7 @@ export class AgentTeamToolProvider implements ToolProvider {
           case 'send': return this.coordinator.sendMail(session, run, context.callId, { ...command, kind: 'send' });
         }
       }
-      case 'wait': return this.coordinator.wait(session, run, waitInput.parse(input).command);
+      case 'wait': return this.coordinator.wait(session, run, context.callId, waitInput.parse(input).command, context.signal);
       case 'interrupt_agent': {
         await this.coordinator.interrupt(session, interrupt.parse(input).agent);
         return { stopped: true };

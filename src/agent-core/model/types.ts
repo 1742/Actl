@@ -50,6 +50,7 @@ export interface TranscriptReasoning {
 
 export interface TranscriptToolCall {
   type: "tool_call";
+  source?: "runtime";
   id: string;
   callId: string;
   name: string;

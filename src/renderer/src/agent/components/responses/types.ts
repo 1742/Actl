@@ -2,7 +2,6 @@ import type { MessageSource } from '../../../../../shared/agent/responses';
 
 export type AIResponseStatus =
   | "in_progress"
-  | "waiting"
   | "waiting_permission"
   | "completed"
   | "failed"

@@ -28,6 +28,8 @@ async function startFixture(processCommands: Map<string, string>, explicitWorksp
       const payload = JSON.parse(Buffer.concat(chunks).toString()) as { messages: FixtureMessage[] };
       const user = payload.messages.filter((message) => message.role === 'user').at(-1);
       const text = typeof user?.content === 'string' ? user.content : JSON.stringify(user?.content) ?? '';
+      const waitPeer = payload.messages.flatMap((message) => message.role === 'user'
+        ? [/same-run-wait-fixture:([\w-]+)/.exec(JSON.stringify(message.content))?.[1]] : []).findLast(Boolean);
       response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
       const id = `fixture-${randomUUID()}`;
       const emit = (delta: object, finishReason: string | null = null) => response.write(`data: ${JSON.stringify({
@@ -35,8 +37,28 @@ async function startFixture(processCommands: Map<string, string>, explicitWorksp
         choices: [{ index: 0, delta, finish_reason: finishReason }],
       })}\n\n`);
       const done = () => { response.write('data: [DONE]\n\n'); response.end(); };
+      const invoke = (name: string, input: unknown) => emit({
+        tool_calls: [{ index: 0, id: `call-${randomUUID()}`, type: 'function', function: { name, arguments: JSON.stringify(input) } }],
+      }, 'tool_calls');
       emit({ role: 'assistant' });
-      if (text.includes('multi-child-fixture')) {
+      if (text.includes('wait-mail-fixture:')) {
+        const purpose = text.includes('wait-mail-fixture:question') ? 'question' : 'information';
+        if (payload.messages.at(-1)?.role === 'tool') emit({ content: 'Mail sent' }, 'stop');
+        else invoke('mail', { command: { action: 'send', purpose, to: '@parent',
+          subject: 'Wait test', body: purpose === 'question' ? 'Unexpected question' : 'Expected answer' } });
+        done();
+      } else if (waitPeer) {
+        const lastWait = payload.messages.findLast((message) => message.role === 'tool');
+        const result = lastWait && JSON.parse(String(lastWait.content)).output;
+        if (result?.kind === 'mail' && result.status === 'matched') {
+          assert.equal(result.body, 'Expected answer');
+          emit({ content: 'Completed in the original run' }, 'stop');
+        } else if (result?.status === 'interrupted') {
+          assert.match(text, /Unexpected question/);
+          emit({ content: 'Handled the interruption' }, 'stop');
+        } else invoke('wait', { command: { action: 'start', timeoutMs: 10000, condition: { kind: 'mail', from: waitPeer, purpose: 'information' } } });
+        done();
+      } else if (text.includes('multi-child-fixture')) {
         emit({ content: 'child running' });
         const timer = setTimeout(() => { emit({ content: ' child result ready' }, 'stop'); done(); }, 350);
         response.once('close', () => clearTimeout(timer));
@@ -479,6 +501,36 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
       assert.deepEqual(streamed.result.output, envelope.output);
       const parentHistory = await request<{ responses: AgentResponseDto[] }>({ operation: 'sessions.context', params: { sessionId: rootSession.id } });
       assert.deepEqual(parentHistory.responses.at(-1)?.output.find((item) => item.id === waitResult.id), waitResult);
+
+      const activeEvents: AgentStreamEvent[] = [];
+      const active = run(`same-run-wait-fixture:${child.session.id}`, (events) => activeEvents.push(...events), rootSession.id);
+      const followChild = (purpose: 'question' | 'information') => request({
+        operation: 'agents.message', params: { sessionId: rootSession.id },
+        body: { targetSessionId: child.session.id, message: `wait-mail-fixture:${purpose}` },
+      });
+      await waitFor(async () => {
+        const latest = await request<AgentTreeSnapshot>({ operation: 'agents.tree', params: { sessionId: rootSession.id } });
+        const root = latest.members.find((member) => member.session.id === rootSession.id);
+        return root?.waiting === true && root.response?.status === 'in_progress';
+      }, 'The parent did not enter an active wait.');
+      await followChild('question');
+      await waitFor(() => activeEvents.some((event) => event.type === 'response.output_item.done' &&
+        event.item.type === 'function_call' && event.item.name === 'wait' && event.item.source === 'runtime'),
+      'The runtime did not issue wait resume in the parent stream.');
+      await followChild('information');
+      const final = success(await active);
+      assert.equal(final.status, 'completed');
+      assert.equal(activeEvents.filter((event) => event.type === 'response.created').length, 1);
+      assert.match(JSON.stringify(final.output.at(-1)), /Completed in the original run/);
+      const resumedCall = final.output.find((item) => item.type === 'function_call' && item.source === 'runtime');
+      assert.ok(resumedCall?.type === 'function_call');
+      assert.deepEqual(JSON.parse(resumedCall.arguments), { command: { action: 'resume' } });
+      const resumedOutput = final.output.find((item) => item.type === 'function_call_output' && item.call_id === resumedCall.call_id);
+      assert.ok(resumedOutput?.type === 'function_call_output');
+      assert.equal(JSON.parse(resumedOutput.output).output.body, 'Expected answer');
+      const afterWait = await request<{ responses: AgentResponseDto[] }>({ operation: 'sessions.context', params: { sessionId: rootSession.id } });
+      assert.equal(afterWait.responses.length, parentHistory.responses.length + 1);
+      assert.deepEqual(afterWait.responses.at(-1)?.output.find((item) => item.id === resumedCall.id), resumedCall);
     });
     await step('Unexpected runtime exit fails in-flight calls and recovers history', async () => {
       const orphanPid = await launchOrphan('crash-orphan');

@@ -1,4 +1,4 @@
-import { activateAgentRun, completeAgentWait } from "./agent-coordination-repository.js";
+import { activateAgentRun, recordAgentWaitReceipt } from "./agent-coordination-repository.js";
 import type { RunActivation, WaitReceipt } from "../agent-coordination-repository.js";
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import type { AgentRunRecord } from "../../runtime/agent-domain.js";
@@ -97,10 +97,8 @@ export class SqliteSessionRepository implements SessionRepository {
       (providerResponseIds[runId] ??= []).push(stringColumn(row, "provider_response_id"));
     }
     const contextState = this.loadSessionContextState(sessionId);
-    const parked = this.db.prepare('SELECT park_run_id FROM agent_waits WHERE session_id = ?').get(sessionId);
     return {
       runs,
-      ...(parked ? { parkingRunId: String(parked.park_run_id) } : {}),
       provider_response_ids: providerResponseIds,
       ...(contextState ? { contextState } : {}),
       compressionRecords: this.all("SELECT session_id, summarized_run_count, summary, created_at FROM context_compressions WHERE session_id = ? ORDER BY summarized_run_count", sessionId).map((row): ContextCompressionRecord => ({
@@ -143,7 +141,7 @@ export class SqliteSessionRepository implements SessionRepository {
         run.nextSequenceNumber, run.id, run.sessionId,
       ), "Run", run.id);
       this.updateTimeline(run.id, timelineUpdates, timelineLength);
-      if (waitReceipt) completeAgentWait(this.db, run.sessionId, waitReceipt);
+      if (waitReceipt) recordAgentWaitReceipt(this.db, run, waitReceipt);
       assertChanged(this.db.prepare("UPDATE sessions SET updated_at = ? WHERE id = ?")
         .run(sessionUpdatedAt, run.sessionId), "Session", run.sessionId);
     });

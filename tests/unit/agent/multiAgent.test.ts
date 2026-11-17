@@ -236,7 +236,7 @@ test('deleting a child with a submitted result keeps the task retryable', async 
   } finally { await f.close(); }
 });
 
-test('tools publish, delegate, park and resume for review in the same root session', async () => {
+test('tools publish, delegate and wait for review in the original root run', async () => {
   const f = await fixture(async (request) => {
     if (isChild(request)) {
       assert.ok(!request.tools.some(({ name }) => ['shell', 'write_file', 'delegate_task', 'call_mcp_tool'].includes(name)));
@@ -245,9 +245,8 @@ test('tools publish, delegate, park and resume for review in the same root sessi
       assert.ok(toolResult(request, calls(request, 'write_file')[0]?.callId).result.isError);
       return [text('Reviewed with evidence.')];
     }
-    const context = requestText(request);
-    if (context.includes('Wait finished')) {
-      assert.match(context, /review_required/);
+    if (calls(request, 'wait').length) {
+      assert.deepEqual(toolOutput(request, 'wait'), { status: 'matched', kind: 'task_state', task: '#1', state: 'review_required' });
       if (calls(request, 'tasks').length === 1) return [team('tasks', { action: 'accept', task: '#1' })];
       assert.equal(toolOutput<{ status: string }>(request, 'tasks').status, 'completed');
       return [text('Accepted')];
@@ -258,10 +257,11 @@ test('tools publish, delegate, park and resume for review in the same root sessi
   });
   try {
     const events: AgentStreamEvent[] = [];
-    const first = await f.coordinator.start(f.root, input('Delegate review'), options, (event) => events.push(event));
-    assert.equal(first.status, 'waiting');
-    assert.ok(events.some((event) => event.type === 'response.waiting'));
-    await until(() => f.root.runs[1]?.status === 'completed', 'Root did not finish its resumed review.');
+    const run = await f.coordinator.start(f.root, input('Delegate review'), options, (event) => events.push(event));
+    assert.equal(run.status, 'completed');
+    assert.deepEqual(f.root.runs.map(({ id }) => id), [run.id]);
+    assert.equal(events.filter((event) => event.type === 'response.created').length, 1);
+    assert.ok(events.some((event) => event.type === 'agent.tool.completed' && event.result.toolName === 'wait'));
     const task = f.coordination.tasks(f.root.id)[0]!;
     assert.equal(task.status, 'completed');
     assert.equal(task.attempt?.result?.output, 'Reviewed with evidence.');
@@ -273,45 +273,36 @@ test('tools publish, delegate, park and resume for review in the same root sessi
   } finally { await f.close(); }
 });
 
-for (const mode of ['reply', 'timeout', 'reply during interruption'] as const) {
-  test(`interrupted wait preserves its deadline and task delivery follows the ${mode}`, async () => {
-    let childActive = 0;
-    let maxChildActive = 0;
+for (const mode of ['automatic reply', 'automatic timeout', 'explicit resume'] as const) {
+  test(`interrupted wait preserves its run and deadline with ${mode}`, async () => {
     const interrupted = Promise.withResolvers<void>();
     const continueInterrupted = Promise.withResolvers<void>();
     const f = await fixture(async (request) => {
       if (!isChild(request)) return [text('Root is available.')];
-      childActive++;
-      maxChildActive = Math.max(maxChildActive, childActive);
-      try {
-        const latest = requestText(request);
-        if (latest.includes('Wait finished:')) {
-          assert.match(latest, mode === 'reply' ? /the needed answer/ : /timed_out/);
-          assert.equal(latest.split('unsolicited question').length - 1, 2, 'Subject and body must be delivered just once.');
-          return [text('Task final after ' + mode)];
+      const waits = calls(request, 'wait');
+      if (waits.length > 1) {
+        const result = toolOutput<{ status: string; body?: string }>(request, 'wait');
+        assert.equal(result.status, mode === 'automatic timeout' ? 'timed_out' : 'matched');
+        if (mode !== 'automatic timeout') assert.equal(result.body, 'the needed answer');
+        assert.equal(requestText(request).split('unsolicited question').length - 1, 2, 'Subject and body must be delivered just once.');
+        assert.doesNotMatch(requestText(request), /the needed answer/, 'The matched mail is delivered through the wait tool.');
+        return [text('Task final after ' + mode)];
+      }
+      if (waits.length) {
+        assert.equal(toolOutput<{ status: string }>(request, 'wait').status, 'interrupted');
+        assert.match(requestText(request), /unsolicited question/);
+        if (calls(request, 'mail').length === 1) {
+          return [team('mail', { action: 'reply', body: 'Answered the other question.' })];
         }
-        if (latest.includes('The original wait is still active')) {
-          if (mode === 'reply') return [text('Only handled new mail')];
-          if (mode === 'reply during interruption') {
-            if (calls(request, 'wait').length === 1) {
-              interrupted.resolve();
-              await continueInterrupted.promise;
-              return [team('wait', { action: 'resume' })];
-            }
-            assert.equal(toolOutput<{ body: string }>(request, 'wait').body, 'the needed answer');
-            return [text('Task final after ' + mode)];
-          }
-          if (calls(request, 'mail').length === 1) {
-            return [team('mail', { action: 'reply', body: 'Answered the other question.' })];
-          }
-          return [team('wait', { action: 'resume' })];
-        }
-        if (!calls(request, 'mail').length) return [team('mail', { action: 'send', to: '@parent',
-          subject: 'Question for parent', body: 'Please clarify.', purpose: 'question' })];
-        const question = toolOutput<{ message: string }>(request, 'mail').message;
-        return [team('wait', { action: 'start', timeoutMs: mode === 'timeout' ? 1300 : 10000,
-          condition: { kind: 'mail', replyTo: question } })];
-      } finally { childActive--; }
+        interrupted.resolve();
+        await continueInterrupted.promise;
+        return mode === 'explicit resume' ? [team('wait', { action: 'resume' })] : [text('Only handled new mail')];
+      }
+      if (!calls(request, 'mail').length) return [team('mail', { action: 'send', to: '@parent',
+        subject: 'Question for parent', body: 'Please clarify.', purpose: 'question' })];
+      const question = toolOutput<{ message: string }>(request, 'mail').message;
+      return [team('wait', { action: 'start', timeoutMs: mode === 'automatic timeout' ? 2200 : 10000,
+        condition: { kind: 'mail', replyTo: question } })];
     });
     try {
       const rootRun = await f.coordinator.start(f.root, input('Begin'), options);
@@ -319,51 +310,79 @@ for (const mode of ['reply', 'timeout', 'reply during interruption'] as const) {
       const peer = await childOf(f, 'Peer');
       const child = await childOf(f, 'Waiting child');
       f.coordination.assignTask(f.root.id, task.id, child.id, { kind: 'delegate', sourceRunId: rootRun.id }, 'delegate');
-      const original = await until(() => child.runs[0]?.status === 'waiting' && f.coordination.wait(child.id), 'Child did not park.');
+      const original = await until(() => f.coordination.wait(child.id), 'Child did not register its wait.');
+      const run = child.runs[0]!;
+      assert.equal(original.runId, run.id);
+      assert.equal(run.status, 'in_progress');
+      const foreign = await f.workspace.createSession(owner, { projectId: f.project.id });
+      await assert.rejects(f.coordinator.start(foreign, input('Same project during wait'), options), { code: 'project_active_response_exists' });
       const question = f.coordination.searchMail(child.id, { purpose: 'question', limit: 1 })[0]!;
       post(f, peer.id, child.id, 'background progress', 'progress');
       await delay(40);
-      assert.equal(child.runs.length, 1);
-      assert.equal(f.coordination.task(f.root.id, task.id)?.status, 'running');
+      assert.equal(f.coordination.wait(child.id)?.interruptedCallId, null);
+      assert.equal(run.timeline.filter((item) => item.type === 'tool_result').length, 1);
       post(f, peer.id, child.id, 'unsolicited question', 'question');
-      if (mode === 'reply during interruption') {
-        await until(() => Promise.race([interrupted.promise.then(() => true), delay(10).then(() => false)]), 'The child did not receive the interruption.');
-        const answer = post(f, f.root.id, child.id, 'the needed answer', 'information', question.id);
-        continueInterrupted.resolve();
-        const result = await until(() => f.coordination.task(f.root.id, task.id)?.attempt?.result, 'No result after inline reply.');
-        assert.equal(result.output, 'Task final after ' + mode);
-        assert.deepEqual(child.runs.map(({ status }) => status), ['waiting', 'completed']);
-        assert.ok(!f.coordination.pendingMail(child.id).some(({ id }) => id === answer.id));
-        assert.equal(f.coordination.wait(child.id), undefined);
-        return;
-      }
-      await until(() => child.runs[1]?.status === 'waiting', 'Premature final or resume did not park.');
+      await until(() => Promise.race([interrupted.promise.then(() => true), delay(10).then(() => false)]), 'Child did not handle the interruption.');
+      assert.equal(child.runs.length, 1);
+      assert.ok(f.coordination.wait(child.id)?.interruptedCallId);
       assert.equal(f.coordination.wait(child.id)?.deadline, original.deadline);
-      assert.equal(f.coordination.task(f.root.id, task.id)?.attempt?.result, undefined);
 
-      if (mode === 'reply') {
-        await f.restart();
-        assert.equal(f.coordination.wait(child.id)?.id, original.id);
-        const other = await f.workspace.createSession(owner, { projectId: f.project.id });
-        assert.equal((await f.coordinator.start(other, input('Same project while parked'), options)).status, 'completed');
-        post(f, f.root.id, child.id, 'the needed answer', 'information', question.id);
+      const answer = () => post(f, f.root.id, child.id, 'the needed answer', 'information', question.id);
+      if (mode === 'explicit resume') answer();
+      continueInterrupted.resolve();
+      if (mode !== 'explicit resume') {
+        await until(() => run.timeline.some((item) => item.type === 'tool_call' && item.source === 'runtime') &&
+          f.coordination.wait(child.id)?.interruptedCallId === null, 'Runtime did not resume the wait.');
+        assert.equal(f.coordination.wait(child.id)?.deadline, original.deadline);
+        assert.equal(f.coordination.task(f.root.id, task.id)?.attempt?.result, undefined);
+        if (mode === 'automatic reply') answer();
       }
-      const result = await until(() => f.coordination.task(f.root.id, task.id)?.attempt?.result, 'No result after original wait ended.');
+      const result = await until(() => f.coordination.task(f.root.id, task.id)?.attempt?.result, 'No task result after waiting.');
       assert.equal(result.output, 'Task final after ' + mode);
-      const restored = (await f.workspace.getSession(child.id))!;
-      assert.deepEqual(restored.runs.map(({ status }) => status), ['waiting', 'waiting', 'completed']);
+      assert.equal(result.runId, run.id);
+      assert.deepEqual(child.runs.map(({ status }) => status), ['completed']);
+      const resumes = run.timeline.filter((item) => item.type === 'tool_call' && item.name === 'wait' && item.source === 'runtime');
+      assert.equal(resumes.length, mode === 'explicit resume' ? 0 : 1);
+      if (resumes[0]?.type === 'tool_call') {
+        const id = resumes[0].callId;
+        assert.equal(run.timeline.filter((item) => item.type === 'tool_result' && item.callId === id).length, 1);
+      }
       assert.equal(f.coordination.wait(child.id), undefined);
-      assert.equal(f.coordination.attemptHistory(f.root.id, task.id).length, 1);
-      assert.equal(maxChildActive, 1);
-      if (mode === 'timeout') {
+      assert.deepEqual(f.coordination.pendingMail(child.id), []);
+      if (mode === 'automatic timeout') {
         const late = post(f, f.root.id, child.id, 'late answer', 'information', question.id);
-        await delay(550);
-        assert.equal(restored.runs.length, 3);
+        await delay(40);
+        assert.equal(child.runs.length, 1);
         assert.equal(f.coordination.mail(f.root.id, late.id)?.body, 'late answer');
       }
     } finally { continueInterrupted.resolve(); await f.close(); }
   });
 }
+
+test('blocked waits occupy all three child slots until one run finishes', async () => {
+  const f = await fixture(async (request) => {
+    if (!isChild(request) || requestText(request).includes('Begin task #4')) return [text('Done')];
+    if (calls(request, 'wait').length) return [text('Released')];
+    return [team('wait', { action: 'start', timeoutMs: 20000, condition: { kind: 'mail', from: '@parent' } })];
+  });
+  try {
+    const source = await f.coordinator.start(f.root, input('Start'), options);
+    const children = [];
+    for (let index = 1; index <= 4; index++) {
+      const child = await childOf(f, 'Child ' + index);
+      const task = f.coordination.createTask(f.root.id, f.root.id, taskDraft('Work ' + index), 'work-' + index);
+      f.coordination.assignTask(f.root.id, task.id, child.id, { kind: 'delegate', sourceRunId: source.id }, 'assign-' + index);
+      children.push(child);
+    }
+    await until(() => children.slice(0, 3).every((child) => f.coordination.wait(child.id)), 'Three children did not enter wait.');
+    assert.ok(children.slice(0, 3).every((child) => child.runs[0]?.status === 'in_progress'));
+    assert.equal(children[3]!.runs.length, 0);
+    post(f, f.root.id, children[0]!.id, 'Release the first child', 'information');
+    await until(() => children[3]!.runs[0]?.status === 'completed', 'The fourth child did not receive the released slot.');
+    assert.equal(children[0]!.runs.length, 1);
+    assert.equal(children[0]!.runs[0]?.status, 'completed');
+  } finally { await f.close(); }
+});
 
 test('event cursor catches a task transition between the initial check and registration', async () => {
   const f = await fixture(async () => [text('Idle')]);
@@ -372,9 +391,10 @@ test('event cursor catches a task transition between the initial check and regis
     const member = await childOf(f, 'Reviewer');
     const task = f.coordination.createTask(root, root, taskDraft('Transient state'), 'create');
     const run = await f.workspace.createResponse(member, await input('Worker')(), snapshot, { permissionMode: 'plan' });
+    const parentRun = await f.workspace.createResponse(f.root, await input('Parent')(), snapshot, { permissionMode: 'ask' });
     const waits = new CoordinationWaits(f.coordination, f.workspace);
     const wait = { rootId: root, sessionId: root, condition: { kind: 'task_state' as const, task: task.id, states: ['running' as const] },
-      cursor: f.coordination.eventCursor(), deadline: Date.now() + 5000, parkRunId: 'parent-run' };
+      cursor: f.coordination.eventCursor(), deadline: Date.now() + 5000, runId: parentRun.id };
     assert.equal(await waits.outcome(wait, true), undefined);
     f.coordination.assignTask(root, task.id, member.id, { kind: 'claim', runId: run.id }, 'claim');
     run.status = 'completed'; run.finalOutput = 'done';
@@ -386,23 +406,43 @@ test('event cursor catches a task transition between the initial check and regis
   } finally { await f.close(); }
 });
 
-test('restart preserves a registered wait even if the process died before parking its run', async () => {
+test('restart fails an interrupted runtime run and clears its wait without consuming queued mail', async () => {
   const f = await fixture(async (request) => {
-    assert.match(requestText(request), /Wait finished/);
     assert.match(requestText(request), /after recovery/);
-    return [text('Resumed')];
+    return [text('New turn')];
   });
   try {
     const peer = await childOf(f, 'Sender');
     const root = f.root.id;
     const run = await f.workspace.createResponse(f.root, await input('Original')(), snapshot, { permissionMode: 'ask' });
-    const wait = f.coordination.registerWait({ rootId: root, sessionId: root, condition: { kind: 'mail', from: peer.id },
-      cursor: f.coordination.eventCursor(), deadline: Date.now() + 5000, parkRunId: run.id });
+    f.coordination.registerWait({ rootId: root, sessionId: root, condition: { kind: 'mail', from: peer.id },
+      cursor: f.coordination.eventCursor(), deadline: Date.now() + 5000, runId: run.id });
+    const queued = post(f, peer.id, root, 'after recovery', 'information');
     await f.restart();
-    assert.equal(f.root.runs[0]?.status, 'waiting');
-    assert.equal(f.coordination.wait(root)?.id, wait.id);
-    post(f, peer.id, root, 'after recovery', 'information');
-    await until(() => f.root.runs[1]?.status === 'completed', 'Wait did not resume after restart.');
+    assert.equal(f.root.runs[0]?.status, 'failed');
+    assert.equal(f.root.runs[0]?.error?.code, 'runtime_interrupted');
+    assert.equal(f.coordination.wait(root), undefined);
+    assert.equal(f.coordination.pendingMail(root)[0]?.id, queued.id);
+    assert.equal((await f.coordinator.start(f.root, input('Continue'), options)).status, 'completed');
+  } finally { await f.close(); }
+});
+
+test('stopping an active wait aborts its tool, clears its wait and releases admission', async () => {
+  const f = await fixture(async (request) => {
+    if (requestText(request).includes('after stop')) return [text('New turn')];
+    return [team('wait', { action: 'start', timeoutMs: 20000, condition: { kind: 'mail' } })];
+  });
+  try {
+    const first = f.coordinator.start(f.root, input('Wait'), options);
+    await until(() => f.coordination.wait(f.root.id), 'Wait did not start.');
+    await f.coordinator.stopTree(f.root);
+    const run = await first;
+    assert.equal(run.status, 'cancelled');
+    assert.equal(f.coordination.wait(f.root.id), undefined);
+    const wait = run.timeline.find((item) => item.type === 'tool_call' && item.name === 'wait');
+    assert.ok(wait?.type === 'tool_call');
+    assert.ok(run.timeline.some((item) => item.type === 'tool_result' && item.callId === wait.callId && item.isError));
+    assert.equal((await f.coordinator.start(f.root, input('after stop'), options)).status, 'completed');
   } finally { await f.close(); }
 });
 

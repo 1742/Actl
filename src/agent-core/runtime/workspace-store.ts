@@ -353,9 +353,8 @@ export class WorkspaceStore {
     const recoveredRunIds = new Set<string>();
     for (const run of content.runs) {
       if (run.status === "in_progress") {
-        const wasParking = run.id === content.parkingRunId;
-        run.status = wasParking ? "waiting" : "failed";
-        if (!wasParking) run.error = {
+        run.status = "failed";
+        run.error = {
           code: "runtime_interrupted",
           message: "Agent execution was interrupted by server restart.",
         };

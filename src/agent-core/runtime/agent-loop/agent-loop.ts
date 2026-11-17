@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { HookEventBus } from "../../hooks/event-bus.js";
 import type { ModelTurnEvent, TranscriptItem, TranscriptMessage } from "../../model/types.js";
 import { errorFields, type Logger } from "../../observability/logger.js";
@@ -62,7 +63,6 @@ export class AgentLoop {
         if (unresolvedToolCalls.length > 0) {
           const waiting = await this.toolExecutor.process(session, run, unresolvedToolCalls, signal, onEvent);
           if (waiting) return run;
-          if (this.context.shouldPark(run)) return this.finalizer.waiting(session, run, onEvent);
           continue;
         }
 
@@ -116,10 +116,23 @@ export class AgentLoop {
         );
         if (functionCalls.length > 0) {
           const waiting = await this.toolExecutor.process(session, run, functionCalls, signal, onEvent);
-          // Awaiting authorization
-          if (waiting) return run; 
-          // Wait via tool
-          if (this.context.shouldPark(run)) return this.finalizer.waiting(session, run, onEvent);
+          if (waiting) return run;
+          continue;
+        }
+
+        // Check session whether has wait
+        const pendingWait = this.context.pendingWait(run);
+        if (pendingWait) {
+          const interruptedCallId = pendingWait.interruptedCallId;
+          if (!interruptedCallId) throw new Error('The active wait has no interruption to resume.');
+          const callId = 'call_wait_' + createHash('sha256').update(pendingWait.id).update(interruptedCallId).digest('hex').slice(0, 24);
+          if (run.timeline.some((item) => item.type === 'tool_call' && item.callId === callId)) {
+            throw new Error('The interrupted wait could not be resumed.');
+          }
+          await this.ensureInvocationItems(session, run, new Map(), [{
+            type: 'tool_call', id: createRandomId('tool'), callId, name: 'wait', source: 'runtime',
+            argumentsJson: JSON.stringify({ command: { action: 'resume' } }),
+          }], onEvent);
           continue;
         }
 
@@ -134,7 +147,6 @@ export class AgentLoop {
           continue;
         }
 
-        if (this.context.hasPendingWait()) return this.finalizer.waiting(session, run, onEvent);
         return this.finalizer.completed(session, run, text, onEvent);
       }
       throw new Error("Agent loop exceeded maximum steps.");

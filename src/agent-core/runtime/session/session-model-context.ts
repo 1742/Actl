@@ -78,12 +78,9 @@ export class SessionModelContext {
     return { prompt, tools, search, nativeWebSearch };
   }
 
-  hasPendingWait(): boolean {
-    return !!this.inbox.wait(this.session.id);
-  }
-
-  shouldPark(run: AgentRunRecord): boolean {
-    return this.inbox.wait(this.session.id)?.parkRunId === run.id;
+  pendingWait(run: AgentRunRecord) {
+    const wait = this.inbox.wait(this.session.id);
+    return wait?.runId === run.id ? wait : undefined;
   }
 
   private async deliverMessages(run: AgentRunRecord, signal: AbortSignal, onEvent: AgentDomainEventHandler): Promise<void> {

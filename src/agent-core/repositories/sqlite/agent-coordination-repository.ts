@@ -306,17 +306,21 @@ export class SqliteAgentCoordinationRepository implements AgentCoordinationRepos
   wait(sessionId: string): AgentWait | undefined {
     const row = this.db.prepare('SELECT * FROM agent_waits WHERE session_id = ?').get(sessionId);
     return row && { id: String(row.id), rootId: String(row.root_id), sessionId: String(row.session_id),
-      condition: JSON.parse(String(row.condition_json)) as AgentWait['condition'], cursor: Number(row.event_cursor), deadline: Number(row.deadline), parkRunId: String(row.park_run_id) };
+      condition: JSON.parse(String(row.condition_json)) as AgentWait['condition'], cursor: Number(row.event_cursor), deadline: Number(row.deadline), runId: String(row.run_id),
+      interruptedCallId: row.interrupted_call_id === null ? null : String(row.interrupted_call_id) };
   }
 
-  registerWait(draft: Omit<AgentWait, 'id'>): AgentWait {
+  registerWait(draft: Omit<AgentWait, 'id' | 'interruptedCallId'>): AgentWait {
     return withSqliteTransaction(this.db, () => {
       this.assertMember(draft.rootId, draft.sessionId);
+      const active = this.db.prepare("SELECT 1 FROM agent_runs WHERE id = ? AND session_id = ? AND status = 'in_progress'")
+        .get(draft.runId, draft.sessionId);
+      if (!active) throw new Error('Wait requires an active run owned by this session.');
       const id = createRandomId('wait');
-      this.db.prepare('INSERT INTO agent_waits(id, root_id, session_id, condition_json, deadline, event_cursor, park_run_id) VALUES (?, ?, ?, ?, ?, ?, ?)')
-        .run(id, draft.rootId, draft.sessionId, JSON.stringify(draft.condition), draft.deadline, draft.cursor, draft.parkRunId);
-      this.emit(draft.rootId, 'wait_changed', draft.sessionId);
-      return { ...draft, id };
+      this.db.prepare('INSERT INTO agent_waits(id, root_id, session_id, condition_json, deadline, event_cursor, run_id) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(id, draft.rootId, draft.sessionId, JSON.stringify(draft.condition), draft.deadline, draft.cursor, draft.runId);
+      this.emit(draft.rootId, 'agent_changed', draft.sessionId, null, 'waiting');
+      return { ...draft, id, interruptedCallId: null };
     });
   }
 
@@ -345,8 +349,13 @@ export class SqliteAgentCoordinationRepository implements AgentCoordinationRepos
   }
 
   /** Bind run and wait together */
-  parkWait(sessionId: string, waitId: string, runId: string): void {
-    this.db.prepare('UPDATE agent_waits SET park_run_id = ? WHERE session_id = ? AND id = ?').run(runId, sessionId, waitId);
+  resumeWait(wait: AgentWait): void {
+    withSqliteTransaction(this.db, () => {
+      const updated = this.db.prepare('UPDATE agent_waits SET interrupted_call_id = NULL WHERE id = ? AND run_id = ? AND interrupted_call_id IS NOT NULL')
+        .run(wait.id, wait.runId);
+      if (!updated.changes) throw new Error('Only an interrupted wait can be resumed.');
+      this.emit(wait.rootId, 'agent_changed', wait.sessionId, null, 'waiting');
+    });
   }
 
   pendingEvents(): CoordinationEvent[] {
@@ -359,7 +368,6 @@ export class SqliteAgentCoordinationRepository implements AgentCoordinationRepos
         case 'agent_changed': return { ...base, kind: row.kind, agentId: subject, state: row.state as DirectoryState };
         case 'review_requested': return { ...base, kind: row.kind, resultId: subject, reviewerId: String(row.recipient_id) };
         case 'mail_received': return { ...base, kind: row.kind, mailId: subject };
-        case 'wait_changed': return { ...base, kind: row.kind, sessionId: subject };
         default: throw new Error('Unknown coordination event.');
       }
     });
@@ -382,8 +390,7 @@ export class SqliteAgentCoordinationRepository implements AgentCoordinationRepos
 
   /** Find all root_ids that have active/pending work. */
   rootsWithWork(): string[] {
-    return this.db.prepare(`SELECT root_id FROM agent_waits
-      UNION SELECT root_id FROM agent_tasks WHERE status IN ('assigned','running') OR (status = 'pending' AND auto_assign = 1)
+    return this.db.prepare(`SELECT root_id FROM agent_tasks WHERE status IN ('assigned','running') OR (status = 'pending' AND auto_assign = 1)
       UNION SELECT root_id FROM agent_mail WHERE delivered = 0 AND purpose IN ('question','urgent')
       UNION SELECT event.root_id FROM agent_coordination_events event
         JOIN agent_results result ON result.id = event.subject_id
@@ -470,7 +477,6 @@ export function activateAgentRun(db: DatabaseSync, run: AgentRunRecord, activati
         .run(String(attempt.root_id), String(attempt.id));
     }
   }
-  if (activation.resolvedWaitId) completeAgentWait(db, run.sessionId, { waitId: activation.resolvedWaitId });
   for (const id of activation.mailIds) {
     db.prepare('UPDATE agent_mail SET delivered = 1 WHERE id = ? AND recipient_id = ?').run(id, run.sessionId);
   }
@@ -479,10 +485,21 @@ export function activateAgentRun(db: DatabaseSync, run: AgentRunRecord, activati
   }
 }
 
-export function completeAgentWait(db: DatabaseSync, sessionId: string, receipt: WaitReceipt): void {
-  const deleted = db.prepare('DELETE FROM agent_waits WHERE session_id = ? AND id = ?').run(sessionId, receipt.waitId);
-  if (!deleted.changes) throw new Error('The wait is no longer active.');
-  if (receipt.mailId) db.prepare('UPDATE agent_mail SET delivered = 1 WHERE id = ? AND recipient_id = ?').run(receipt.mailId, sessionId);
+export function recordAgentWaitReceipt(db: DatabaseSync, run: AgentRunRecord, receipt: WaitReceipt): void {
+  const wait = db.prepare('SELECT root_id FROM agent_waits WHERE id = ? AND run_id = ? AND session_id = ?')
+    .get(receipt.waitId, run.id, run.sessionId);
+  if (!wait) throw new Error('The wait is no longer active.');
+
+  if (receipt.kind === 'interrupted') {
+    db.prepare('UPDATE agent_waits SET interrupted_call_id = ? WHERE id = ?').run(receipt.callId, receipt.waitId);
+  } else {
+    db.prepare('DELETE FROM agent_waits WHERE id = ?').run(receipt.waitId);
+    if (receipt.mailId) {
+      db.prepare('UPDATE agent_mail SET delivered = 1 WHERE id = ? AND recipient_id = ?').run(receipt.mailId, run.sessionId);
+    }
+  }
+  db.prepare("INSERT INTO agent_coordination_events(root_id, kind, subject_id, state) VALUES (?, 'agent_changed', ?, 'running')")
+    .run(String(wait.root_id), run.sessionId);
 }
 
 function toAttempt(row: Record<string, unknown>): TaskAttempt {

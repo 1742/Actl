@@ -1,14 +1,47 @@
+import { EventEmitter, once } from 'node:events';
 import type { AgentMail } from '../../../shared/agent/coordination.js';
 import type { AgentCoordinationRepository, AgentWait, WaitOutcome } from '../../repositories/agent-coordination-repository.js';
 import { isTerminalRun } from '../agent-domain.js';
 import type { WorkspaceStore } from '../workspace-store.js';
-
 import { directoryState } from './agent-directory.js';
 
+export type WaitDelivery = WaitOutcome | { kind: 'interrupted'; mail: AgentMail[] };
+
 export class CoordinationWaits {
+  private readonly changes = new EventEmitter();
+
   constructor(private readonly state: AgentCoordinationRepository, private readonly workspace: WorkspaceStore) {}
 
-  async outcome(wait: Omit<AgentWait, 'id'>, initial = false): Promise<WaitOutcome | undefined> {
+  notify(rootId: string): void {
+    this.changes.emit(rootId);
+  }
+
+  async until(wait: AgentWait, signal?: AbortSignal): Promise<WaitDelivery> {
+    for (;;) {
+      signal?.throwIfAborted();
+      const subscription = new AbortController();
+      const listening = signal ? AbortSignal.any([signal, subscription.signal]) : subscription.signal;
+      // Subscribe before the asynchronous check. A change during the check wakes the next iteration.
+      const changed = once(this.changes, wait.rootId, { signal: listening }).catch((error: unknown) => {
+        if (!listening.aborted) throw error;
+      });
+      try {
+        const outcome = await this.outcome(wait);
+        signal?.throwIfAborted();
+        if (this.state.wait(wait.sessionId)?.id !== wait.id) throw new Error('The wait is no longer active.');
+        if (outcome) return outcome;
+        const mail = this.state.pendingMail(wait.sessionId).filter((item) =>
+          (item.purpose === 'question' || item.purpose === 'urgent') && !matchesWaitMail(wait, item));
+        if (mail.length) return { kind: 'interrupted', mail };
+        const timeout = setTimeout(() => subscription.abort(), Math.max(0, wait.deadline - Date.now()));
+        try { await changed; } finally { clearTimeout(timeout); }
+      } finally {
+        subscription.abort();
+      }
+    }
+  }
+
+  async outcome(wait: Omit<AgentWait, 'id' | 'interruptedCallId'>, initial = false): Promise<WaitOutcome | undefined> {
     const condition = wait.condition;
     const beforeDeadline = initial || Date.now() <= wait.deadline;
     switch (condition.kind) {

@@ -75,7 +75,7 @@ export interface PermissionResolution {
   reason?: string;
 }
 
-export type AgentRunStatus = "in_progress" | "waiting_permission" | "waiting" | "completed" | "incomplete" | "failed" | "cancelled";
+export type AgentRunStatus = "in_progress" | "waiting_permission" | "completed" | "incomplete" | "failed" | "cancelled";
 
 export interface AgentRunRecord {
   id: string;
@@ -108,7 +108,6 @@ export type AgentDomainEvent =
   | { type: "tool_completed"; itemId: string; callId: string; result: ToolResult }
   | { type: "permissions_requested"; batch: PendingToolBatch }
   | { type: "permissions_resolved"; batchId: string; decisions: PermissionResolution[] }
-  | { type: "run_waiting"; run: AgentRunRecord }
   | { type: "run_completed"; run: AgentRunRecord }
   | { type: "run_failed"; run: AgentRunRecord }
   | { type: "run_incomplete"; run: AgentRunRecord }

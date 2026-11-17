@@ -85,10 +85,10 @@ async function stop(id: string) {
             <span v-if="store.runtimeBySessionId[key(session.id)]?.status === 'waiting_permission'" class="shrink-0 rounded bg-amber-100 px-1.5 text-xs text-amber-800">
               {{ $t('agents.approval') }}
             </span>
+            <span v-else-if="waiting" class="shrink-0 text-xs text-gray-500">{{ $t('agents.waiting') }}</span>
             <LoaderCircle v-else-if="store.sessionIsActive(key(session.id))" :size="14" class="shrink-0 animate-spin text-primary"
               :aria-label="$t(store.runtimeBySessionId[key(session.id)]?.status === 'stopping' ? 'agents.stopping' : 'ui.sessionRunning')" />
-            <span v-else-if="waiting" class="shrink-0 text-xs text-gray-500">{{ $t('agents.waiting') }}</span>
-            <span v-else-if="response && response.status !== 'waiting'" class="shrink-0 text-xs text-gray-500">
+            <span v-else-if="response" class="shrink-0 text-xs text-gray-500">
               {{ $t(response.status === 'cancelled' ? 'agents.cancelled' : response.status === 'failed' || response.status === 'incomplete' ? 'agents.failed' : 'agents.done') }}
             </span>
           </button>

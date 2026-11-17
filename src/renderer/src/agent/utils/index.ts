@@ -302,7 +302,7 @@ function agentTeamToolDetail(block: AgentToolTimelineBlock) {
       return text(result?.subject) || text(command?.subject) || text(command?.message);
     case 'wait':
       if (result?.status === 'timed_out') return tr('agents.waitTimedOut');
-      return result?.status === 'waiting' ? tr('agents.waiting') : '';
+      return result?.status === 'interrupted' ? tr('agents.mail') : '';
     default:
       return '';
   }

@@ -38,7 +38,7 @@ WorkspaceStore 的 mutationQueue 串行化状态修改，touch 只 upsert 变化
 
 ## 3. 表与关系
 
-当前 [initial-schema.ts](../../src/agent-core/repositories/sqlite/initial-schema.ts) generation 为 multi-user-multi-model，version 为 **26**。此版本重建协作任务和邮箱表，开发分支旧任务和邮箱不迁移。
+当前 [initial-schema.ts](../../src/agent-core/repositories/sqlite/initial-schema.ts) generation 为 multi-user-multi-model，version 为 **27**。从 v26 升级时清除旧的跨 Run 等待，将已挂起的 Run 标为未完成。v26 引入的任务和邮箱记录继续保留。
 
 | 表                                            | 用途                                                                 |
 | --------------------------------------------- | -------------------------------------------------------------------- |
@@ -49,7 +49,7 @@ WorkspaceStore 的 mutationQueue 串行化状态修改，touch 只 upsert 变化
 | agent_task_attempts / agent_attempt_runs        | 执行尝试、执行者、租约、审查历史和显式 Run 关联 |
 | agent_results / agent_task_decisions            | 每次 Attempt 的唯一成果引用和幂等审查记录 |
 | agent_mail                                     | 同 Root 邮箱、用途、主题、线程、回复关系、已读和投递状态 |
-| agent_waits / agent_stopped_sessions            | 持久等待条件、事件游标、截止时间和显式停止标记 |
+| agent_waits / agent_stopped_sessions            | 等待所属 Run、条件、事件游标、截止时间和打断调用，以及显式停止标记 |
 | agent_coordination_events                      | 与领域状态一并写入的事件、分发和投递记录 |
 | agent_runs                                    | 状态、final、顺序、模型/权限快照、pending batch、错误、时间戳、事件序号 |
 | run_messages                                  | 每个 Run 输入消息 JSON                                               |

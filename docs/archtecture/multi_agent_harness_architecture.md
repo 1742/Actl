@@ -31,7 +31,7 @@
 | 全局 Plan | 每个 Root 一份当前 Plan，后写覆盖前写；用于向用户展示和提醒父 Agent，**不参与执行调度** |
 | Task | 独立于 Plan，具有类型、依赖、状态、负责人和成果；发布到共享任务板 |
 | 角色 | Agent 创建时注入 Role Preset（General、Explore、Reviewer 等）；角色不是组织关系和权限的同义词 |
-| Agent 生命周期 | **复用 Session**，每次唤醒创建新 Run；上下文组装和压缩沿用现有 Harness 能力（方案 B） |
+| Agent 生命周期 | **复用 Session**。空闲 Agent 唤醒时创建新 Run，执行中的等待在当前 Run 内恢复。上下文组装和压缩沿用现有 Harness 能力 |
 | 委派 | 父 Agent 可创建新子 Agent、指定现有 Agent，或让 Runtime 自动寻找匹配的空闲 Agent |
 | 自动分配 | 显式指定优先；否则按确定性的 FIFO 匹配同类型空闲 Agent；无匹配者时任务保留 Pending，通知父 Agent 决策 |
 | 认领 | 原子操作；抢同一任务只有一个成功，失败者收到工具结果但**不额外唤醒** |
@@ -52,11 +52,11 @@
 
 **Session**：Agent 的持久会话上下文。**现有上下文装配/压缩机制应复用，不重造**。
 
-**Run**：对某 Session 的一次执行（正常结束、等待/挂起、失败、取消等）；必须有明确终止原因。
+**Run**：对某 Session 的一次执行，可以正常完成、失败或取消。等待工具继续占用本次执行。
 
 **Task**：工作契约及执行状态，由 Task Store 管理；有类型、依赖、指派者、认领者、验收者等。
 
-**Task Attempt**：Task 的一次执行/交付尝试，关联一个或多个 Run（例如等待邮件后恢复执行）；审查退回后开启新 Attempt，而非覆写历史。
+**Task Attempt**：Task 的一次执行/交付尝试，关联一个或多个 Run。等待邮件时继续使用当前 Run；审查退回后开启新 Attempt，而非覆写历史。
 
 **Message**：持久信件（sender、recipient、subject、body、purpose、thread/reply-to、timestamps 等）；表达意图，不是状态机命令。
 
@@ -180,9 +180,9 @@ pending --(依赖满足、分配/领取)--> assigned --(开始执行)--> running
 
 ### 唤醒策略
 
-1. 期望事件满足订阅：恢复 Agent，并带上触发事件。
+1. 期望事件满足订阅：`wait` 在当前 Run 返回匹配的工具结果。等候期间保留执行名额。
 2. 不匹配订阅的来信：`question/urgent` 默认可提前唤醒；`progress/information` 默认入队、不中断（可配置）。
-3. 被非预期消息唤醒时，向 Agent 注入原等待条件和截止时间。Agent 可在此 Run 中回信，随后调用 `wait` 继续原条件和原截止时间。若匹配事件已到，Runtime 可以把结果交给当前 Run。若 Agent 只处理来信就输出 final，保留这轮 Run 的历史和原等待，继续等待匹配事件或超时。只有匹配、超时或显式取消已交付给执行时，后续 final 才能提交为当前 Attempt 的 Result。
+3. 非预期消息让当前工具调用返回 `interrupted`，Mail 进入同一个 Run，持久等待保留原条件和截止时间。Agent 可回信后调用 `wait resume`。若 Agent 直接输出 final，Runtime 在 Run 收尾前补一条 `wait resume` 工具调用并照常执行。如果匹配事件已到，则立即返回结果。只有匹配、超时或显式取消已写成工具结果，后续 final 才能提交为当前 Attempt 的 Result。
 4. 同 Agent 同时只允许一个 Run，其他事件入队；恢复时批处理多封信件，避免 N 条邮件产生 N 次 Run。
 5. 保留事件游标/消费标记，确保已经处理的邮件不会在每次恢复时重复当成新消息。
 6. 支持明确的等待超时与取消；超时是事件/结果，不应伪装成邮件。
@@ -237,7 +237,7 @@ pending --(依赖满足、分配/领取)--> assigned --(开始执行)--> running
 1. Explore 通过 Directory 找到 Reviewer，发送问题邮件（携带 subject/thread）。
 2. Reviewer 收到邮件，若其在等待中且该消息值得打断，Runtime 恢复它；若忙则排队。
 3. Reviewer 通过 `reply` 回答；Explore 等待的 `reply_to` 条件满足。
-4. Runtime 恢复 Explore，同 Session 继续原 Task Attempt。
+4. Explore 在原 Run 收到 `wait` 的工具结果并继续原 Attempt。
 5. 回复不会自动完成任务；Explore 正常交付 final 才进入审查。
 
 ### C. 意外消息打断等待

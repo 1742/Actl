@@ -40,7 +40,6 @@ export interface SessionRecord {
 
 export interface SessionContentRecord {
   runs: AgentRunRecord[];
-  parkingRunId?: string;
   provider_response_ids: Record<string, string[]>;
   contextState?: SessionContextStateRecord;
   compressionRecords: ContextCompressionRecord[];

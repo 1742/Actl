@@ -92,6 +92,7 @@ export interface ResponseMessageItemDto {
 export interface ResponseFunctionCallItemDto {
   id: string;
   type: "function_call";
+  source?: "runtime";
   status: "in_progress" | "completed";
   call_id: string;
   name: string;
@@ -168,7 +169,7 @@ export interface AgentResponseDto {
   id: string;
   object: "response";
   session_id: string;
-  status: "in_progress" | "waiting_permission" | "waiting" | "completed" | "incomplete" | "failed" | "cancelled";
+  status: "in_progress" | "waiting_permission" | "completed" | "incomplete" | "failed" | "cancelled";
   model: string;
   reasoning_effort?: ReasoningEffort;
   permission_mode: PermissionMode;
@@ -183,7 +184,7 @@ export interface AgentResponseDto {
 
 interface StreamEventBase { response_id: string; sequence_number: number }
 export type AgentStreamEvent = StreamEventBase & (
-  | { type: "response.created" | "response.waiting" | "response.completed" | "response.failed" | "response.incomplete" | "response.cancelled"; response: AgentResponseDto }
+  | { type: "response.created" | "response.completed" | "response.failed" | "response.incomplete" | "response.cancelled"; response: AgentResponseDto }
   | { type: "response.output_item.added" | "response.output_item.done"; output_index: number; item: AgentItemDto }
   | { type: "response.content_part.added" | "response.content_part.done"; item_id: string; output_index: number; content_index: number; part: ResponseMessagePartDto }
   | { type: "response.output_text.delta"; item_id: string; output_index: number; content_index: number; delta: string }

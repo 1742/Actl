@@ -18,7 +18,8 @@ export interface AgentWait {
   condition: WaitCondition;
   cursor: number;
   deadline: number;
-  parkRunId: string;
+  runId: string;
+  interruptedCallId: string | null;
 }
 
 export type WaitOutcome =
@@ -55,8 +56,7 @@ export type CoordinationEvent =
   | { id: number; rootId: string; kind: 'task_changed'; taskId: string; state: AgentTaskState }
   | { id: number; rootId: string; kind: 'agent_changed'; agentId: string; state: DirectoryState }
   | { id: number; rootId: string; kind: 'review_requested'; resultId: string; reviewerId: string }
-  | { id: number; rootId: string; kind: 'mail_received'; mailId: string }
-  | { id: number; rootId: string; kind: 'wait_changed'; sessionId: string };
+  | { id: number; rootId: string; kind: 'mail_received'; mailId: string };
 
 export interface ReviewNotification {
   eventId: number;
@@ -64,14 +64,12 @@ export interface ReviewNotification {
   resultId: string;
 }
 
-export interface WaitReceipt {
-  waitId: string;
-  mailId?: string;
-}
+export type WaitReceipt =
+  | { kind: 'settled'; waitId: string; mailId?: string }
+  | { kind: 'interrupted'; waitId: string; callId: string };
 
 export interface RunActivation {
   work: { kind: 'conversation' } | { kind: 'attempt'; attemptId: string };
-  resolvedWaitId?: string;
   mailIds: string[];
   /** agent coordination events ids */
   notificationIds: number[];
@@ -116,11 +114,11 @@ export interface MailboxStore {
 
 export interface WaitStore {
   wait(sessionId: string): AgentWait | undefined;
-  registerWait(wait: Omit<AgentWait, 'id'>): AgentWait;
+  registerWait(wait: Omit<AgentWait, 'id' | 'interruptedCallId'>): AgentWait;
   eventCursor(): number;
   observedTaskState(rootId: string, taskId: string, states: AgentTaskState[], cursor: number, deadline: number): AgentTaskState | undefined;
   observedAgentState(rootId: string, agentId: string, states: DirectoryState[], cursor: number, deadline: number): DirectoryState | undefined;
-  parkWait(sessionId: string, waitId: string, runId: string): void;
+  resumeWait(wait: AgentWait): void;
 }
 
 export interface CoordinationOutbox {

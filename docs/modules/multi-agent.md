@@ -1,6 +1,6 @@
 # 多 Agent 协作
 
-Root 会话及其子 Agent 共享工作目录。每个 Agent 都有持久的身份、角色快照和自己的 Session。同一个 Agent 可以用原 Session 处理多个任务。每次从等待中唤醒时，Runtime 在该 Session 上创建新的 Run，并沿用已有上下文装配和压缩。每个 Agent 一次只执行一个 Run。
+Root 会话及其子 Agent 共享工作目录。每个 Agent 都有持久的身份、角色快照和自己的 Session。同一个 Agent 可以用原 Session 处理多个任务。同一个 Session 沿用已有上下文装配和压缩。每个 Agent 一次只执行一个 Run，等待期间继续使用当前 Run。
 
 ## 状态和持久化
 
@@ -9,18 +9,18 @@ Root 会话及其子 Agent 共享工作目录。每个 Agent 都有持久的身�
 - Attempt 保存一次执行尝试、执行者和审查结论。认领或分派创建 Attempt，一个 Attempt 可以关联多个 Run。单个 Agent 最多拥有一个活跃 Attempt。
 - 正常结束的任务 Run 有非空 final 时，Runtime 创建唯一的 Result 并将 Task 转到 `review_required`。Result 引用 Run 中保存的 final。接受将 Task 转为 `completed`。退回要求理由，会保留原 Attempt 和 Result，并让 Task 重新排队。失败或超时退出的 Run 进入失败处理，可由验收者重试。
 - Mailbox 保存信件、线程、回复关系以及已读和投递状态。同 Root 中的父子和兄弟 Agent 都可通信。派单通过任务事件驱动。进度、问题和回复只更新邮箱。
-- SQLite 在同一事务内写入状态变更和待分发事件。分发可以重试，过期或已撤销 Attempt 的 Run 不能提交成果。停止会取消相关等待和正在执行的任务。重启会接续持久化等待、队列和未分发事件，仍在执行且无已登记等待的 Run 会被标为失败。
+- SQLite 在同一事务内写入状态变更和待分发事件。分发可以重试，过期或已撤销 Attempt 的 Run 不能提交成果。停止会取消相关等待和正在执行的任务。重启会接续队列和未分发事件。异常退出遗留的活跃 Run 会标为失败，其等待会清除，已排队的邮件仍可投递。
 
 任务经历 `pending → assigned → running → review_required → completed`。主动认领会在调用的 Run 开始执行。取消和失败是独立状态。没有匹配 Agent 时任务保留在 Pending，自动分配按任务发布顺序和 Agent 空闲时间选择，角色必须匹配任务类型。指定已有 Agent 时要求其空闲。需要明确指定或新建 Agent 时，发布任务可设置 `autoAssign: false`，然后调用 `delegate_task`。匹配了任务的 Agent 如果仍在等待当前 Attempt，不会接新任务。
 
 ## 等待和唤醒
 
-`wait` 支持等待邮件、Task 状态、Agent 状态和指定 Run 结束。初次调用先检查状态和事件游标，暂无匹配时保存条件及截止时间。暂停的 Run 状态为 `waiting`，释放执行名额。同一 Session 被唤醒后仍能继续原 Attempt。
+`wait` 支持等待邮件、Task 状态、Agent 状态和指定 Run 结束。初次调用持久化条件、事件游标和截止时间。工具在 Root 串行锁外等候，当前 Run 和 Attempt 继续有效，子 Agent 仍占用执行名额。
 
-- 匹配事件和超时会唤醒 Agent。超时以 `timed_out` 交给模型，由模型决定如何继续。
-- 不匹配的 `question` 或 `urgent` 可以提前唤醒，`progress` 和 `information` 默认排队。唤醒时合并可投递消息，保留原等待条件和截止时间。若原事件已就绪，一并交给同一 Run。
-- 处理中途来信后用 `wait` 的 `resume` 继续原等待。此时若已有结果，可在当前 Run 得到。否则再次释放执行名额。若 Agent 直接输出 final，Runtime 保存这轮历史并继续原等待，不提交任务成果。
-- `cancel` 可显式取消等待。即使等待超时，之后到达的回复仍进入邮箱，并根据自身邮件用途参与普通投递。
+- `wait` 在当前 Run 返回工具结果。匹配事件返回 `matched`，到达截止时间返回 `timed_out`。
+- 无关的 `question` 或 `urgent` 可使 `wait` 提前返回 `interrupted`。邮件进入当前 Run 的上下文，原条件和截止时间继续有效。`progress` 和 `information` 默认排队。
+- 处理来信后可调用 `wait resume`。若模型直接输出 final，Runtime 在调用 Stop hook 和提交成果之前生成同样的工具调用，继续原等待。这段模型输出保留在对话历史。
+- 匹配结果、超时或显式 `wait cancel` 的工具结果与等待清除一起提交。超时后到达的回复仍可按自己的用途投递。
 
 ## 工具
 

@@ -2,10 +2,10 @@ import { AgentDirectory, directoryState } from './agent-directory.js';
 import { AgentMailbox, type SendMailInput } from './agent-mailbox.js';
 import { WaitToolOutput } from '../transcript.js';
 import type { AgentMail, AgentTask, AgentTaskInput, AgentTreeEvent, AgentTreeSnapshot, PlanItem, TaskAttempt } from '../../../shared/agent/coordination.js';
-import type { AgentCoordinationRepository, RunActivation, TaskDecision, WaitCondition, WaitOutcome } from '../../repositories/agent-coordination-repository.js';
+import type { AgentCoordinationRepository, AgentWait, RunActivation, TaskDecision, WaitCondition, WaitOutcome } from '../../repositories/agent-coordination-repository.js';
 import type { TranscriptMessage } from '../../model/types.js';
 import { runAlias } from './coordination-references.js';
-import { CoordinationWaits, matchesWaitMail } from './coordination-waits.js';
+import { CoordinationWaits } from './coordination-waits.js';
 import type { ReasoningEffort } from '../../model/catalog-types.js';
 import type { AgentStreamEvent } from '../../../shared/agent/responses.js';
 import type { ProjectSettings } from '../../../shared/agent/sessions.js';
@@ -73,7 +73,7 @@ export class AgentCoordinator {
       if (session.parentSessionId) throw new Error('Start child work through task assignment or a follow-up.');
       this.assertAvailableForUser(session);
       this.state.enableAgent(session.id);
-      const wake = await this.prepareWake(session, this.state.activeTask(session.id, session.id), true);
+      const wake = this.prepareWake(session, this.state.activeTask(session.id, session.id), true);
       const input: PrepareRunInput = async (signal) => [...(wake?.input ?? []), ...await prepareInput(signal)];
       return { running: this.begin(session, input, options, this.eventHandler(session, listener), wake?.activation) };
     });
@@ -164,7 +164,7 @@ export class AgentCoordinator {
       const loaded = await this.workspace.getSession(item.id, session.ownerId);
       if (!loaded) continue;
       const run = loaded.runs.at(-1);
-      members.push({ session: toSessionJson(loaded), waiting: !!this.state.wait(loaded.id), ...(run ? {
+      members.push({ session: toSessionJson(loaded), waiting: directoryState(this.state, loaded) === 'waiting', ...(run ? {
         response: toAgentResponseDto(run, this.services.files.describeForSession.bind(this.services.files)),
         sequenceNumber: run.nextSequenceNumber - 1,
       } : {}) });
@@ -288,39 +288,46 @@ export class AgentCoordinator {
     return this.mutate(session, () => this.mailbox.send(session, input, `mail:${run.id}:${callId}`));
   }
 
-  async wait(session: Session, run: AgentRunRecord, command: WaitCommand) {
+  async wait(session: Session, run: AgentRunRecord, callId: string, command: WaitCommand, signal?: AbortSignal) {
     const root = session.rootSessionId ?? session.id;
-    return this.serialized(root, async () => {
+    const request = await this.serialized(root, async (): Promise<
+      { kind: 'no_wait' } | { kind: 'cancel'; wait: AgentWait } | { kind: 'wait'; wait: AgentWait; ready?: WaitOutcome | undefined }
+    > => {
+      signal?.throwIfAborted();
       this.assertOpen(session);
       const current = this.state.wait(session.id);
-      if (command.action === 'cancel') {
-        return current
-          ? new WaitToolOutput({ status: 'cancelled' }, { waitId: current.id })
-          : { status: 'no_wait' };
-      }
+      if (current && current.runId !== run.id) throw new Error('The wait belongs to another run.');
+      if (command.action === 'cancel') return current ? { kind: 'cancel', wait: current } : { kind: 'no_wait' };
       if (command.action === 'resume') {
-        if (!current) return { status: 'no_wait' };
-        const outcome = await this.waits.outcome(current);
-        if (outcome) {
-          return new WaitToolOutput(this.presentOutcome(session, outcome, true), {
-            waitId: current.id, ...(outcome.kind === 'mail' ? { mailId: outcome.message.id } : {}),
-          });
-        }
-        this.state.parkWait(session.id, current.id, run.id);
-        return { status: 'waiting', deadline: current.deadline };
+        if (!current) return { kind: 'no_wait' };
+        this.state.resumeWait(current);
+        this.changed(root);
+        return { kind: 'wait', wait: current };
       }
       if (current) throw new Error('You have an existing wait. Use action resume to keep its deadline or cancel it explicitly.');
       const condition = await this.resolveCondition(session, command.condition);
+      signal?.throwIfAborted();
       const deadline = Date.now() + command.timeoutMs;
-      const wait = { rootId: root, sessionId: session.id, condition, cursor: this.state.eventCursor(), deadline, parkRunId: run.id };
-      const outcome = await this.waits.outcome(wait, true);
-      if (outcome) {
-        const includeBody = outcome.kind === 'mail' && !this.state.pendingMail(session.id).some((mail) => mail.id === outcome.message.id);
-        return this.presentOutcome(session, outcome, includeBody);
-      }
-      this.state.registerWait(wait);
+      const draft = { rootId: root, sessionId: session.id, condition, cursor: this.state.eventCursor(), deadline, runId: run.id };
+      const ready = await this.waits.outcome(draft, true);
+      signal?.throwIfAborted();
+      const wait = this.state.registerWait(draft);
       this.changed(root);
-      return { status: 'waiting', deadline };
+      return { kind: 'wait', wait, ready };
+    });
+    if (request.kind === 'no_wait') return { status: 'no_wait' };
+    const wait = request.wait;
+    if (request.kind === 'cancel') return new WaitToolOutput({ status: 'cancelled' }, { kind: 'settled', waitId: wait.id });
+
+    const outcome = request.ready ?? await this.waits.until(wait, signal);
+    if (outcome.kind === 'interrupted') {
+      return new WaitToolOutput({
+        status: 'interrupted', waitingFor: this.describeCondition(session, wait.condition), deadline: wait.deadline,
+        messages: outcome.mail.map((mail) => this.mailbox.present(session, mail, false)),
+      }, { kind: 'interrupted', waitId: wait.id, callId });
+    }
+    return new WaitToolOutput(this.presentOutcome(session, outcome), {
+      kind: 'settled', waitId: wait.id, ...(outcome.kind === 'mail' ? { mailId: outcome.message.id } : {}),
     });
   }
 
@@ -394,9 +401,9 @@ export class AgentCoordinator {
     };
   }
 
-  private presentOutcome(session: Session, outcome: WaitOutcome, includeBody = false) {
+  private presentOutcome(session: Session, outcome: WaitOutcome) {
     switch (outcome.kind) {
-      case 'mail': return { status: 'matched', kind: outcome.kind, ...this.mailbox.present(session, outcome.message, includeBody) };
+      case 'mail': return { status: 'matched', kind: outcome.kind, ...this.mailbox.present(session, outcome.message) };
       case 'task_state': return { status: 'matched', ...outcome, task: `#${this.requireTask(session, outcome.task).number}` };
       case 'agent_state': return { status: 'matched', ...outcome, agent: this.directory.alias(session, outcome.agent) };
       case 'run_finished': return { status: 'matched', ...outcome, run: runAlias(outcome.run) };
@@ -510,7 +517,7 @@ export class AgentCoordinator {
   private eventHandler(session: Session, listener?: (event: AgentStreamEvent) => void): AgentDomainEventHandler {
     const rootSessionId = session.rootSessionId ?? session.id;
     return (run, event) => {
-      const terminal = event.type === 'run_waiting' || event.type === 'run_completed' || event.type === 'run_failed' || event.type === 'run_cancelled' || event.type === 'run_incomplete';
+      const terminal = event.type === 'run_completed' || event.type === 'run_failed' || event.type === 'run_cancelled' || event.type === 'run_incomplete';
       const events = this.events.project(run, event);
       this.events.publish({ type: 'response', rootSessionId, sessionId: session.id, events });
       if (terminal || event.type === 'run_created' || event.type === 'permissions_requested') this.changed(rootSessionId);
@@ -550,6 +557,7 @@ export class AgentCoordinator {
       try {
         if (event.kind === 'run_finished') this.state.finishRun(event.runId);
         this.state.dispatchEvent(event.id);
+        this.waits.notify(event.rootId);
         roots.add(event.rootId);
         this.events.publish({ type: 'changed', rootSessionId: event.rootId });
       } catch (error) {
@@ -592,7 +600,7 @@ export class AgentCoordinator {
       const active = runtime?.preparing || runtime?.executing || member.runs.some((run) => !isTerminalRun(run));
 
       if (task?.attempt) {
-        if (active || this.state.wait(member.id) || task.status === 'assigned') {
+        if (active || task.status === 'assigned') {
           this.state.renewAttempt(task.attempt.id, Date.now());
         } else if (expired.has(task.attempt.id)) {
           this.state.failAttempt(task.attempt.id, 'The attempt lease expired before execution resumed.');
@@ -602,7 +610,7 @@ export class AgentCoordinator {
 
       if (active || (member.parentSessionId && this.activeChildren(rootId) >= MAX_ACTIVE_CHILDREN)) continue;
 
-      const wake = await this.prepareWake(member, task);
+      const wake = this.prepareWake(member, task);
       if (!wake) continue;
       const previous = await this.modelSource(member, task, wake.mail);
       if (!previous) {
@@ -623,22 +631,13 @@ export class AgentCoordinator {
     }
   }
 
-  /** Push mail, wait, review, task assign prompt in context. */
-  private async prepareWake(session: Session, task: AgentTask | undefined, explicit = false) {
-    const wait = this.state.wait(session.id);
-    const outcome = wait && await this.waits.outcome(wait);
-    const mail = this.state.pendingMail(session.id).filter((item) => !wait || outcome || !matchesWaitMail(wait, item));
+  private prepareWake(session: Session, task: AgentTask | undefined, explicit = false) {
+    const mail = this.state.pendingMail(session.id);
     const reviews = this.state.reviewNotifications(session.id);
-    const interruption = mail.some((item) => item.purpose === 'question' || item.purpose === 'urgent');
-    if (!explicit && !outcome && !interruption && (wait || (!reviews.length && task?.status !== 'assigned'))) return undefined;
+    const hasUrgentMail = mail.some((item) => item.purpose === 'question' || item.purpose === 'urgent');
+    if (!explicit && !hasUrgentMail && !reviews.length && task?.status !== 'assigned') return undefined;
 
     const input = mail.map((item) => mailInput(item, session, item.replyTo ? this.state.mail(item.rootId, item.replyTo)?.number : undefined));
-    if (wait && outcome) {
-      input.unshift(runtimeInput(`Wait finished: ${JSON.stringify(this.presentOutcome(session, outcome, outcome.kind === 'mail' &&
-        !mail.some((item) => item.id === outcome.message.id)))}.`));
-    } else if (wait) {
-      input.unshift(runtimeInput(`The original wait is still active until ${new Date(wait.deadline).toISOString()}: ${JSON.stringify(this.describeCondition(session, wait.condition))}. After handling other input, use wait action resume or explicitly cancel it.`));
-    }
     if (reviews.length) {
       input.push(runtimeInput(`Results are ready for review: ${reviews.map((event) => `#${event.taskNumber}`).join(', ')}. Use tasks show.`));
     }
@@ -649,7 +648,6 @@ export class AgentCoordinator {
     }
     const activation: RunActivation = {
       work: task?.attempt ? { kind: 'attempt', attemptId: task.attempt.id } : { kind: 'conversation' },
-      ...(wait && outcome ? { resolvedWaitId: wait.id } : {}),
       mailIds: mail.map((item) => item.id), notificationIds: reviews.map((item) => item.eventId),
     };
     return { activation, input, mail };
@@ -716,6 +714,7 @@ export class AgentCoordinator {
   }
 
   private changed(rootSessionId: string): void {
+    this.waits.notify(rootSessionId);
     this.events.publish({ type: 'changed', rootSessionId });
     this.requestDispatch();
   }

@@ -1,5 +1,42 @@
 import type { DatabaseSync } from 'node:sqlite';
 
+const WAIT_TABLE = `
+CREATE TABLE agent_waits (
+  id TEXT PRIMARY KEY, root_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  session_id TEXT NOT NULL UNIQUE REFERENCES sessions(id) ON DELETE CASCADE,
+  run_id TEXT NOT NULL UNIQUE REFERENCES agent_runs(id) ON DELETE CASCADE,
+  condition_json TEXT NOT NULL CHECK(json_valid(condition_json)), deadline INTEGER NOT NULL,
+  event_cursor INTEGER NOT NULL, interrupted_call_id TEXT
+) STRICT;
+`;
+
+const RUN_FINISHED_TRIGGER = `
+CREATE TRIGGER agent_run_finished AFTER UPDATE OF status ON agent_runs
+WHEN OLD.status IN ('in_progress','waiting_permission') AND NEW.status NOT IN ('in_progress','waiting_permission')
+BEGIN
+  DELETE FROM agent_waits WHERE run_id = NEW.id;
+  INSERT INTO agent_coordination_events(root_id, kind, subject_id)
+  SELECT COALESCE(root_session_id, id), 'run_finished', NEW.id FROM sessions WHERE id = NEW.session_id
+  ON CONFLICT DO NOTHING;
+END;
+`;
+
+const RUN_STATE_CHANGED_TRIGGER = `
+CREATE TRIGGER agent_run_state_changed AFTER UPDATE OF status ON agent_runs
+WHEN NEW.status <> OLD.status
+BEGIN
+  INSERT INTO agent_coordination_events(root_id, kind, subject_id, state)
+  SELECT COALESCE(root_session_id, id), 'agent_changed', id,
+    CASE
+      WHEN EXISTS (SELECT 1 FROM agent_stopped_sessions WHERE session_id = NEW.session_id) THEN 'stopped'
+      WHEN NEW.status = 'in_progress' THEN 'running'
+      WHEN NEW.status = 'waiting_permission' THEN 'waiting_permission'
+      ELSE 'idle'
+    END
+  FROM sessions WHERE id = NEW.session_id;
+END;
+`;
+
 export const COORDINATION_SCHEMA = `
 CREATE TABLE agent_tasks (
   id TEXT PRIMARY KEY, number INTEGER NOT NULL, root_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
@@ -51,17 +88,13 @@ CREATE TABLE agent_mail (
 ) STRICT;
 CREATE INDEX agent_mail_delivery_idx ON agent_mail(recipient_id, delivered, number);
 CREATE INDEX agent_mail_reply_idx ON agent_mail(reply_to);
-CREATE TABLE agent_waits (
-  id TEXT PRIMARY KEY, root_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-  session_id TEXT NOT NULL UNIQUE REFERENCES sessions(id) ON DELETE CASCADE,
-  condition_json TEXT NOT NULL CHECK(json_valid(condition_json)), deadline INTEGER NOT NULL, event_cursor INTEGER NOT NULL, park_run_id TEXT NOT NULL
-) STRICT;
+${WAIT_TABLE}
 CREATE TABLE agent_stopped_sessions (
   session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE
 ) STRICT;
 CREATE TABLE agent_coordination_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT, root_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-  kind TEXT NOT NULL CHECK(kind IN ('task_changed','run_finished','review_requested','mail_received','wait_changed','agent_changed')),
+  kind TEXT NOT NULL CHECK(kind IN ('task_changed','run_finished','review_requested','mail_received','agent_changed')),
   subject_id TEXT NOT NULL, recipient_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
   state TEXT, created_at INTEGER NOT NULL DEFAULT (CAST(unixepoch('subsec') * 1000 AS INTEGER)),
   dispatched INTEGER NOT NULL DEFAULT 0, delivered INTEGER NOT NULL DEFAULT 0
@@ -74,14 +107,7 @@ CREATE INDEX agent_events_inbox_idx ON agent_coordination_events(recipient_id, i
 CREATE UNIQUE INDEX agent_single_active_run_idx ON agent_runs(session_id)
   WHERE status IN ('in_progress', 'waiting_permission');
 
-CREATE TRIGGER agent_run_finished AFTER UPDATE OF status ON agent_runs
-WHEN OLD.status IN ('in_progress','waiting_permission') AND NEW.status NOT IN ('in_progress','waiting_permission')
-BEGIN
-  INSERT INTO agent_coordination_events(root_id, kind, subject_id)
-  SELECT COALESCE(root_session_id, id), 'run_finished', NEW.id FROM sessions WHERE id = NEW.session_id
-  ON CONFLICT DO NOTHING;
-END;
-
+${RUN_FINISHED_TRIGGER}
 CREATE TRIGGER agent_session_removing BEFORE DELETE ON sessions
 WHEN OLD.parent_session_id IS NOT NULL
 BEGIN
@@ -103,20 +129,7 @@ BEGIN
   SELECT COALESCE(root_session_id, id), 'agent_changed', id, 'running' FROM sessions WHERE id = NEW.session_id;
 END;
 
-CREATE TRIGGER agent_run_state_changed AFTER UPDATE OF status ON agent_runs
-WHEN NEW.status <> OLD.status
-BEGIN
-  INSERT INTO agent_coordination_events(root_id, kind, subject_id, state)
-  SELECT COALESCE(root_session_id, id), 'agent_changed', id,
-    CASE
-      WHEN EXISTS (SELECT 1 FROM agent_stopped_sessions WHERE session_id = NEW.session_id) THEN 'stopped'
-      WHEN NEW.status = 'in_progress' THEN 'running'
-      WHEN NEW.status = 'waiting_permission' THEN 'waiting_permission'
-      WHEN NEW.status = 'waiting' AND EXISTS (SELECT 1 FROM agent_waits WHERE session_id = NEW.session_id) THEN 'waiting'
-      ELSE 'idle'
-    END
-  FROM sessions WHERE id = NEW.session_id;
-END;
+${RUN_STATE_CHANGED_TRIGGER}
 `;
 
 export function replaceAgentCoordination(db: DatabaseSync): void {
@@ -135,5 +148,32 @@ export function replaceAgentCoordination(db: DatabaseSync): void {
       WHERE item_type = 'message' AND json_extract(payload_json, '$.source.kind') = 'user'
         AND json_type(payload_json, '$.source.assignmentId') IS NOT NULL;
     ${COORDINATION_SCHEMA}
+  `);
+}
+export function bindWaitsToActiveRuns(db: DatabaseSync): void {
+  db.exec(`
+    DROP TRIGGER agent_run_finished;
+    DROP TRIGGER agent_run_state_changed;
+    DROP TABLE agent_waits;
+    ${WAIT_TABLE}
+
+    DELETE FROM agent_coordination_events WHERE kind = 'wait_changed';
+
+    -- Reconcile parked v26 runs after upgrading to the active-run protocol.
+    UPDATE agent_coordination_events SET dispatched = 0
+      WHERE kind = 'run_finished' AND subject_id IN (
+        SELECT run.id FROM agent_runs run WHERE run.status = 'waiting'
+          AND NOT EXISTS (SELECT 1 FROM agent_runs later WHERE later.session_id = run.session_id AND later.run_order > run.run_order)
+      );
+    INSERT OR IGNORE INTO agent_coordination_events(root_id, kind, subject_id)
+      SELECT COALESCE(session.root_session_id, session.id), 'run_finished', run.id
+      FROM agent_runs run JOIN sessions session ON session.id = run.session_id WHERE run.status = 'waiting'
+        AND NOT EXISTS (SELECT 1 FROM agent_runs later WHERE later.session_id = run.session_id AND later.run_order > run.run_order);
+    UPDATE agent_runs SET status = 'incomplete', error_code = 'runtime_interrupted',
+      error_message = 'The previous runtime suspended this run before a workspace upgrade.'
+      WHERE status = 'waiting';
+
+    ${RUN_FINISHED_TRIGGER}
+    ${RUN_STATE_CHANGED_TRIGGER}
   `);
 }
