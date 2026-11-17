@@ -38,7 +38,7 @@ WorkspaceStore 的 mutationQueue 串行化状态修改，touch 只 upsert 变化
 
 ## 3. 表与关系
 
-当前 [initial-schema.ts](../../src/agent-core/repositories/sqlite/initial-schema.ts) generation 为 multi-user-multi-model，version 为 **27**。从 v26 升级时清除旧的跨 Run 等待，将已挂起的 Run 标为未完成。v26 引入的任务和邮箱记录继续保留。
+当前 [initial-schema.ts](../../src/agent-core/repositories/sqlite/initial-schema.ts) generation 为 multi-user-multi-model，version 为 **28**。v28 使用会话标题作为子代理名字，并按 Root 建立唯一索引。升级时保留已有的有效唯一名字，为重名加序号，为缺少有效名字的子会话补名。
 
 | 表                                            | 用途                                                                 |
 | --------------------------------------------- | -------------------------------------------------------------------- |

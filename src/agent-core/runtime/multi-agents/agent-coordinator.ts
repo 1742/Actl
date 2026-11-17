@@ -25,7 +25,7 @@ import { AgentProfileCatalog, DEFAULT_AGENT_PROFILE } from './agent-profile-cata
 const MAX_ACTIVE_CHILDREN = 3;
 const MAX_CHILDREN = 12;
 
-export type DelegationTarget = { kind: 'agent'; agent: string } | { kind: 'create'; role: string };
+export type DelegationTarget = { kind: 'agent'; agent: string } | { kind: 'create'; role: string; name?: string | undefined };
 export type WaitCommand =
   | { action: 'start'; condition: WaitCondition; timeoutMs: number }
   | { action: 'resume' }
@@ -227,7 +227,7 @@ export class AgentCoordinator {
         if (!this.isAvailable(child)) throw new Error('The selected agent is not idle.');
       } else {
         if (target.role !== task.type) throw new Error('The new role must match the task type.');
-        child = await this.createChild(parent, run, callId, task, target.role);
+        child = await this.createChild(parent, run, callId, target);
         created = true;
       }
       if (!child) {
@@ -389,13 +389,13 @@ export class AgentCoordinator {
       instructions: task.instructions, acceptanceCriteria: task.acceptanceCriteria, autoAssign: task.autoAssign,
       blockedBy: this.state.tasks(task.rootSessionId).filter((item) => task.blockedBy.includes(item.id)).map((item) => `#${item.number}`),
       ...(task.status === 'pending' ? { pendingReason: task.ready ? 'unassigned' : 'dependencies' } : {}),
-      reviewer: this.directory.alias(session, task.reviewerSessionId), ...(task.attempt ? { attempt: this.presentAttempt(session, task.attempt) } : {}),
+      reviewer: this.directory.reference(session, task.reviewerSessionId), ...(task.attempt ? { attempt: this.presentAttempt(session, task.attempt) } : {}),
     };
   }
 
   private presentAttempt(session: Session, attempt: TaskAttempt) {
     return {
-      agent: this.directory.alias(session, attempt.ownerSessionId), outcome: attempt.outcome,
+      agent: this.directory.reference(session, attempt.ownerSessionId), outcome: attempt.outcome,
       startedAt: attempt.startedAt, reason: attempt.reason,
       ...(attempt.result ? { result: { run: runAlias(attempt.result.runId), output: attempt.result.output } } : {}),
     };
@@ -405,7 +405,7 @@ export class AgentCoordinator {
     switch (outcome.kind) {
       case 'mail': return { status: 'matched', kind: outcome.kind, ...this.mailbox.present(session, outcome.message) };
       case 'task_state': return { status: 'matched', ...outcome, task: `#${this.requireTask(session, outcome.task).number}` };
-      case 'agent_state': return { status: 'matched', ...outcome, agent: this.directory.alias(session, outcome.agent) };
+      case 'agent_state': return { status: 'matched', ...outcome, agent: this.directory.reference(session, outcome.agent) };
       case 'run_finished': return { status: 'matched', ...outcome, run: runAlias(outcome.run) };
       case 'timed_out': return { status: 'timed_out' };
     }
@@ -413,11 +413,11 @@ export class AgentCoordinator {
 
   private describeCondition(session: Session, condition: WaitCondition) {
     switch (condition.kind) {
-      case 'mail': return { ...condition, from: condition.from && this.directory.alias(session, condition.from),
+      case 'mail': return { ...condition, from: condition.from && this.directory.reference(session, condition.from),
         replyTo: condition.replyTo && `m#${this.state.mail(session.rootSessionId ?? session.id, condition.replyTo)?.number}` };
       case 'task_state': return { ...condition, task: `#${this.requireTask(session, condition.task).number}` };
-      case 'agent_state': return { ...condition, agent: this.directory.alias(session, condition.agent) };
-      case 'run_finished': return { ...condition, agent: this.directory.alias(session, condition.agent), run: runAlias(condition.run) };
+      case 'agent_state': return { ...condition, agent: this.directory.reference(session, condition.agent) };
+      case 'run_finished': return { ...condition, agent: this.directory.reference(session, condition.agent), run: runAlias(condition.run) };
     }
   }
 
@@ -442,17 +442,17 @@ export class AgentCoordinator {
     return idle.sort((a, b) => idleSince(a).localeCompare(idleSince(b)) || a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id));
   }
 
-  private async createChild(parent: Session, run: AgentRunRecord, callId: string, task: AgentTask, role: string): Promise<Session> {
+  private async createChild(parent: Session, run: AgentRunRecord, callId: string, target: Extract<DelegationTarget, { kind: 'create' }>): Promise<Session> {
     const children = this.workspace.descendants(parent.id).filter((item) => item.parentSessionId === parent.id);
     const existing = children.find((item) => item.originRunId === run.id && item.originCallId === callId);
     if (existing) return (await this.workspace.getSession(existing.id, parent.ownerId))!;
     if (children.length >= MAX_CHILDREN) throw new Error(`At most ${MAX_CHILDREN} child sessions per conversation.`);
-    const profile = await this.profiles.resolve(role);
+    const profile = await this.profiles.resolve(target.role);
     const { model, reasoningEffort } = this.childModel(run, profile);
     await this.services.models.resolveSnapshot(parent.ownerId, model, reasoningEffort);
     this.assertOpen(parent);
     return this.workspace.createSession(parent.ownerId, {
-      ...(parent.projectId ? { projectId: parent.projectId } : {}), title: task.title, profile,
+      ...(parent.projectId ? { projectId: parent.projectId } : {}), ...(target.name === undefined ? {} : { title: target.name }), profile,
       parentSessionId: parent.id, originRunId: run.id, originCallId: callId,
     });
   }

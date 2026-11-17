@@ -49,6 +49,8 @@ const workspaceStoreStatuses = {
   project_workspaces_invalid: 400,
   project_not_found: 404,
   session_not_found: 404,
+  agent_name_invalid: 400,
+  agent_name_conflict: 409,
 } as const satisfies Record<WorkspaceStoreError["code"], number>;
 
 const agentLoopStatuses = {

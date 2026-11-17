@@ -1,9 +1,10 @@
 import type { DatabaseSync } from "node:sqlite";
 import { nowIso } from "../../utils.js";
 import { COORDINATION_SCHEMA } from "./coordination-schema.js";
+import { AGENT_NAME_INDEX } from "./migrations/v27-to-v28.js";
 
 export const SQLITE_SCHEMA_GENERATION = "multi-user-multi-model";
-export const SQLITE_SCHEMA_VERSION = 27;
+export const SQLITE_SCHEMA_VERSION = 28;
 
 // New databases start at the current version. Historical upgrades live in migrations/.
 const METADATA_SQL = `
@@ -28,11 +29,12 @@ CREATE TABLE sessions(
   id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
   title TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
   parent_session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
-  root_session_id TEXT, origin_run_id TEXT, origin_call_id TEXT,
+  root_session_id TEXT, origin_run_id TEXT, origin_call_id TEXT, agent_name_key TEXT,
   agent_profile_json TEXT CHECK(agent_profile_json IS NULL OR json_valid(agent_profile_json))
 ) STRICT;
 CREATE INDEX sessions_root_idx ON sessions(root_session_id);
 CREATE UNIQUE INDEX sessions_delegation_idx ON sessions(origin_run_id, origin_call_id);
+${AGENT_NAME_INDEX}
 `;
 
 const RUNS_SQL = `

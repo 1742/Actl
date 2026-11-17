@@ -19,6 +19,7 @@ import { buildModelTranscript, findUnresolvedToolCalls, type AgentRunRecord } fr
 import { createRandomId, nowIso } from "../utils.js";
 import type { ModelExecutionSnapshot } from "../model/catalog-types.js";
 import type { RunPermissionSnapshot } from "../permissions/engine.js";
+import { agentNameKey, availableAgentName, MAX_AGENT_NAME_LENGTH, validAgentName } from "./multi-agents/agent-name.js";
 
 export type Project = ProjectRecord;
 export type FileChange = FileChangeRecord;
@@ -36,6 +37,8 @@ export type WorkspaceStoreErrorCode =
   | "project_cwd_invalid"
   | "project_workspaces_invalid"
   | "project_not_found"
+  | "agent_name_invalid"
+  | "agent_name_conflict"
   | "session_not_found";
 
 export class WorkspaceStoreError extends Error {
@@ -283,16 +286,22 @@ export class WorkspaceStore {
       if (parent && parent.projectId !== (input.projectId ?? null)) throw new Error('Child project must match its parent.');
       if (input.profile && !parent) throw new Error('Agent profiles apply to child sessions.');
       const id = createRandomId('session');
+      const rootSessionId = parent?.rootSessionId ?? parent?.id ?? id;
+      let title = input.title;
+      if (parent) {
+        const usedNames = this.childNameKeys(rootSessionId);
+        title = title === undefined ? availableAgentName(input.profile?.name, usedNames) : this.requireAgentName(title, usedNames);
+      }
       const metadata: SessionRecord = {
         id,
-        rootSessionId: parent?.rootSessionId ?? parent?.id ?? id,
+        rootSessionId,
         ...(parent ? { parentSessionId: parent.id } : {}),
         ...(input.originRunId ? { originRunId: input.originRunId } : {}),
         ...(input.originCallId ? { originCallId: input.originCallId } : {}),
         ...(input.profile ? { profile: structuredClone(input.profile) } : {}),
         ownerId,
         projectId: input.projectId ?? null,
-        ...(input.title === undefined ? {} : { title: input.title }),
+        ...(title === undefined ? {} : { title }),
         created_at: now,
         updated_at: now,
       };
@@ -322,17 +331,39 @@ export class WorkspaceStore {
       const index = this.sessionsRecord.findIndex((item) => item.id === id && item.ownerId === ownerId);
       const metadata = this.sessionsRecord[index];
       if (!metadata) throw new WorkspaceStoreError("session_not_found", "Session not found.");
+      const nextTitle = metadata.parentSessionId
+        ? this.requireAgentName(title, this.childNameKeys(metadata.rootSessionId ?? metadata.parentSessionId, id)) : title;
       const replacement: SessionRecord = {
         ...metadata,
-        ...(title === undefined ? {} : { title }),
+        ...(nextTitle === undefined ? {} : { title: nextTitle }),
         updated_at: nowIso(),
       };
-      if (title === undefined) delete replacement.title;
+      if (nextTitle === undefined) delete replacement.title;
       await this.sessionRepository.updateSession(replacement);
       this.sessionsRecord[index] = replacement;
       updated = this.applyMetadata(replacement);
     });
     return updated;
+  }
+
+  /** Return other children title/name */
+  private childNameKeys(rootId: string, exceptId?: string): Set<string> {
+    return new Set(this.sessionsRecord.flatMap((session) =>
+      session.parentSessionId && session.rootSessionId === rootId && session.id !== exceptId && session.title
+        ? [agentNameKey(session.title)] : [],
+    ));
+  }
+
+  private requireAgentName(title: string | undefined, usedNames: ReadonlySet<string>): string {
+    const name = validAgentName(title);
+    if (!name) {
+      throw new WorkspaceStoreError("agent_name_invalid",
+        `Choose a non-reserved agent name of 1–${MAX_AGENT_NAME_LENGTH} characters on one line, without a leading @.`);
+    }
+    if (usedNames.has(agentNameKey(name))) {
+      throw new WorkspaceStoreError("agent_name_conflict", `An agent named "${name}" already exists in this conversation.`);
+    }
+    return name;
   }
 
   async deleteSession(ownerId: string, id: string): Promise<void> {

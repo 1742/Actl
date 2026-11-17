@@ -3,6 +3,7 @@ import { agentMailPurposes, agentTaskStates } from '../../../shared/agent/coordi
 import { directoryStates } from '../../repositories/agent-coordination-repository.js';
 import type { ToolProvider, ToolDefinition, ToolCallContext } from '../registry.js';
 import type { AgentCoordinator } from '../../runtime/multi-agents/agent-coordinator.js';
+import { MAX_AGENT_NAME_LENGTH } from '../../runtime/multi-agents/agent-name.js';
 
 const ref = z.string().trim().min(1).max(200);
 const role = z.string().regex(/^[a-z][a-z0-9-]*$/).max(80);
@@ -24,7 +25,8 @@ const tasks = z.discriminatedUnion('action', [
 ]);
 const delegate = z.object({ task: ref, target: z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('agent'), agent: ref }).strict(),
-  z.object({ kind: z.literal('create'), role }).strict(),
+  z.object({ kind: z.literal('create'), role, name: z.string().trim().min(1).max(MAX_AGENT_NAME_LENGTH).optional()
+    .describe('A unique name in this root, without the @ prefix. Defaults to an available role-based name.') }).strict(),
 ]).optional() }).strict();
 
 const body = z.string().trim().min(1).max(16000);
@@ -72,11 +74,11 @@ export class AgentTeamToolProvider implements ToolProvider {
     return [
       { name: 'list_agent_profiles', inputSchema: empty, description: 'Read available role IDs and descriptions.' },
       { name: 'tasks', inputSchema: tasksInput, description: 'Manage shared tasks. Use #number references. Publish with a role ID as type; autoAssign defaults to true. A child may claim matching ready tasks. The reviewer can accept or reject a submitted result, cancel a task, or retry a failed task. Show includes result and attempt history.' },
-      { name: 'delegate_task', inputSchema: delegate, description: 'Root: delegate a ready task to an idle matching child alias, create a child of the matching role, or omit target to request automatic matching. For an explicit target, publish with autoAssign false first.' },
-      { name: 'agents', inputSchema: empty, description: 'Find same-root agents by short alias, role, status, current task, and recent run.' },
-      { name: 'mail', inputSchema: mailInput, description: 'Communicate with agents in the same root. Use their alias or @parent. Use m#number to read/reply or filter by thread. Use question or urgent for input that may interrupt a wait. Mail does not change task state.' },
+      { name: 'delegate_task', inputSchema: delegate, description: 'Root: delegate a ready task to an idle matching child by @name, create a child of the matching role with a unique name, or omit target for automatic matching. Publish with autoAssign false before explicit delegation. Use the returned attempt.agent to address the child.' },
+      { name: 'agents', inputSchema: empty, description: 'List same-root agents by name and @name reference, with role, status, current task, and recent run.' },
+      { name: 'mail', inputSchema: mailInput, description: 'Use @name or @parent for recipient and sender filters. Use m#number to read/reply or filter by thread. Use question or urgent for input that may interrupt a wait. Mail does not change task state.' },
       { name: 'wait', inputSchema: waitInput, execution: { concurrency: 'exclusive', standalone: true },
-        description: 'Call alone. Start a wait for mail, a task state, an agent state, or a finished run. The current run waits for a matching event, timeout, or an unrelated question or urgent message. After handling an interruption, call resume to keep the original deadline or cancel explicitly.' },
+        description: 'Call alone. Start a wait for mail, a task state, an agent state, or a finished run. Use @name or @parent to identify the sender or agent. After handling an interruption, call resume to keep the original deadline or cancel explicitly.' },
       { name: 'interrupt_agent', inputSchema: interrupt, description: 'Root: stop a child, including its active wait and task execution.' },
       { name: 'plan', inputSchema: planInput, description: 'Read or replace the root plan using its revision. The plan is independent of task scheduling.' },
     ];

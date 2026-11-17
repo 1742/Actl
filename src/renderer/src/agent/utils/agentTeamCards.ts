@@ -95,7 +95,7 @@ export function agentTeamCard(block: AgentToolTimelineBlock, kind: CardKind): Ag
       const task = output === undefined ? args : data;
       const target = record(args.target);
       const owner = string(record(data.attempt).agent);
-      const selected = string(target.agent) || string(target.role);
+      const selected = string(target.agent) || string(target.name) || string(target.role);
       const taskStatus = string(data.reason) === 'unassigned'
         ? status('agentToolCards.noMatchingAgent', 'warning') : taskState(data);
       rows = [{

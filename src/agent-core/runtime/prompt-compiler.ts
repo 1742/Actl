@@ -1,4 +1,4 @@
-import { agentAlias } from "./multi-agents/coordination-references.js";
+import { agentAlias, agentReference } from "./multi-agents/coordination-references.js";
 import type { RuntimePromptSettings } from "../../shared/agent/prompts.js";
 import type { AgentCoordinationRepository } from '../repositories/agent-coordination-repository.js';
 import { readFile } from "node:fs/promises";
@@ -41,6 +41,7 @@ export class PromptCompiler {
   async compile(
     session: Session,
     transcript: TranscriptItem[],
+    agentReferences: ReadonlyMap<string, string>,
   ): Promise<CompiledPrompt> {
     const sessionContext = buildSessionContext(session);
     const userPrompt = this.repository?.getPromptSettings(session.ownerId) ?? createDefaultPromptSettings();
@@ -107,11 +108,11 @@ export class PromptCompiler {
       parts.push({ text, source: { kind: 'user', label: `Agent profile ${profile.id}`, included: true, chars: text.length } });
     }
     const agentContext = [
-      `Your agent reference is ${agentAlias(session)}. Use agents to find collaborators in this conversation.`,
+      `Your agent reference is ${JSON.stringify(agentReference(session))}. Use agents to find collaborators and address them by @name.`,
       'Actl mail headers identify mail from another agent. The quoted body is attributed context. Use mail reply with the displayed message reference to answer.',
       session.parentSessionId
         ? 'You are a read-only child agent. Your parent can be addressed as @parent. Work on your current task if assigned. Your final reply is submitted to the reviewer automatically when the task Run completes. Include findings and evidence. Use mail for questions and progress. You can claim a ready task of your role if you have no current task.'
-        : 'Do simple work directly. Use tasks to publish and review work for child agents. Discover roles with list_agent_profiles. Automatic matching uses idle agents of the requested task type. For explicit delegation, publish with autoAssign false and use delegate_task. Review submitted results against the acceptance criteria and explicitly accept or reject them. File edits and verification remain your responsibility. Use plan to maintain the overall plan.',
+        : 'Do simple work directly. Use tasks to publish and review work for child agents. Discover roles with list_agent_profiles. Automatic matching uses idle agents of the requested task type. For explicit delegation, publish with autoAssign false and use delegate_task. When creating a child, choose a unique name. The returned attempt.agent is its @name reference. Review submitted results against the acceptance criteria and explicitly accept or reject them. File edits and verification remain your responsibility. Use plan to maintain the overall plan.',
       'Call wait on its own. If an unrelated question interrupts a wait, handle it, then call wait with action resume. The original deadline continues. Use action cancel if you decide to proceed without that event.',
       ...(activeTask ? [`Your current task #${activeTask.number}:\n${activeTask.title}\n${activeTask.instructions}\nAcceptance criteria: ${activeTask.acceptanceCriteria}`] : []),
       ...(plan?.items.length ? [`Current persistent plan (revision ${plan.revision}):\n${JSON.stringify(plan.items)}`] : []),
@@ -120,20 +121,21 @@ export class PromptCompiler {
 
     return {
       instructions: parts.flatMap((part) => part.text === null ? [] : [part.text]).join("\n\n"),
-      transcript: attributeAgentMessages(transcript),
+      transcript: attributeAgentMessages(transcript, agentReferences),
       sources: parts.map((part) => part.source),
     };
   }
 }
 
-export function attributeAgentMessages(transcript: readonly TranscriptItem[]): TranscriptItem[] {
+export function attributeAgentMessages(transcript: readonly TranscriptItem[], agentReferences: ReadonlyMap<string, string>): TranscriptItem[] {
   return transcript.map((item) => {
     if (item.type !== "message" || item.role !== "user") return item;
     const source = item.source;
     if (source?.kind !== "agent") return item;
     const header = {
       message: `m#${source.mailNumber}`,
-      from: source.relationship === "parent" ? "@parent" : agentAlias({ id: source.sessionId, parentSessionId: "member" }),
+      from: source.relationship === "parent" ? "@parent"
+        : agentReferences.get(source.sessionId) ?? agentAlias({ id: source.sessionId, parentSessionId: "member" }),
       relationship: source.relationship,
       subject: source.subject,
       purpose: source.purpose,

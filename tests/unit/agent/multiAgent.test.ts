@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { DatabaseSync } from 'node:sqlite';
 import { openWorkspaceDatabase } from '../../../src/agent-core/repositories/sqlite/database';
+import { migrateAgentNames } from '../../../src/agent-core/repositories/sqlite/migrations/v27-to-v28';
 import { SqliteAgentCoordinationRepository } from '../../../src/agent-core/repositories/sqlite/agent-coordination-repository';
 import { SqliteModelCatalogRepository } from '../../../src/agent-core/repositories/sqlite/model-catalog-repository';
 import { SqliteProjectRepository } from '../../../src/agent-core/repositories/sqlite/project-repository';
@@ -135,6 +136,91 @@ function post(f: Awaited<ReturnType<typeof fixture>>, from: string, to: string, 
     body, purpose, replyTo, author: 'model' }, randomUUID());
 }
 
+test('child names are unique per root across creation, renaming and SQLite writes', async () => {
+  const f = await fixture(async () => [text('Idle')]);
+  try {
+    const create = () => childOf(f, 'Checker');
+    const [first, duplicate] = await Promise.allSettled([create(), create()]);
+    assert.ok(first.status === 'fulfilled');
+    assert.ok(duplicate.status === 'rejected');
+    assert.equal(duplicate.reason.code, 'agent_name_conflict');
+    const child = first.value;
+    await assert.rejects(childOf(f, ' ＣＨＥＣＫＥＲ '), { code: 'agent_name_conflict' });
+    await assert.rejects(childOf(f, 'parent'), { code: 'agent_name_invalid' });
+
+    const sibling = await childOf(f, 'Reviewer');
+    await assert.rejects(f.workspace.updateSession(owner, sibling.id, 'checker'), { code: 'agent_name_conflict' });
+    await assert.rejects(f.workspace.updateSession(owner, child.id, undefined), { code: 'agent_name_invalid' });
+    assert.throws(() => f.database.prepare('UPDATE sessions SET title = ?, agent_name_key = ? WHERE id = ?')
+      .run('Checker', 'checker', sibling.id), /UNIQUE/);
+
+    const otherRoot = await f.workspace.createSession(owner, { projectId: f.project.id });
+    const other = await f.workspace.createSession(owner, { projectId: f.project.id, parentSessionId: otherRoot.id, title: 'Checker' });
+    assert.equal((await f.coordinator.directory.resolve(otherRoot, '@checker')).id, other.id);
+
+    await f.workspace.updateSession(owner, child.id, ' 审查员 A ');
+    assert.equal(child.title, '审查员 A');
+    assert.equal((await f.coordinator.directory.resolve(f.root, '@审查员 a')).id, child.id);
+    await assert.rejects(f.coordinator.directory.resolve(f.root, '@Checker'), /does not belong/);
+    assert.equal((await f.coordinator.directory.resolve(f.root, `@a-${child.id.slice(-10)}`)).id, child.id);
+
+    const firstDefault = await f.workspace.createSession(owner, { projectId: f.project.id, parentSessionId: f.root.id });
+    const secondDefault = await f.workspace.createSession(owner, { projectId: f.project.id, parentSessionId: f.root.id });
+    assert.equal(firstDefault.title, 'Agent');
+    assert.equal(secondDefault.title, 'Agent (2)');
+    await f.restart();
+    assert.equal((await f.coordinator.directory.resolve(f.root, '@审查员 A')).id, child.id);
+  } finally { await f.close(); }
+});
+
+test('name migration preserves original unique titles and numbers older duplicates', () => {
+  const db = new DatabaseSync(':memory:');
+  try {
+    db.exec(`
+      CREATE TABLE sessions(id TEXT PRIMARY KEY, root_session_id TEXT, parent_session_id TEXT, title TEXT, created_at TEXT);
+      INSERT INTO sessions VALUES
+        ('root', 'root', NULL, 'Root title', '1'),
+        ('first', 'root', 'root', 'Reviewer', '2'),
+        ('duplicate', 'root', 'root', 'reviewer', '3'),
+        ('suffix', 'root', 'root', 'Reviewer (2)', '4'),
+        ('other', 'other-root', 'other-root', 'Reviewer', '5'),
+        ('missing', 'root', 'root', NULL, '6');
+    `);
+    migrateAgentNames(db);
+    assert.deepEqual(db.prepare('SELECT title FROM sessions ORDER BY created_at').all().map((row) => row.title),
+      ['Root title', 'Reviewer', 'reviewer (3)', 'Reviewer (2)', 'Reviewer', 'Agent']);
+    assert.throws(() => db.prepare('UPDATE sessions SET agent_name_key = ? WHERE id = ?').run('reviewer', 'duplicate'), /UNIQUE/);
+  } finally { db.close(); }
+});
+
+test('named references work for mail send, search and wait in the model tools', async () => {
+  const f = await fixture(async (request) => {
+    if (isChild(request)) {
+      assert.match(request.instructions, /@审查员 A/);
+      if (!calls(request, 'mail').length) return [team('mail', { action: 'reply', message: 'm#1', body: 'Answer' })];
+      return [text('Replied')];
+    }
+    const mailCalls = calls(request, 'mail');
+    if (!mailCalls.length) return [team('mail', { action: 'send', to: '@审查员 A', subject: 'Question', body: 'Ready?', purpose: 'question' })];
+    if (!calls(request, 'wait').length) {
+      assert.equal(toolOutput<{ to: string }>(request, 'mail').to, '@审查员 A');
+      return [team('wait', { action: 'start', timeoutMs: 4000, condition: { kind: 'mail', from: '@审查员 a', replyTo: 'm#1' } })];
+    }
+    if (mailCalls.length === 1) {
+      assert.equal(toolOutput<{ from: string }>(request, 'wait').from, '@审查员 A');
+      return [team('mail', { action: 'search', from: '@审查员 A' })];
+    }
+    assert.deepEqual(toolOutput<Array<{ body: string }>>(request, 'mail').map(({ body }) => body), ['Answer']);
+    return [text('Received')];
+  });
+  try {
+    await childOf(f, '审查员 A');
+    const run = await f.coordinator.start(f.root, input('Ask the reviewer'), options);
+    assert.equal(run.status, 'completed');
+    assert.equal(run.finalOutput, 'Received');
+  } finally { await f.close(); }
+});
+
 test('task claims are atomic and results are idempotent per attempt', async () => {
   const f = await fixture(async () => [text('Idle')]);
   try {
@@ -252,7 +338,8 @@ test('tools publish, delegate and wait for review in the original root run', asy
       return [text('Accepted')];
     }
     if (!calls(request, 'tasks').length) return [publish('Review')];
-    if (!calls(request, 'delegate_task').length) return [call('delegate_task', { task: '#1', target: { kind: 'create', role: 'review' } })];
+    if (!calls(request, 'delegate_task').length) return [call('delegate_task', { task: '#1', target: { kind: 'create', role: 'review', name: '审查员' } })];
+    assert.equal(toolOutput<{ attempt: { agent: string } }>(request, 'delegate_task').attempt.agent, '@审查员');
     return [team('wait', { action: 'start', condition: { kind: 'task_state', task: '#1', states: ['review_required'] } })];
   });
   try {
@@ -268,6 +355,7 @@ test('tools publish, delegate and wait for review in the original root run', asy
     await assert.rejects(access(path.join(f.projectPath, 'forbidden.txt')));
     const child = (await f.workspace.getSession(task.attempt!.ownerSessionId))!;
     assert.equal(child.runs.length, 1);
+    assert.equal(child.title, '审查员');
     assert.equal(child.runs[0]!.input[0]?.source?.kind, 'runtime');
     assert.deepEqual(f.coordination.pendingMail(f.root.id), []);
   } finally { await f.close(); }

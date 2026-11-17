@@ -29,7 +29,7 @@ async function startFixture(processCommands: Map<string, string>, explicitWorksp
       const user = payload.messages.filter((message) => message.role === 'user').at(-1);
       const text = typeof user?.content === 'string' ? user.content : JSON.stringify(user?.content) ?? '';
       const waitPeer = payload.messages.flatMap((message) => message.role === 'user'
-        ? [/same-run-wait-fixture:([\w-]+)/.exec(JSON.stringify(message.content))?.[1]] : []).findLast(Boolean);
+        ? [/same-run-wait-fixture:(@[\w-]+)/.exec(JSON.stringify(message.content))?.[1]] : []).findLast(Boolean);
       response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
       const id = `fixture-${randomUUID()}`;
       const emit = (delta: object, finishReason: string | null = null) => response.write(`data: ${JSON.stringify({
@@ -68,21 +68,22 @@ async function startFixture(processCommands: Map<string, string>, explicitWorksp
         const created = envelope?.output?.status === 'pending';
         if (!envelope || created) {
           const name = created ? 'delegate_task' : 'tasks';
-          const input = created ? { task: envelope.output.task, target: { kind: 'create', role: 'review' } }
+          const input = created ? { task: envelope.output.task, target: { kind: 'create', role: 'review', name: 'ReviewBot' } }
             : { command: { action: 'publish', type: 'review', autoAssign: false,
                 title: 'multi-child-fixture', instructions: 'Review the example.', acceptanceCriteria: 'Return review findings.' } };
           emit({ tool_calls: [{ index: 0, id: `call-${randomUUID()}`, type: 'function', function: { name, arguments: JSON.stringify(input) } }] }, 'tool_calls');
         } else {
           assert.ok(envelope.ok && envelope.output?.status === 'assigned');
+          assert.equal(envelope.output.attempt.agent, '@ReviewBot');
           emit({ content: 'Review delegated' }, 'stop');
         }
         done();
       } else if (text.includes('wait-child-fixture:') && payload.messages.at(-1)?.role !== 'tool') {
-        const match = /wait-child-fixture:([\w-]+):([\w-]+)/.exec(text);
+        const match = /wait-child-fixture:(@[\w-]+):([\w-]+)/.exec(text);
         assert.ok(match);
-        const [, sessionId, runId] = match;
+        const [, agent, runId] = match;
         emit({ tool_calls: [{ index: 0, id: `call-${randomUUID()}`, type: 'function', function: {
-          name: 'wait', arguments: JSON.stringify({ command: { action: 'start', condition: { kind: 'run_finished', agent: sessionId, run: runId } } }),
+          name: 'wait', arguments: JSON.stringify({ command: { action: 'start', condition: { kind: 'run_finished', agent, run: runId } } }),
         } }] }, 'tool_calls');
         done();
       } else if (text.includes('wait-child-fixture:')) {
@@ -449,6 +450,7 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
       const tree = await request<AgentTreeSnapshot>({ operation: 'agents.tree', params: { sessionId: rootSession.id } });
       const child = tree.members.find((member) => member.session.parentSessionId === rootSession.id)!;
       assert.ok(child);
+      assert.equal(child.session.title, 'ReviewBot');
       assert.deepEqual(child.session.profile, { id: 'review', name: 'Review' });
       const taskInput = child.response?.input[0];
       assert.equal(taskInput?.source?.kind, 'runtime');
@@ -461,7 +463,7 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
       const count = events.length;
       const followUp = await request<{ sessionId: string; messageId: string; accepted: boolean }>({
         operation: 'agents.message', params: { sessionId: rootSession.id },
-        body: { targetSessionId: child.session.id, message: 'Continue with a short summary.' },
+        body: { targetSessionId: '@ReviewBot', message: 'Continue with a short summary.' },
       });
       assert.equal(followUp.sessionId, child.session.id);
       assert.ok(followUp.accepted && followUp.messageId);
@@ -484,7 +486,7 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
       assert.equal(history.responses[1]?.input[0]?.source?.kind, 'user');
 
       const waitEvents: AgentStreamEvent[] = [];
-      const parentRun = success(await run(`wait-child-fixture:${child.session.id}:${firstRun.id}`, (events) => waitEvents.push(...events), rootSession.id));
+      const parentRun = success(await run(`wait-child-fixture:@reviewbot:${firstRun.id}`, (events) => waitEvents.push(...events), rootSession.id));
       assert.equal(parentRun.status, 'completed');
       const waitCall = parentRun.output.find((item) => item.type === 'function_call' && item.name === 'wait');
       assert.ok(waitCall?.type === 'function_call');
@@ -503,7 +505,7 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
       assert.deepEqual(parentHistory.responses.at(-1)?.output.find((item) => item.id === waitResult.id), waitResult);
 
       const activeEvents: AgentStreamEvent[] = [];
-      const active = run(`same-run-wait-fixture:${child.session.id}`, (events) => activeEvents.push(...events), rootSession.id);
+      const active = run('same-run-wait-fixture:@ReviewBot', (events) => activeEvents.push(...events), rootSession.id);
       const followChild = (purpose: 'question' | 'information') => request({
         operation: 'agents.message', params: { sessionId: rootSession.id },
         body: { targetSessionId: child.session.id, message: `wait-mail-fixture:${purpose}` },

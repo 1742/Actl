@@ -21,7 +21,7 @@ Actl 的协作范围是同一个根会话（Root）。Root 及其子 Agent 共�
 任务的正常路径是 `pending → assigned → running → review_required → completed`。子 Agent 主动认领时，在调用工具的 Run 中直接进入 `running`。
 
 - 根 Agent 发布任务并担任验收者。依赖只能引用同 Root 的已有任务，发布时确定，由此形成有向无环图。任务在所有依赖验收后可分配。依赖失败或取消时，任务保持 `pending`。
-- 根 Agent 可委派给指定的空闲子 Agent、创建匹配角色的子 Agent，或请求自动匹配。需要指定目标时，发布任务可设置 `autoAssign: false`，再调用 `delegate_task`。自动分配按任务发布顺序和 Agent 空闲时间匹配，角色 ID 必须与任务类型一致。当前没有匹配者时，任务会留在 `pending` 等待后续调度。
+- 根 Agent 可委派给指定的空闲子 Agent、创建匹配角色的子 Agent，或请求自动匹配。需要指定目标时，发布任务可设置 `autoAssign: false`，再调用 `delegate_task`。新建目标可传 `{ kind: 'create', role: 'review', name: '代码审查' }`，父 Agent 从 `attempt.agent` 得到 `@代码审查`。自动分配按任务发布顺序和 Agent 空闲时间匹配，角色 ID 必须与任务类型一致。当前没有匹配者时，任务会留在 `pending` 等待后续调度。
 - 分配与主动认领使用同一套原子占有规则。一个 Task 最多有一个有效执行者，一个 Agent 最多有一个活跃 Attempt。竞争失败的调用直接收到工具错误。等待中的 Agent 继续占有当前 Attempt。
 - 关联 Run 正常结束并产出非空 final 时，Runtime 写入 Result，把任务推进到 `review_required`，并向验收者发送含成果引用的系统通知。验收者通过 `tasks show` 查看成果，显式接受后任务进入 `completed`，Runtime 据此重新计算依赖方的可分配性。
 - 退回时记录理由，保留原 Attempt 和 Result，任务回到 `pending`。再次分配或认领创建新 Attempt，可以复用原 Session。Run 失败、未完整结束或缺少非空 final 时，Attempt 进入失败处理，验收者可重试。显式取消会终止相关的活跃 Attempt。
@@ -30,7 +30,9 @@ Actl 的协作范围是同一个根会话（Root）。Root 及其子 Agent 共�
 
 同 Root 的父子和兄弟 Agent 可以定向通信。邮件包含发件人、收件人、主题、正文、用途和时间，可选关联原邮件。搜索支持发件人、关键词、主题、时间范围、用途、已读状态和线程。未指定原邮件的回复仅在待回复的问题唯一时自动关联。
 
-`agents` 返回同 Root 成员的名称、别名、角色、状态、当前任务以及最近一次 Run。工具使用 `#1`、`m#2`、`@root`、`@parent` 和 Agent 短别名等引用。角色别名有多个匹配时，调用方需从目录中选择具体 Agent。Runtime 在处理命令时校验 Root 和所需权限。
+`agents` 返回同 Root 成员的名称、`@名字` 引用、角色、状态、当前任务和最近一次 Run。子代理的名字就是会话标题。创建和改名都要求在同一个 Root 内唯一，比较时忽略首尾空白、大小写与全半角差异。创建时省略 `name` 会从角色名称生成可用名字，必要时加序号。名字支持中文和空格。系统引用 `@root`、`@parent` 和 `@self` 保留。
+
+发信的 `to`、查信的 `from`、等待的 `from` 或 `agent` 都可用 `@名字`。例如查找 `@代码审查` 发来的邮件可传 `{ action: 'search', from: '@代码审查' }`。任务和邮件仍用 `#1`、`m#2` 等引用。已保存的邮件和等待关联 Session ID，改名后继续指向同一个 Agent。
 
 运行中的 Agent 在模型步骤间接收可投递邮件。空闲 Agent 可以由问题或紧急邮件启动，同一次启动会合并待投递内容。普通信息和进度邮件默认等到下一次执行或有匹配的等待条件。
 

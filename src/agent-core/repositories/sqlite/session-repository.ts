@@ -3,6 +3,7 @@ import type { RunActivation, WaitReceipt } from "../agent-coordination-repositor
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import type { AgentRunRecord } from "../../runtime/agent-domain.js";
 import { agentProfileSchema } from "../../runtime/multi-agents/agent-profile-catalog.js";
+import { agentNameKey } from "../../runtime/multi-agents/agent-name.js";
 import { nowIso } from "../../utils.js";
 import type {
   ContextCompressionRecord, FileChangeRecord, ModelInvocationUsageRecord, SessionContentRecord,
@@ -69,15 +70,18 @@ export class SqliteSessionRepository implements SessionRepository {
 
   async createSession(session: SessionRecord): Promise<void> {
     this.db.prepare(`INSERT INTO sessions(id, owner_id, project_id, title, created_at, updated_at,
-      parent_session_id, root_session_id, origin_run_id, origin_call_id, agent_profile_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      parent_session_id, root_session_id, origin_run_id, origin_call_id, agent_profile_json, agent_name_key)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(session.id, session.ownerId, session.projectId, session.title ?? null, session.created_at, session.updated_at,
         session.parentSessionId ?? null, session.rootSessionId ?? session.id, session.originRunId ?? null, session.originCallId ?? null,
-        session.profile ? JSON.stringify(session.profile) : null);
+        session.profile ? JSON.stringify(session.profile) : null,
+        session.parentSessionId && session.title ? agentNameKey(session.title) : null);
   }
 
   async updateSession(session: SessionRecord): Promise<void> {
-    assertChanged(this.db.prepare("UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?")
-      .run(session.title ?? null, session.updated_at, session.id), "Session", session.id);
+    assertChanged(this.db.prepare("UPDATE sessions SET title = ?, agent_name_key = ?, updated_at = ? WHERE id = ?")
+      .run(session.title ?? null, session.parentSessionId && session.title ? agentNameKey(session.title) : null,
+        session.updated_at, session.id), "Session", session.id);
   }
 
   async deleteSession(sessionId: string): Promise<void> {
