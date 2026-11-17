@@ -6,6 +6,7 @@ import { useAgentStore } from '../../../src/renderer/src/agent/stores/agent';
 import { localClient } from '../../../src/renderer/src/agent/services/localClient';
 import { conversationMessageKind, isMessageItem, normalizeResponseContext } from '../../../src/renderer/src/agent/utils/aiResponse';
 import { buildAgentOutputGroups } from '../../../src/renderer/src/agent/utils';
+import { agentTeamCard, agentTeamCardKind } from '../../../src/renderer/src/agent/utils/agentTeamCards';
 import type { AgentResponseDto, PendingPermissionBatchDto, AgentStreamEvent, ResponseMessageItemDto } from '../../../src/shared/agent/responses';
 import type { SessionContext } from '../../../src/shared/agent/sessions';
 
@@ -41,6 +42,63 @@ function setup(id: string) {
   return store;
 }
 const approve = (id: string, batch = 'a') => resolveAgentPermissionBatch([{ permission_id: `permission-${batch}`, decision: 'approve' }], id);
+
+function toolCard(name: string, output: unknown) {
+  const kind = agentTeamCardKind(name);
+  assert.ok(kind);
+  const card = agentTeamCard({
+    type: 'tool', key: name, call: { type: 'function_call', name, arguments: '{}' },
+    presentation: 'agent_team', arguments: {}, status: 'success', result: { ok: true, output, raw: output },
+  }, kind);
+  assert.ok(card);
+  return card;
+}
+
+test('team tool cards select readable fields from results', () => {
+  const role = toolCard('list_agent_profiles', [{ name: 'Review', id: 'review', description: 'Find regressions', internal: 'hidden' }]);
+  assert.deepEqual(role.rows[0], { title: 'Review', reference: 'review', body: 'Find regressions' });
+  const agents = toolCard('agents', [
+    { title: 'Reviewer', agent: '@a-review', role: 'review', status: 'waiting', currentTask: '#2', recentActivity: { run: 'hidden' } },
+    { agent: '@root', role: 'general', status: 'idle', currentTask: null },
+  ]);
+  assert.equal(agents.rows[0]?.title, 'Reviewer');
+  assert.equal(agents.rows[0]?.reference, '@a-review');
+  assert.equal(agents.rows[0]?.status?.tone, 'warning');
+  assert.deepEqual(agents.rows[0]?.fields?.map(({ value }) => value), ['review', '#2']);
+  assert.equal(agents.rows[1]?.title, '@root');
+  assert.ok(toolCard('agents', []).empty);
+  const plan = toolCard('plan', { revision: 3, items: [{ id: 'hidden', text: 'Review changes', status: 'completed' }] });
+  assert.equal(plan.rows[0]?.title, 'Review changes');
+  assert.equal(plan.rows[0]?.status?.tone, 'success');
+
+  const task = { title: 'Review changes', task: '#2', status: 'review_required', reviewer: 'hidden',
+    acceptanceCriteria: 'Report regressions', attempt: { agent: '@review', result: { run: 'hidden', output: 'All checks passed.' } } };
+  const taskList = toolCard('tasks', [task]);
+  const taskDetail = toolCard('tasks', { ...task, attempts: [{ raw: 'hidden' }] });
+  assert.equal(taskList.rows[0]?.result, undefined);
+  assert.equal(taskDetail.rows[0]?.result, 'All checks passed.');
+  assert.ok(taskDetail.rows[0]?.fields?.some(({ value }) => value === 'Report regressions'));
+  const delegation = toolCard('delegate_task', { ...task, status: 'assigned' });
+  assert.equal(delegation.rows[0]?.fields?.[0]?.value, '@review');
+  assert.equal(delegation.rows[0]?.result, undefined);
+  assert.equal(toolCard('delegate_task', { ...task, status: 'pending', reason: 'unassigned' }).rows[0]?.status?.tone, 'warning');
+
+  const message = { message: 'm#3', from: '@review', to: '@root', subject: 'Review complete',
+    body: 'See the report.', thread: 'hidden', createdAt: 1 };
+  const mail = toolCard('mail', [message]);
+  assert.equal(mail.rows[0]?.detail, '@review → @root');
+  assert.equal(mail.rows[0]?.body, 'See the report.');
+  assert.ok(toolCard('mail', []).empty);
+  const interrupted = toolCard('wait', { status: 'interrupted', waitingFor: { kind: 'mail', replyTo: 'm#1' },
+    messages: [message], deadline: 'hidden' });
+  assert.match(interrupted.rows[0]?.detail ?? '', /m#1/);
+  assert.equal(interrupted.rows[1]?.title, 'Review complete');
+  const matched = toolCard('wait', { status: 'matched', kind: 'run_finished', run: 'hidden', output: 'Done' });
+  assert.equal(matched.rows[0]?.result, 'Done');
+  for (const card of [role, agents, plan, taskList, taskDetail, delegation, mail, interrupted, matched]) {
+    assert.doesNotMatch(JSON.stringify(card), /hidden/);
+  }
+});
 
 test('tree and request streams deduplicate approval events and reject stale snapshots', () => {
   const id = 'local:session'; const store = setup(id);

@@ -4,7 +4,9 @@ import { computed, ref } from 'vue';
 import { ChevronRight } from '@lucide/vue';
 import type { AgentToolTimelineBlock } from './types';
 import { agentToolHeading } from '../../utils';
+import { agentTeamCard, agentTeamCardKind } from '../../utils/agentTeamCards';
 import AgentWebSearchBlock from '../web-search/AgentWebSearchBlock.vue';
+import AgentTeamToolCard from './AgentTeamToolCard.vue';
 
 const props = defineProps<{ block: AgentToolTimelineBlock }>();
 
@@ -16,6 +18,11 @@ const expanded = ref(false);
 const heading = computed(() => agentToolHeading(props.block));
 const title = computed(() => heading.value.title);
 const summary = computed(() => heading.value.detail);
+const teamCardKind = computed(() => agentTeamCardKind(props.block.call.name));
+const teamCard = computed(() => {
+  const kind = teamCardKind.value;
+  if (kind && props.block.status !== 'error') return agentTeamCard(props.block, kind);
+});
 const command = computed(() => stringAt(args.value, 'command'));
 
 const readContent = computed(() => stringAt(outputRecord.value, 'content'));
@@ -44,18 +51,19 @@ const resultCount = computed(() => {
   }
   return undefined;
 });
-const hasDetails = computed(() =>
-  Boolean(
-    props.block.result?.error ||
+const hasDetails = computed(() => {
+  if (props.block.result?.error) return true;
+  if (teamCardKind.value) return Boolean(teamCard.value);
+  return Boolean(
     command.value ||
     readContent.value ||
     writeContent.value ||
     shellOutput.value ||
     patches.value.length ||
     detailText.value ||
-    rawArguments.value,
-  ),
-);
+    rawArguments.value
+  );
+});
 const meta = computed(() => {
   if (props.block.status === 'waiting_permission') return tr('ui.awaitingPermission');
   if (props.block.status === 'preparing') return tr('ui.preparingArguments');
@@ -145,6 +153,7 @@ function formatUnknown(value: unknown) {
       class="group flex max-w-full items-center gap-2 py-0.5 text-left"
       type="button"
       :disabled="!hasDetails"
+      :aria-expanded="hasDetails ? expanded : undefined"
       @click="expanded = !expanded"
     >
       <span class="flex min-w-0 items-baseline gap-2">
@@ -176,6 +185,8 @@ function formatUnknown(value: unknown) {
       >
         {{ block.result.error }}
       </div>
+
+      <AgentTeamToolCard v-else-if="teamCard" :card="teamCard" />
 
       <div
         v-else-if="block.presentation === 'web_fetch' && block.status === 'success' && readContent"

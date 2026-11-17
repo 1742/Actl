@@ -34,13 +34,14 @@ const toolPresentations: Readonly<Record<string, AgentToolPresentation>> = {
 };
 
 const agentTeamToolTitles: Readonly<Record<string, string>> = {
-  list_agent_profiles: 'agents.listProfiles',
-  tasks: 'agents.tasks',
-  delegate_task: 'agents.delegateTask',
-  agents: 'agents.directory',
-  mail: 'agents.mail',
-  wait: 'agents.wait',
-  plan: 'agents.plan',
+  list_agent_profiles: 'Roles',
+  tasks: 'Tasks',
+  delegate_task: 'Delegate',
+  agents: 'Agents',
+  mail: 'Mail',
+  wait: 'Wait',
+  interrupt_agent: 'Interrupt',
+  plan: 'Plan',
 };
 
 const toolLabels: Record<AgentToolPresentation, string> = {
@@ -273,10 +274,8 @@ export function agentToolHeading(block: AgentToolTimelineBlock, view: 'row' | 'a
         : '';
       break;
     }
-    case 'agent_team': {
-      const title = agentTeamToolTitles[block.call.name];
-      return { title: title ? tr(title) : toolLabels.agent_team, detail: agentTeamToolDetail(block) };
-    }
+    case 'agent_team':
+      return { title: agentTeamToolTitles[block.call.name] ?? toolLabels.agent_team, detail: agentTeamToolDetail(block) };
     case 'generic':
       detail = block.call.name || (view === 'row' ? 'tool' : '');
       break;
