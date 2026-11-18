@@ -505,9 +505,10 @@ export function recordAgentWaitReceipt(db: DatabaseSync, run: AgentRunRecord, re
     db.prepare('UPDATE agent_waits SET interrupted_call_id = ? WHERE id = ?').run(receipt.callId, receipt.waitId);
   } else {
     db.prepare('DELETE FROM agent_waits WHERE id = ?').run(receipt.waitId);
-    if (receipt.mailId) {
-      db.prepare('UPDATE agent_mail SET delivered = 1 WHERE id = ? AND recipient_id = ?').run(receipt.mailId, run.sessionId);
-    }
+  }
+  if (receipt.mailIds?.length) {
+    const deliver = db.prepare('UPDATE agent_mail SET delivered = 1 WHERE id = ? AND recipient_id = ?');
+    for (const mailId of receipt.mailIds) deliver.run(mailId, run.sessionId);
   }
   db.prepare("INSERT INTO agent_coordination_events(root_id, kind, subject_id, state) VALUES (?, 'agent_changed', ?, 'running')")
     .run(String(wait.root_id), run.sessionId);

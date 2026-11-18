@@ -54,7 +54,8 @@ async function startFixture(processCommands: Map<string, string>, explicitWorksp
           assert.equal(result.body, 'Expected answer');
           emit({ content: 'Completed in the original run' }, 'stop');
         } else if (result?.status === 'interrupted') {
-          assert.match(text, /Unexpected question/);
+          assert.equal(result.messages?.[0]?.body, 'Unexpected question');
+          assert.doesNotMatch(text, /Unexpected question/);
           emit({ content: 'Handled the interruption' }, 'stop');
         } else invoke('wait', { command: { action: 'start', timeoutMs: 10000, condition: { kind: 'mail', from: waitPeer, purpose: 'information' } } });
         done();
@@ -593,6 +594,7 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
       assert.equal(final.status, 'completed');
       assert.equal(activeEvents.filter((event) => event.type === 'response.created').length, 1);
       assert.match(JSON.stringify(final.output.at(-1)), /Completed in the original run/);
+      assert.ok(!final.output.some((item) => item.type === 'message' && item.source?.kind === 'agent' && item.source.subject === 'Wait test'));
       const resumedCall = final.output.find((item) => item.type === 'function_call' && item.source === 'runtime');
       assert.ok(resumedCall?.type === 'function_call');
       assert.deepEqual(JSON.parse(resumedCall.arguments), { command: { action: 'resume' } });

@@ -2,6 +2,7 @@
 import { tr } from '../../../i18n';
 import { computed, ref } from 'vue';
 import { ChevronRight } from '@lucide/vue';
+import MessageOutput from '../responses/MessageOutput.vue';
 import UnknownOutput from '../responses/UnknownOutput.vue';
 import type { AgentOutputBlock } from './types';
 import { agentOutputHint } from '../../utils';
@@ -12,9 +13,10 @@ import AgentWebSearchBlock from '../web-search/AgentWebSearchBlock.vue';
 const props = defineProps<{
   blocks: Exclude<AgentOutputBlock, { type: 'message' }>[];
   responseActive?: boolean;
+  showDetails?: boolean;
 }>();
 const expanded = ref(false);
-const itemCount = computed(() => props.blocks.filter((block) => block.type !== 'reasoning').length);
+const itemCount = computed(() => props.blocks.filter((block) => block.type !== 'reasoning' && block.type !== 'context_message').length);
 const lastBlock = computed(() => props.blocks.at(-1));
 const lastItemHint = computed(() => {
   return lastBlock.value ? agentOutputHint(lastBlock.value) : '';
@@ -50,7 +52,7 @@ const statusLabel = computed(() => {
       : tr('ui.running');
   return itemCount.value
     ? tr('dynamic.executedCount', { count: itemCount.value })
-    : tr('ui.thought');
+    : props.blocks.some((block) => block.type === 'context_message') ? tr('agents.runContext') : tr('ui.thought');
 });
 const singleReasoningBlock = computed(() =>
   props.blocks.length === 1 && props.blocks[0]?.type === 'reasoning' ? props.blocks[0] : undefined,
@@ -66,9 +68,11 @@ const singleReasoningBlock = computed(() =>
     />
     <template v-else>
       <button
+        v-if="!showDetails"
         class="group flex min-w-0 max-w-full items-center gap-1.5 py-0.5 text-left text-sm text-gray-500 hover:text-gray-700"
         type="button"
         :aria-label="visibleHint || statusLabel"
+        :aria-expanded="expanded"
         @click="expanded = !expanded"
       >
         <span
@@ -85,7 +89,7 @@ const singleReasoningBlock = computed(() =>
           :class="{ 'rotate-90': expanded }"
         />
       </button>
-      <div v-if="expanded" class="mt-2 flex min-w-0 flex-col gap-2">
+      <div v-if="showDetails || expanded" class="flex min-w-0 flex-col gap-2" :class="{ 'mt-2': !showDetails }">
         <template v-for="block in blocks" :key="block.key">
           <AgentReasoningBlock
             v-if="block.type === 'reasoning'"
@@ -93,6 +97,7 @@ const singleReasoningBlock = computed(() =>
             :completed="groupStatus === 'completed'"
           />
           <AgentToolBlock v-else-if="block.type === 'tool'" :block="block" />
+          <MessageOutput v-else-if="block.type === 'context_message'" :item="block.item" :show-tools="false" />
           <AgentWebSearchBlock v-else-if="block.type === 'web_search'" :item="block.item" />
           <div v-else-if="block.type === 'permission'" class="text-xs text-amber-600">
             {{

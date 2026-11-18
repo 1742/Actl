@@ -332,11 +332,11 @@ export class AgentCoordinator {
     if (outcome.kind === 'interrupted') {
       return new WaitToolOutput({
         status: 'interrupted', waitingFor: this.describeCondition(session, wait.condition), deadline: wait.deadline,
-        messages: outcome.mail.map((mail) => this.mailbox.present(session, mail, false)),
-      }, { kind: 'interrupted', waitId: wait.id, callId });
+        messages: outcome.mail.map((mail) => this.mailbox.present(session, mail)),
+      }, { kind: 'interrupted', waitId: wait.id, callId, mailIds: outcome.mail.map(({ id }) => id) });
     }
     return new WaitToolOutput(this.presentOutcome(session, outcome), {
-      kind: 'settled', waitId: wait.id, ...(outcome.kind === 'mail' ? { mailId: outcome.message.id } : {}),
+      kind: 'settled', waitId: wait.id, ...(outcome.kind === 'mail' ? { mailIds: [outcome.message.id] } : {}),
     });
   }
 

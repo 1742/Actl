@@ -65,8 +65,8 @@ export interface ReviewNotification {
 }
 
 export type WaitReceipt =
-  | { kind: 'settled'; waitId: string; mailId?: string }
-  | { kind: 'interrupted'; waitId: string; callId: string };
+  | { kind: 'settled'; waitId: string; mailIds?: readonly string[] }
+  | { kind: 'interrupted'; waitId: string; callId: string; mailIds: readonly string[] };
 
 export interface RunActivation {
   work: { kind: 'conversation' } | { kind: 'attempt'; attemptId: string };

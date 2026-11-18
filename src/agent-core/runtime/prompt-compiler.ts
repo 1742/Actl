@@ -120,7 +120,7 @@ export class PromptCompiler {
       ] : [
         'Do simple work directly. Use tasks to publish and review work for child agents. Discover roles with list_agent_profiles. In an editing mode, delegate scoped file changes to the edit role and give each task clear ownership of its files. Child edits take effect immediately in the shared workspace. Sequence tasks that modify the same files. For explicit delegation, publish with autoAssign false and use delegate_task. The returned attempt.agent is its @name reference. Review submitted results against the acceptance criteria and explicitly accept or reject them. Use plan to maintain the overall plan.',
       ]),
-      'Call wait on its own. If an unrelated question interrupts a wait, handle it, then call wait with action resume. The original deadline continues. Use action cancel if you decide to proceed without that event.',
+      'Call wait on its own. If a question or urgent message interrupts a wait, handle the attributed messages returned by the tool, then call wait with action resume. The original deadline continues. Use action cancel if you decide to proceed without that event.',
       ...(activeTask ? [`Your current task #${activeTask.number}:\n${activeTask.title}\n${activeTask.instructions}\nAcceptance criteria: ${activeTask.acceptanceCriteria}`] : []),
       ...(plan?.items.length ? [`Current persistent plan (revision ${plan.revision}):\n${JSON.stringify(plan.items)}`] : []),
     ].join('\n');

@@ -31,7 +31,7 @@ const dotClass = (type: string, status?: string) => {
       </div>
 
       <div class="min-w-0">
-        <MessageOutput v-if="block.type === 'message'" :item="block.item" />
+        <MessageOutput v-if="block.type === 'message' || block.type === 'context_message'" :item="block.item" />
         <AgentReasoningBlock v-else-if="block.type === 'reasoning'" :item="block.item" />
         <AgentWebSearchBlock v-else-if="block.type === 'web_search'" :item="block.item" />
         <AgentToolBlock v-else-if="block.type === 'tool'" :block="block" />

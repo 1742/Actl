@@ -460,10 +460,13 @@ test('tools publish, delegate and wait for review in the original root run', asy
       assert.match(request.instructions, /Your current task #1/);
       if (!calls(request, 'write_file').length) return [call('write_file', { path: 'forbidden.txt', content: 'must not write' })];
       assert.ok(toolResult(request, calls(request, 'write_file')[0]?.callId).result.isError);
+      if (!calls(request, 'mail').length) return [team('mail', { action: 'send', to: '@parent',
+        subject: 'Review progress', body: 'Files checked', purpose: 'progress' })];
       return [text('Reviewed with evidence.')];
     }
     if (calls(request, 'wait').length) {
       assert.deepEqual(toolOutput(request, 'wait'), { status: 'matched', kind: 'task_state', task: '#1', state: 'review_required' });
+      assert.equal(requestText(request).split('Files checked').length - 1, 1);
       if (calls(request, 'tasks').length === 1) return [team('tasks', { action: 'accept', task: '#1' })];
       assert.equal(toolOutput<{ status: string }>(request, 'tasks').status, 'completed');
       return [text('Accepted')];
@@ -503,13 +506,16 @@ for (const mode of ['automatic reply', 'automatic timeout', 'explicit resume'] a
         const result = toolOutput<{ status: string; body?: string }>(request, 'wait');
         assert.equal(result.status, mode === 'automatic timeout' ? 'timed_out' : 'matched');
         if (mode !== 'automatic timeout') assert.equal(result.body, 'the needed answer');
-        assert.equal(requestText(request).split('unsolicited question').length - 1, 2, 'Subject and body must be delivered just once.');
+        assert.doesNotMatch(requestText(request), /unsolicited question/, 'The interruption stays in the tool result.');
         assert.doesNotMatch(requestText(request), /the needed answer/, 'The matched mail is delivered through the wait tool.');
         return [text('Task final after ' + mode)];
       }
       if (waits.length) {
-        assert.equal(toolOutput<{ status: string }>(request, 'wait').status, 'interrupted');
-        assert.match(requestText(request), /unsolicited question/);
+        const result = toolOutput<{ status: string; messages: { body: string; author: string }[] }>(request, 'wait');
+        assert.equal(result.status, 'interrupted');
+        assert.deepEqual(result.messages.map(({ body, author }) => ({ body, author })), [{ body: 'unsolicited question', author: 'model' }]);
+        assert.doesNotMatch(requestText(request), /unsolicited question/);
+        assert.equal(requestText(request).split('> background progress').length - 1, 1);
         if (calls(request, 'mail').length === 1) {
           return [team('mail', { action: 'reply', body: 'Answered the other question.' })];
         }

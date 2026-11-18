@@ -343,7 +343,7 @@ test('a child file selection opens its exact run and diff in the parent sidebar'
 test('conversation uses attribution for agent messages in history and live output', () => {
   const id = 'local:session';
   const store = setup(id);
-  const source = { kind: 'agent', relationship: 'child', purpose: 'progress', sessionId: 'child', runId: 'child-run' } as const;
+  const source = { kind: 'agent', relationship: 'child', purpose: 'progress', sessionId: 'child', mailNumber: 1, subject: 'Progress' } as const;
   const incoming: ResponseMessageItemDto = { id: 'peer-message', type: 'message', role: 'user', source, status: 'completed',
     content: [{ type: 'output_text', text: 'Peer progress', annotations: [] }] };
   const started = { ...response(), id: 'collaboration', status: 'in_progress' as const,
@@ -358,11 +358,12 @@ test('conversation uses attribution for agent messages in history and live outpu
   assert.deepEqual(context.input.filter(isMessageItem).map(conversationMessageKind), ['agent', 'user', 'agent']);
   const groups = buildAgentOutputGroups(context);
   assert.equal(groups.length, 1);
-  const message = groups[0];
-  assert.ok(message?.type === 'message');
+  const activity = groups[0];
+  assert.ok(activity?.type === 'activity');
+  const message = activity.blocks[0];
+  assert.ok(message?.type === 'context_message');
   assert.deepEqual(message.item.source, source);
   assert.equal(conversationMessageKind(message.item), 'agent');
-  assert.equal(message.isFinal, false);
 
   const replayed = normalizeResponseContext({ response: { ...started, status: 'completed', output: [
     { ...incoming, id: 'final', role: 'assistant', source: { kind: 'model', sessionId: 'session', runId: started.id } },
@@ -370,6 +371,36 @@ test('conversation uses attribution for agent messages in history and live outpu
   ] } });
   const final = buildAgentOutputGroups(replayed).find((group) => group.type === 'message' && group.isFinal);
   assert.equal(final?.key, 'final');
+});
+
+test('mail and runtime messages stay with the tools of the same run while streaming and in history', () => {
+  const call = (id: string, name: string) => ({ id, type: 'function_call' as const, call_id: id, status: 'completed' as const, name, arguments: '{}' });
+  const message = (id: string, role: ResponseMessageItemDto['role'], source?: ResponseMessageItemDto['source']): ResponseMessageItemDto => ({
+    id, type: 'message', role, ...(source ? { source } : {}), status: 'completed',
+    content: [{ type: 'output_text', text: id, annotations: [] }],
+  });
+  const output = [
+    call('wait', 'wait'),
+    message('progress', 'user', { kind: 'agent', relationship: 'child', purpose: 'progress', sessionId: 'child', mailNumber: 1, subject: 'Progress' }),
+    message('runtime-input', 'user', { kind: 'runtime' }),
+    message('runtime-output', 'assistant', { kind: 'runtime' }),
+    call('review', 'tasks'),
+  ];
+  for (const status of ['in_progress', 'completed'] as const) {
+    const completed = status === 'completed';
+    const context = normalizeResponseContext({ response: {
+      ...response(), status, output: completed ? [...output, message('final', 'assistant')] : output,
+    } });
+    const groups = buildAgentOutputGroups(context);
+    assert.equal(groups.length, completed ? 2 : 1);
+    const activity = groups[0];
+    assert.ok(activity?.type === 'activity');
+    assert.deepEqual(activity.blocks.map(({ key, type }) => [key, type]), [
+      ['wait', 'tool'], ['progress', 'context_message'], ['runtime-input', 'context_message'],
+      ['runtime-output', 'context_message'], ['review', 'tool'],
+    ]);
+    if (completed) assert.equal(groups[1]?.type === 'message' && groups[1].isFinal, true);
+  }
 });
 
 test('subagent transcript keeps the run and its activity while hiding incoming messages', () => {

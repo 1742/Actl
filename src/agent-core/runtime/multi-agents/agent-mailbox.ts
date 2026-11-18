@@ -49,12 +49,12 @@ export class AgentMailbox {
     return mail;
   }
 
-  present(session: Session, mail: AgentMail, includeBody = true) {
+  present(session: Session, mail: AgentMail) {
     const thread = this.store.mail(mail.rootId, mail.threadId);
     const repliedTo = mail.replyTo && this.store.mail(mail.rootId, mail.replyTo);
     return {
       message: `m#${mail.number}`, from: this.directory.reference(session, mail.fromSessionId), to: this.directory.reference(session, mail.toSessionId),
-      subject: mail.subject, ...(includeBody ? { body: mail.body } : {}), purpose: mail.purpose, createdAt: mail.createdAt,
+      subject: mail.subject, body: mail.body, author: mail.author, purpose: mail.purpose, createdAt: mail.createdAt,
       unread: mail.toSessionId === session.id && mail.readAt === null, thread: `m#${thread?.number ?? mail.number}`,
       ...(repliedTo ? { replyTo: `m#${repliedTo.number}` } : {}),
     };

@@ -138,7 +138,8 @@ export function buildAgentOutputBlocks(context: Pick<AIResponseContext, 'respons
   return outputs.flatMap((item, index): AgentOutputBlock[] => {
     const key = item.id || `${context.response.id}:${item.type}:${index}`;
     if (item.type === 'message' && 'content' in item) {
-      return [{ type: 'message', key, item: item as AIMessageItem }];
+      const message = item as AIMessageItem;
+      return [{ type: conversationMessageKind(message) === 'assistant' ? 'message' : 'context_message', key, item: message }];
     }
     if (item.type === 'reasoning' && 'summary' in item) {
       return [{ type: 'reasoning', key, item: item as AIReasoningItem }];
@@ -194,6 +195,7 @@ export type AgentOutputGroup =
 
 /** The visible summary of an output item, used by collapsed activity headers. */
 export function agentOutputHint(block: Exclude<AgentOutputBlock, { type: 'message' }>): string {
+  if (block.type === 'context_message') return tr('agents.runContext');
   if (block.type === 'reasoning') {
     return block.item.status === 'in_progress'
       ? readContentText(block.item.summary) || tr('ui.thinking')
@@ -332,7 +334,7 @@ export function buildAgentOutputGroups(context: AIResponseContext): AgentOutputG
   flushActivity();
   for (let index = groups.length - 1; index >= 0; index -= 1) {
     const group = groups[index]!;
-    if (group.type === 'message' && conversationMessageKind(group.item) === 'assistant') {
+    if (group.type === 'message') {
       group.isFinal = true;
       break;
     }

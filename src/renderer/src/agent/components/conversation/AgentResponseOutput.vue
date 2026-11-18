@@ -7,7 +7,7 @@ import MessageOutput from '../responses/MessageOutput.vue';
 import MessageTools from '../responses/MessageTools.vue';
 import type { AIResponseContext } from '../responses/types';
 import { buildAgentOutputBlocks, buildAgentOutputGroups, type AgentOutputGroup } from '../../utils';
-import { conversationMessageKind, normalizeResponse } from '../../utils/aiResponse';
+import { normalizeResponse } from '../../utils/aiResponse';
 import { collectWebQueries, collectWebSources } from '../../utils/webSearch';
 import { runtimeResourceKey } from '../../composables/useAgent';
 import type { ReviewRun } from '../review/reviewNavigation';
@@ -44,13 +44,7 @@ const webSearch = computed(() => {
 });
 const completedHistory = computed(() => {
   if (props.context.response.status !== 'completed' || finalMessageIndex.value <= 0) return [];
-  const prefix = groups.value.slice(0, finalMessageIndex.value);
-  const firstIncoming = prefix.findIndex((group) => {
-    if (group.type !== 'message') return false;
-    const kind = conversationMessageKind(group.item);
-    return kind === 'user' || kind === 'agent';
-  });
-  return firstIncoming < 0 ? prefix : prefix.slice(0, firstIncoming);
+  return groups.value.slice(0, finalMessageIndex.value);
 });
 const displayedGroups = computed(() =>
   groups.value.slice(completedHistory.value.length),
@@ -60,15 +54,17 @@ const completedHistoryItemCount = computed(() =>
     (count, group) =>
       count +
       (group.type === 'activity'
-        ? group.blocks.filter((block) => block.type !== 'reasoning').length
-        : 1),
+        ? group.blocks.filter((block) => block.type !== 'reasoning' && block.type !== 'context_message').length
+        : 0),
     0,
   ),
 );
 const completedHistoryStatus = computed(() =>
   completedHistoryItemCount.value
     ? tr('dynamic.executedCount', { count: completedHistoryItemCount.value })
-    : tr('ui.thought'),
+    : completedHistory.value.some((group) => group.type === 'message' || group.blocks.some((block) => block.type === 'context_message'))
+      ? tr('agents.runContext')
+      : tr('ui.thought'),
 );
 function singleReasoningBlock(history: AgentOutputGroup[]) {
   const group = history[0];
@@ -108,7 +104,7 @@ watch(isActive, (active, wasActive) => {
         <div v-if="completedHistoryExpanded" class="mt-2 flex min-w-0 flex-col gap-4">
           <template v-for="group in completedHistory" :key="group.key">
             <MessageOutput v-if="group.type === 'message'" :item="group.item" :show-tools="false" />
-            <AgentActivityGroup v-else :blocks="group.blocks" :response-active="isActive" />
+            <AgentActivityGroup v-else :blocks="group.blocks" :response-active="isActive" show-details />
           </template>
         </div>
       </template>

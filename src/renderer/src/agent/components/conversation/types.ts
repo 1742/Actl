@@ -44,6 +44,7 @@ export interface AgentToolTimelineBlock {
 
 export type AgentOutputBlock =
   | { type: "message"; key: string; item: AIMessageItem }
+  | { type: "context_message"; key: string; item: AIMessageItem }
   | { type: "reasoning"; key: string; item: AIReasoningItem }
   | AgentToolTimelineBlock
   | { type: "web_search"; key: string; item: AIWebSearchCallItem }

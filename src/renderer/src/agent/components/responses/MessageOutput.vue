@@ -32,7 +32,7 @@ const text = computed(() =>
     <MessageTools v-if="showTools" :content="text" :timestamp="timestamp" />
   </div>
   <div v-else-if="text" class="group/message flex flex-col items-start text-gray-900">
-    <MessageAuthor v-if="kind === 'runtime' && item.role === 'user'" :item="item" />
+    <MessageAuthor v-if="kind === 'runtime'" :item="item" />
     <div class="w-full text-[15px] leading-7 text-gray-950">
       <MessageHtml :html-string="text" :is-invert="false" />
     </div>

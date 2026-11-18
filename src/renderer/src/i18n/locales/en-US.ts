@@ -4,6 +4,7 @@ export default {
     loadingHistory: 'Loading subagent conversation…', noMessages: 'No messages yet',
     parentAgent: 'Parent agent', childAgent: 'Subagent', runtime: 'Runtime',
     peerAgent: 'Peer agent', mail: 'Mail', waiting: 'Waiting',
+    runContext: 'Run context',
     messagePurpose: { information: 'Information', question: 'Question', progress: 'Progress', urgent: 'Urgent' },
     waitTimedOut: 'Wait timed out',
     team: 'Agents and plan', readOnly: 'Read-only subagents', back: 'Back to main chat', stopAll: 'Stop all',
