@@ -1,6 +1,6 @@
 import { tr } from '../../i18n';
 import type { 
-  AIFileContent, AIMessageItem, AIResponse, AIResponseContent, AIResponseContext, AIResponseInputItem, 
+  AgentMailMessageItem, AIFileContent, AIMessageItem, AIResponse, AIResponseContent, AIResponseContext, AIResponseInputItem,
   AIResponseOutputItem, AIResponseStatus, AIResponseUsage, AISkillContent, AIMcpServerContent, 
   AIWebSearchCallItem, AIWorkspaceFileContent 
 } from '../components/responses/types';
@@ -13,6 +13,10 @@ const asArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : [
 
 export function isMessageItem(item: AIResponseInputItem | AIResponseOutputItem): item is AIMessageItem {
   return item.type === 'message' && 'content' in item && Array.isArray(item.content);
+}
+
+export function isAgentMailMessage(item: AIMessageItem): item is AgentMailMessageItem {
+  return item.source?.kind === 'agent';
 }
 
 export function conversationMessageKind(item: AIMessageItem) {

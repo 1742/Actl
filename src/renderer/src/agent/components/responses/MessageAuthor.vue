@@ -13,7 +13,7 @@ const author = computed(() => {
     const name = tr(source.relationship === 'parent' ? 'agents.parentAgent'
       : source.relationship === 'child' ? 'agents.childAgent' : 'agents.peerAgent');
     const title = team?.tree.value?.members[runtimeResourceKey('local', source.sessionId)]?.session.title;
-    return [name, title, tr(`agents.messagePurpose.${source.purpose}`), source.subject].filter(Boolean).join(' · ');
+    return [name, title].filter(Boolean).join(' · ');
   }
   if (source?.kind === 'model' && role === 'user')
     return [tr('agents.parentAgent'), source.model].filter(Boolean).join(' · ');

@@ -4,6 +4,7 @@ export default {
     loadingHistory: 'Loading subagent conversation…', noMessages: 'No messages yet',
     parentAgent: 'Parent agent', childAgent: 'Subagent', runtime: 'Runtime',
     peerAgent: 'Peer agent', mail: 'Mail', waiting: 'Waiting',
+    inReplyTo: 'In reply to {message}',
     runContext: 'Run context',
     messagePurpose: { information: 'Information', question: 'Question', progress: 'Progress', urgent: 'Urgent' },
     waitTimedOut: 'Wait timed out',

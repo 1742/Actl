@@ -4,8 +4,9 @@ import { computed, nextTick, ref, watch } from 'vue';
 import { ArrowDown } from '@lucide/vue';
 import type { SessionContextCompression } from '../../../../../shared/agent/sessions';
 import type { AIFileContent, AIMessageItem, AIResponseContext } from './types';
-import { conversationMessageKind, isMessageItem, readInputContentDisplayText } from '../../utils/aiResponse.ts';
+import { conversationMessageKind, isAgentMailMessage, isMessageItem, readInputContentDisplayText } from '../../utils/aiResponse.ts';
 import InputMessageContent from './InputMessageContent.vue';
+import AgentMailMessage from './AgentMailMessage.vue';
 import MessageTools from './MessageTools.vue';
 import MessageOutput from './MessageOutput.vue';
 import RunJumpSidebar from './RunJumpSidebar.vue';
@@ -147,6 +148,11 @@ watch(
                   />
                 </div>
               </div>
+              <AgentMailMessage
+                v-else-if="isAgentMailMessage(item)"
+                :item="item"
+                :timestamp="context.createdAt"
+              />
               <MessageOutput
                 v-else-if="['agent', 'runtime'].includes(conversationMessageKind(item))"
                 :item="item"

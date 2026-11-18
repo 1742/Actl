@@ -7,7 +7,7 @@ import MessageOutput from '../responses/MessageOutput.vue';
 import MessageTools from '../responses/MessageTools.vue';
 import type { AIResponseContext } from '../responses/types';
 import { buildAgentOutputBlocks, buildAgentOutputGroups, type AgentOutputGroup } from '../../utils';
-import { normalizeResponse } from '../../utils/aiResponse';
+import { normalizeResponse, readContentText } from '../../utils/aiResponse';
 import { collectWebQueries, collectWebSources } from '../../utils/webSearch';
 import { runtimeResourceKey } from '../../composables/useAgent';
 import type { ReviewRun } from '../review/reviewNavigation';
@@ -25,6 +25,11 @@ const isActive = computed(() =>
 const finalMessageIndex = computed(() =>
   groups.value.findIndex((group) => group.type === 'message' && group.isFinal),
 );
+const finalText = computed(() => {
+  const group = groups.value[finalMessageIndex.value];
+  if (group?.type !== 'message') return '';
+  return readContentText(group.item.content, 'output_text') || readContentText(group.item.content, 'input_text');
+});
 const reviewRuns = computed<ReviewRun[]>(() => {
   const runs = isActive.value ? [] : [{ sessionId: props.sessionId, runId: props.context.response.id }];
   for (const child of props.childResults ?? []) {
@@ -80,7 +85,7 @@ watch(isActive, (active, wasActive) => {
 </script>
 
 <template>
-  <div class="flex min-w-0 flex-col gap-4">
+  <div class="group/message flex min-w-0 flex-col gap-4">
     <div v-if="completedHistory.length" class="min-w-0">
       <AgentReasoningBlock
         v-if="completedHistoryReasoning"
@@ -110,19 +115,16 @@ watch(isActive, (active, wasActive) => {
       </template>
     </div>
     <template v-for="group in displayedGroups" :key="group.key">
-      <MessageOutput v-if="group.type === 'message'" :item="group.item" :show-tools="false">
-        <template v-if="group.isFinal" #footer="{ content }">
-          <MessageTools
-            v-if="!isActive"
-            :content="content"
-            :timestamp="context.completedAt || context.updatedAt || context.createdAt"
-          />
-        </template>
-      </MessageOutput>
+      <MessageOutput v-if="group.type === 'message'" :item="group.item" :show-tools="false" />
       <AgentActivityGroup v-else :blocks="group.blocks" :response-active="isActive" />
     </template>
     <AgentFileChangesCard v-if="reviewRuns.length" :runs="reviewRuns" />
     <AgentWebSearchSourcesCard :sources="webSearch.sources" :queries="webSearch.queries" />
+    <MessageTools
+      v-if="!isActive && finalText"
+      :content="finalText"
+      :timestamp="context.completedAt || context.updatedAt || context.createdAt"
+    />
     <div v-if="!groups.length && isActive" class="flex items-center py-0.5 text-sm text-gray-500">
       <span :class="{ 'status-shimmer': context.response.status === 'in_progress' }">{{
         context.response.status === 'waiting_permission'

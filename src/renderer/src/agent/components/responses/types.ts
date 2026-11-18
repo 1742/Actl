@@ -91,6 +91,8 @@ export interface AIMessageItem {
   [key: string]: unknown;
 }
 
+export type AgentMailMessageItem = AIMessageItem & { source: Extract<MessageSource, { kind: 'agent' }> };
+
 export interface AIReasoningItem {
   type: "reasoning";
   id?: string;

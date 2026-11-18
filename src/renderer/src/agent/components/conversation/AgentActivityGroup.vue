@@ -3,6 +3,8 @@ import { tr } from '../../../i18n';
 import { computed, ref } from 'vue';
 import { ChevronRight } from '@lucide/vue';
 import MessageOutput from '../responses/MessageOutput.vue';
+import AgentMailMessage from '../responses/AgentMailMessage.vue';
+import { isAgentMailMessage } from '../../utils/aiResponse';
 import UnknownOutput from '../responses/UnknownOutput.vue';
 import type { AgentOutputBlock } from './types';
 import { agentOutputHint } from '../../utils';
@@ -97,6 +99,10 @@ const singleReasoningBlock = computed(() =>
             :completed="groupStatus === 'completed'"
           />
           <AgentToolBlock v-else-if="block.type === 'tool'" :block="block" />
+          <AgentMailMessage
+            v-else-if="block.type === 'context_message' && isAgentMailMessage(block.item)"
+            :item="block.item"
+          />
           <MessageOutput v-else-if="block.type === 'context_message'" :item="block.item" :show-tools="false" />
           <AgentWebSearchBlock v-else-if="block.type === 'web_search'" :item="block.item" />
           <div v-else-if="block.type === 'permission'" class="text-xs text-amber-600">

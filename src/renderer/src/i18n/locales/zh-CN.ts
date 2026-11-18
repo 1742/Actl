@@ -4,6 +4,7 @@ export default {
     loadingHistory: '正在加载子对话…', noMessages: '暂无消息',
     parentAgent: '父代理', childAgent: '子代理', runtime: '运行时',
     peerAgent: '协作代理', mail: '邮件', waiting: '等待中',
+    inReplyTo: '回复 {message}',
     runContext: '运行上下文',
     messagePurpose: { information: '信息', question: '问题', progress: '进度', urgent: '紧急' },
     waitTimedOut: '等待超时',
