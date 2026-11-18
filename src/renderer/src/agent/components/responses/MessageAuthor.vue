@@ -27,5 +27,5 @@ const authorDetails = computed(() => {
 </script>
 
 <template>
-  <div v-if="author" class="mb-1 max-w-full truncate text-xs text-gray-500" :title="authorDetails">{{ author }}</div>
+  <div v-if="author" class="max-w-full truncate text-xs text-gray-500" :title="authorDetails">{{ author }}</div>
 </template>

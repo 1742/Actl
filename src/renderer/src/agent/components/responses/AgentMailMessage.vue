@@ -19,7 +19,7 @@ const mail = computed(() => props.item.source);
     <summary class="flex cursor-pointer list-none flex-wrap items-center rounded-lg px-3 py-2 hover:bg-gray-100 gap-x-2 gap-y-1 text-xs text-gray-500">
       <div class="inline-flex min-w-0 max-w-full items-center gap-1.5">
         <Mail :size="14" class="shrink-0" aria-hidden="true" />
-        <MessageAuthor :item="item" class="mb-0" />
+        <MessageAuthor :item="item" />
       </div>
       <span :class="{ 'font-medium text-amber-700': mail.purpose === 'urgent' }">
         {{ $t(`agents.messagePurpose.${mail.purpose}`) }}
