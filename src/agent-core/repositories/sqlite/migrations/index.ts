@@ -5,7 +5,7 @@ import { migrateAgentMessageAuthor } from "./v21-to-v22.js";
 import { migrateAgentMessageAttribution } from "./v22-to-v23.js";
 import { removeAgentMail } from "./v23-to-v24.js";
 import { migrateAgentTasks } from "./v24-to-v25.js";
-import { bindWaitsToActiveRuns, replaceAgentCoordination } from "../coordination-schema.js";
+import { bindWaitsToActiveRuns, replaceAgentCoordination, RETIRED_AGENT_SCHEMA } from "../coordination-schema.js";
 import { migrateAgentNames } from "./v27-to-v28.js";
 
 export interface SqliteMigration {
@@ -196,6 +196,17 @@ export const SQLITE_MIGRATIONS: readonly SqliteMigration[] = [
   { from: 25, to: 26, up: replaceAgentCoordination },
   { from: 26, to: 27, up: bindWaitsToActiveRuns },
   { from: 27, to: 28, up: migrateAgentNames },
+  {
+    from: 28,
+    to: 29,
+    up(database: DatabaseSync): void {
+      database.exec(`
+        ALTER TABLE model_invocation_usage ADD COLUMN cached_input_tokens INTEGER;
+        ALTER TABLE model_invocation_usage ADD COLUMN cache_write_input_tokens INTEGER;
+      `);
+    },
+  },
+  { from: 29, to: 30, up: (database) => database.exec(RETIRED_AGENT_SCHEMA) },
 ];
 
 export function runSqliteMigrations(

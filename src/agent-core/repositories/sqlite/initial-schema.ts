@@ -1,10 +1,10 @@
 import type { DatabaseSync } from "node:sqlite";
 import { nowIso } from "../../utils.js";
-import { COORDINATION_SCHEMA } from "./coordination-schema.js";
+import { COORDINATION_SCHEMA, RETIRED_AGENT_SCHEMA } from "./coordination-schema.js";
 import { AGENT_NAME_INDEX } from "./migrations/v27-to-v28.js";
 
 export const SQLITE_SCHEMA_GENERATION = "multi-user-multi-model";
-export const SQLITE_SCHEMA_VERSION = 28;
+export const SQLITE_SCHEMA_VERSION = 30;
 
 // New databases start at the current version. Historical upgrades live in migrations/.
 const METADATA_SQL = `
@@ -56,7 +56,7 @@ CREATE TABLE provider_response_ids(run_id TEXT NOT NULL REFERENCES agent_runs(id
 const SESSION_CONTEXT_SQL = `
 CREATE TABLE session_context_states(session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, summary TEXT NOT NULL, summarized_run_count INTEGER NOT NULL CHECK(summarized_run_count >= 0), last_input_tokens INTEGER, updated_at TEXT NOT NULL) STRICT;
 CREATE TABLE context_compressions(session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, summarized_run_count INTEGER NOT NULL CHECK(summarized_run_count > 0), summary TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(session_id, summarized_run_count)) STRICT;
-CREATE TABLE model_invocation_usage(run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE, step INTEGER NOT NULL CHECK(step >= 0), input_tokens INTEGER, output_tokens INTEGER, total_tokens INTEGER, created_at TEXT NOT NULL, PRIMARY KEY(run_id, step)) STRICT;
+CREATE TABLE model_invocation_usage(run_id TEXT NOT NULL REFERENCES agent_runs(id) ON DELETE CASCADE, step INTEGER NOT NULL CHECK(step >= 0), input_tokens INTEGER, output_tokens INTEGER, total_tokens INTEGER, created_at TEXT NOT NULL, cached_input_tokens INTEGER, cache_write_input_tokens INTEGER, PRIMARY KEY(run_id, step)) STRICT;
 `;
 
 const FILE_CHANGES_SQL = `
@@ -133,6 +133,7 @@ const INITIAL_SCHEMA_SQL = [
   MCP_CONFIG_SQL,
   AGENT_COORDINATION_SQL,
   COORDINATION_SCHEMA,
+  RETIRED_AGENT_SCHEMA,
 ].join("\n");
 
 export function initializeWorkspaceSchema(database: DatabaseSync): void {

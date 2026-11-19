@@ -10,6 +10,7 @@ export interface AgentPlan { revision: number; items: PlanItem[] }
 
 export const agentTaskStates = ['pending', 'assigned', 'running', 'review_required', 'completed', 'failed', 'cancelled'] as const;
 export type AgentTaskState = (typeof agentTaskStates)[number];
+export type AgentTaskPendingReason = 'dependencies' | 'unassigned' | 'no_idle_agent';
 
 export interface AgentTaskInput {
   title: string;
@@ -44,6 +45,7 @@ export interface AgentTask extends AgentTaskInput {
   status: AgentTaskState;
   ready: boolean;
   autoAssign: boolean;
+  pendingReason?: AgentTaskPendingReason;
   attempt?: TaskAttempt;
 }
 

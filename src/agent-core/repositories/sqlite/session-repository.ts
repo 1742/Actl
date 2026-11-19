@@ -1,5 +1,5 @@
-import { activateAgentRun, recordAgentWaitReceipt } from "./agent-coordination-repository.js";
-import type { RunActivation, WaitReceipt } from "../agent-coordination-repository.js";
+import { activateAgentRun, markReviewNotificationsDelivered, recordAgentWaitReceipt } from "./agent-coordination-repository.js";
+import type { RunActivation, RunUpdateReceipt } from "../agent-coordination-repository.js";
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import type { AgentRunRecord } from "../../runtime/agent-domain.js";
 import { agentProfileSchema } from "../../runtime/multi-agents/agent-profile-catalog.js";
@@ -50,11 +50,15 @@ function toInvocationUsage(row: SqliteRow): ModelInvocationUsageRecord {
   const inputTokens = nullableNumberColumn(row, "input_tokens");
   const outputTokens = nullableNumberColumn(row, "output_tokens");
   const totalTokens = nullableNumberColumn(row, "total_tokens");
+  const cachedInputTokens = nullableNumberColumn(row, "cached_input_tokens");
+  const cacheWriteInputTokens = nullableNumberColumn(row, "cache_write_input_tokens");
   return {
     runId: stringColumn(row, "run_id"), step: numberColumn(row, "step"), createdAt: stringColumn(row, "created_at"),
     ...(inputTokens === null ? {} : { inputTokens }),
     ...(outputTokens === null ? {} : { outputTokens }),
     ...(totalTokens === null ? {} : { totalTokens }),
+    ...(cachedInputTokens === null ? {} : { cachedInputTokens }),
+    ...(cacheWriteInputTokens === null ? {} : { cacheWriteInputTokens }),
   };
 }
 
@@ -108,8 +112,7 @@ export class SqliteSessionRepository implements SessionRepository {
       compressionRecords: this.all("SELECT session_id, summarized_run_count, summary, created_at FROM context_compressions WHERE session_id = ? ORDER BY summarized_run_count", sessionId).map((row): ContextCompressionRecord => ({
         sessionId: stringColumn(row, "session_id"), summarizedRunCount: numberColumn(row, "summarized_run_count"), summary: stringColumn(row, "summary"), createdAt: stringColumn(row, "created_at"),
       })),
-      invocationUsage: this.all(`SELECT u.run_id, u.step, u.input_tokens, u.output_tokens, u.total_tokens, u.created_at
-        FROM model_invocation_usage u JOIN agent_runs r ON r.id = u.run_id
+      invocationUsage: this.all(`SELECT u.* FROM model_invocation_usage u JOIN agent_runs r ON r.id = u.run_id
         WHERE r.session_id = ? ORDER BY r.run_order, u.step`, sessionId).map((row) => toInvocationUsage(row)),
       fileChanges: this.all("SELECT * FROM file_changes WHERE session_id = ? ORDER BY created_at", sessionId).map(toFileChange),
     };
@@ -131,7 +134,7 @@ export class SqliteSessionRepository implements SessionRepository {
     timelineUpdates: readonly TimelineItemUpdate[],
     timelineLength: number,
     sessionUpdatedAt: string,
-    waitReceipt?: WaitReceipt,
+    receipt?: RunUpdateReceipt,
   ): Promise<void> {
     withSqliteTransaction(this.db, () => {
       assertChanged(this.db.prepare(`
@@ -145,7 +148,8 @@ export class SqliteSessionRepository implements SessionRepository {
         run.nextSequenceNumber, run.id, run.sessionId,
       ), "Run", run.id);
       this.updateTimeline(run.id, timelineUpdates, timelineLength);
-      if (waitReceipt) recordAgentWaitReceipt(this.db, run, waitReceipt);
+      if (receipt?.kind === 'review_notifications') markReviewNotificationsDelivered(this.db, run.sessionId, receipt.notificationIds);
+      else if (receipt) recordAgentWaitReceipt(this.db, run, receipt);
       assertChanged(this.db.prepare("UPDATE sessions SET updated_at = ? WHERE id = ?")
         .run(sessionUpdatedAt, run.sessionId), "Session", run.sessionId);
     });
@@ -165,11 +169,12 @@ export class SqliteSessionRepository implements SessionRepository {
     });
   }
 
-  async appendModelInvocationUsage(usage: ModelInvocationUsageRecord): Promise<void> {
-    this.db.prepare(`INSERT INTO model_invocation_usage(run_id, step, input_tokens, output_tokens, total_tokens, created_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT(run_id, step) DO UPDATE SET input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens, total_tokens = excluded.total_tokens, created_at = excluded.created_at`
-    ).run(usage.runId, usage.step, usage.inputTokens ?? null, usage.outputTokens ?? null, usage.totalTokens ?? null, usage.createdAt);
+  async appendModelInvocationUsage(usage: Omit<ModelInvocationUsageRecord, "step">): Promise<void> {
+    this.db.prepare(`INSERT INTO model_invocation_usage
+      (run_id, step, input_tokens, output_tokens, total_tokens, cached_input_tokens, cache_write_input_tokens, created_at)
+      SELECT ?, COALESCE(MAX(step) + 1, 0), ?, ?, ?, ?, ?, ? FROM model_invocation_usage WHERE run_id = ?`
+    ).run(usage.runId, usage.inputTokens ?? null, usage.outputTokens ?? null, usage.totalTokens ?? null,
+      usage.cachedInputTokens ?? null, usage.cacheWriteInputTokens ?? null, usage.createdAt, usage.runId);
   }
 
   async saveSessionContext(state: SessionContextStateRecord): Promise<void> {

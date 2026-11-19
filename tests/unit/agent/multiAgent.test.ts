@@ -29,9 +29,10 @@ import { ShellToolProvider } from '../../../src/agent-core/tools/builtin/shell';
 import { InMemoryHookEventBus } from '../../../src/agent-core/hooks/event-bus';
 import { RunPermissionEngine } from '../../../src/agent-core/permissions/engine';
 import { PromptCompiler } from '../../../src/agent-core/runtime/prompt-compiler';
+import { SkillCatalog } from '../../../src/agent-core/skills';
 import { TEXT_TOOL_CAPABILITIES, type ModelExecutionSnapshot } from '../../../src/agent-core/model/catalog-types';
 import type { ModelClient } from '../../../src/agent-core/model/client';
-import type { ModelTurnRequest, TranscriptItem } from '../../../src/agent-core/model/types';
+import type { ModelTurnRequest, ModelUsage, TranscriptItem } from '../../../src/agent-core/model/types';
 import type { AgentRunRecord } from '../../../src/agent-core/runtime/agent-domain';
 import type { AgentStreamEvent } from '../../../src/shared/agent/responses';
 
@@ -80,7 +81,7 @@ async function until<T>(probe: () => T | Promise<T>, label: string): Promise<Non
   assert.fail(label);
 }
 
-async function fixture(handler: (request: ModelTurnRequest, signal?: AbortSignal) => Promise<TranscriptItem[]>) {
+async function fixture(handler: (request: ModelTurnRequest, signal?: AbortSignal) => Promise<TranscriptItem[]>, usage?: ModelUsage) {
   const directory = await mkdtemp(path.join(tmpdir(), 'actl-multi-'));
   const projectPath = path.join(directory, 'project'); await mkdir(projectPath);
   const database = await openWorkspaceDatabase(path.join(directory, 'workspace.db'));
@@ -97,6 +98,7 @@ async function fixture(handler: (request: ModelTurnRequest, signal?: AbortSignal
   const models = new ModelStore(new SqliteModelCatalogRepository(database), new SecretProtector(path.join(directory, 'unused-key')), 'development');
   const client: ModelClient = { protocol: 'chat_completions', runTurn: async (request, _onEvent, opts) => ({
     output: await handler(request, opts?.signal), finishReason: 'stop',
+    ...(usage ? { usage } : {}),
   }) };
   models.resolveSnapshot = async () => structuredClone(snapshot);
   models.getClientForSnapshot = async () => client;
@@ -106,8 +108,8 @@ async function fixture(handler: (request: ModelTurnRequest, signal?: AbortSignal
     registry.registerProvider(new ShellToolProvider());
     const coordinator = new AgentCoordinator(workspace, coordination, new ProcessSupervisor(), {
       models, files, toolRegistry: registry, permissions: new RunPermissionEngine(),
-      hooks: new InMemoryHookEventBus(), promptCompiler: new PromptCompiler(new SqlitePromptSettingsRepository(database), coordination),
-      logger: createSilentLogger(),
+      hooks: new InMemoryHookEventBus(), promptCompiler: new PromptCompiler(new SqlitePromptSettingsRepository(database)),
+      logger: createSilentLogger(), skills: new SkillCatalog({ actlHome: directory }),
     });
     registry.registerProvider(new AgentTeamToolProvider(coordinator));
     return coordinator;
@@ -130,6 +132,60 @@ async function childOf(f: Awaited<ReturnType<typeof fixture>>, title: string) {
   return f.workspace.createSession(owner, { projectId: f.project.id, parentSessionId: f.root.id, title,
     profile: { id: 'review', name: 'Review', access: 'read_only', description: 'Review work.', instructions: 'Report findings.' } });
 }
+
+test('plan changes preserve instructions and saved Skill references replay unchanged after restart', async () => {
+  const requests: ModelTurnRequest[] = [];
+  const f = await fixture(async (request) => {
+    requests.push(request);
+    if (requests.length === 1) {
+      return [team('plan', { action: 'replace', revision: 1, items: [{ id: 'a', text: 'Updated', status: 'completed' }] })];
+    }
+    return [text('Done')];
+  });
+  try {
+    const skillDirectory = path.join(f.directory, 'skills', 'sample');
+    await mkdir(skillDirectory, { recursive: true });
+    const skillPath = path.join(skillDirectory, 'SKILL.md');
+    await writeFile(skillPath, '---\nname: sample\ndescription: Original description\n---\nUse sample.');
+    const { data: [skill] } = await new SkillCatalog({ actlHome: f.directory }).listSkillSummaries();
+    assert.ok(skill?.available);
+    f.coordination.updatePlan(f.root.id, 0, [{ id: 'a', text: 'Initial', status: 'pending' }]);
+    const firstRun = await f.coordinator.start(f.root, async () => [{
+      id: 'skill-selection', type: 'message', role: 'user', content: [{ type: 'skill', id: skill.id }],
+    }], options);
+    assert.equal(firstRun.status, 'completed');
+    await writeFile(skillPath, '---\nname: sample\ndescription: New description\n---\nUse sample.');
+    await f.restart();
+    assert.equal((await f.coordinator.start(f.root, input('Continue'), options)).status, 'completed');
+
+    const [first, second, next] = requests;
+    assert.ok(first && second && next);
+    assert.doesNotMatch(JSON.stringify(first), /Initial/);
+    assert.deepEqual(toolOutput(second, 'plan'), { revision: 2, items: [{ id: 'a', text: 'Updated', status: 'completed' }] });
+    assert.equal(second.instructions, first.instructions);
+    assert.equal(next.instructions, first.instructions);
+    assert.match(requestText(first), /<selected_skill_reference>[\s\S]*Original description/);
+    assert.deepEqual(next.transcript[0], first.transcript[0]);
+  } finally { await f.close(); }
+});
+
+test('cache usage is persisted across permission resume', async () => {
+  const usage = { inputTokens: 1600, cachedInputTokens: 0, cacheWriteInputTokens: 1200 };
+  const f = await fixture(async (request) => calls(request, 'write_file').length
+    ? [text('Done')]
+    : [call('write_file', { path: 'approved.txt', content: 'ok' })], usage);
+  try {
+    const run = await f.coordinator.start(f.root, input('Start'), options);
+    const batch = run.pendingToolBatch;
+    assert.ok(batch);
+    const decisions = batch.permissions.map(({ id }) => ({ permissionId: id, decision: 'approve' as const }));
+    assert.equal((await f.coordinator.resume(f.root, run, batch.id, decisions)).status, 'completed');
+    const records = await new SqliteSessionRepository(f.database, new SqliteStoredFileRepository(f.database)).loadSessionContent(f.root.id);
+    assert.deepEqual(records.invocationUsage.map(({ step, ...record }) => ({
+      step, inputTokens: record.inputTokens, cachedInputTokens: record.cachedInputTokens, cacheWriteInputTokens: record.cacheWriteInputTokens,
+    })), [{ step: 0, ...usage }, { step: 1, ...usage }]);
+  } finally { await f.close(); }
+});
 
 test('the parent tree keeps search results with their delegating run across restart and child reuse', async () => {
   const f = await fixture(async () => [text('Idle')]);
@@ -188,7 +244,7 @@ test('concurrent editor approvals validate the shared file version under the pro
       if (!calls(request, 'write_file').length) {
         const read = toolOutput<{ sha256: string; content: string }>(request, 'read_file');
         assert.equal(read.content, 'original\r\ntext\r\n');
-        const content = request.instructions.includes('Your current task #1') ? 'first' : 'second';
+        const content = requestText(request).includes('Begin task #1:') ? 'first' : 'second';
         return [call('write_file', { path: 'shared.txt', content, expectedSha256: read.sha256 })];
       }
       const { result, envelope } = toolResult(request, calls(request, 'write_file').at(-1)?.callId);
@@ -457,41 +513,149 @@ test('tools publish, delegate and wait for review in the original root run', asy
   const f = await fixture(async (request) => {
     if (isChild(request)) {
       assert.ok(!request.tools.some(({ name }) => ['shell', 'write_file', 'delegate_task', 'call_mcp_tool'].includes(name)));
-      assert.match(request.instructions, /Your current task #1/);
+      assert.doesNotMatch(request.instructions, /Inspect the example|Report evidence|Prioritize actionable findings|Parent checklist/);
+      const userText = requestText(request);
+      assert.equal(userText.split('Role selected by @parent').length - 1, 1);
+      assert.equal(userText.split('Begin task #9: Review').length - 1, 1);
+      assert.match(userText, /Assigned by @parent\.[\s\S]*Instructions:\nInspect the example\.[\s\S]*Acceptance criteria:\nReport evidence\./);
+      if (!calls(request, 'plan').length) {
+        assert.doesNotMatch(JSON.stringify(request), /Parent checklist/);
+        return [team('plan', { action: 'read' })];
+      }
+      assert.deepEqual(toolOutput(request, 'plan'), { revision: 1, items: [{ id: 'check', text: 'Parent checklist', status: 'pending' }] });
+      const taskLookups = calls(request, 'tasks');
+      if (taskLookups.length === 0) return [team('tasks', { action: 'show', task: '#9' })];
+      assert.equal(toolOutput<{ task: string }>(request, 'tasks').task, '#9');
+      if (taskLookups.length === 1) return [team('tasks', '{"action":"show","task":9}')];
+      if (taskLookups.length === 2) return [team('tasks', { action: 'show' })];
       if (!calls(request, 'write_file').length) return [call('write_file', { path: 'forbidden.txt', content: 'must not write' })];
       assert.ok(toolResult(request, calls(request, 'write_file')[0]?.callId).result.isError);
-      if (!calls(request, 'mail').length) return [team('mail', { action: 'send', to: '@parent',
-        subject: 'Review progress', body: 'Files checked', purpose: 'progress' })];
+      const mailCalls = calls(request, 'mail');
+      if (!mailCalls.length) return [team('mail', '{"action":"search","unexpected":true}')];
+      assert.match(toolResult(request, mailCalls[0]?.callId).envelope.error ?? '', /Unrecognized key/);
+      if (mailCalls.length === 1) return [team('mail', JSON.stringify({ action: 'send', to: '@parent',
+        subject: 'Review progress', body: 'Files checked', purpose: 'progress' }))];
       return [text('Reviewed with evidence.')];
     }
     if (calls(request, 'wait').length) {
-      assert.deepEqual(toolOutput(request, 'wait'), { status: 'matched', kind: 'task_state', task: '#1', state: 'review_required' });
+      assert.deepEqual(toolOutput(request, 'wait'), { status: 'matched', kind: 'task_state', task: '#9', state: 'review_required' });
       assert.equal(requestText(request).split('Files checked').length - 1, 1);
-      if (calls(request, 'tasks').length === 1) return [team('tasks', { action: 'accept', task: '#1' })];
+      if (calls(request, 'tasks').length === 1) return [team('tasks', { action: 'accept', task: '9' })];
       assert.equal(toolOutput<{ status: string }>(request, 'tasks').status, 'completed');
       return [text('Accepted')];
     }
-    if (!calls(request, 'tasks').length) return [publish('Review')];
-    if (!calls(request, 'delegate_task').length) return [call('delegate_task', { task: '#1', target: { kind: 'create', role: 'review', name: '审查员' } })];
+    if (!calls(request, 'tasks').length) return [team('tasks', JSON.stringify({ action: 'publish', ...taskDraft('Review') }))];
+    if (!calls(request, 'delegate_task').length) return [call('delegate_task', { task: '#9', target: { kind: 'create', role: 'review', name: '审查员' } })];
     assert.equal(toolOutput<{ attempt: { agent: string } }>(request, 'delegate_task').attempt.agent, '@审查员');
-    return [team('wait', { action: 'start', condition: { kind: 'task_state', task: '#1', states: ['review_required'] } })];
+    return [team('wait', { action: 'start', condition: { kind: 'task_state', task: '#9', states: ['review_required'] } })];
   });
   try {
+    for (let i = 1; i < 9; i += 1) f.coordination.createTask(f.root.id, f.root.id, taskDraft(`Unassigned ${i}`), `unassigned-${i}`);
+    f.coordination.updatePlan(f.root.id, 0, [{ id: 'check', text: 'Parent checklist', status: 'pending' }]);
     const events: AgentStreamEvent[] = [];
     const run = await f.coordinator.start(f.root, input('Delegate review'), options, (event) => events.push(event));
     assert.equal(run.status, 'completed');
     assert.deepEqual(f.root.runs.map(({ id }) => id), [run.id]);
     assert.equal(events.filter((event) => event.type === 'response.created').length, 1);
     assert.ok(events.some((event) => event.type === 'agent.tool.completed' && event.result.toolName === 'wait'));
-    const task = f.coordination.tasks(f.root.id)[0]!;
+    const task = f.coordination.tasks(f.root.id).find(({ number }) => number === 9)!;
     assert.equal(task.status, 'completed');
     assert.equal(task.attempt?.result?.output, 'Reviewed with evidence.');
     await assert.rejects(access(path.join(f.projectPath, 'forbidden.txt')));
     const child = (await f.workspace.getSession(task.attempt!.ownerSessionId))!;
     assert.equal(child.runs.length, 1);
     assert.equal(child.title, '审查员');
-    assert.equal(child.runs[0]!.input[0]?.source?.kind, 'runtime');
+    assert.deepEqual(child.runs[0]!.input.map(({ role, source }) => [role, source?.kind]), [['user', 'runtime'], ['user', 'runtime']]);
     assert.deepEqual(f.coordination.pendingMail(f.root.id), []);
+  } finally { await f.close(); }
+});
+
+for (const delivery of ['active run', 'idle reviewer'] as const) {
+  test(`a review notification is delivered once to the ${delivery}`, async () => {
+    const childMaySubmit = Promise.withResolvers<void>();
+    const reviewText = 'Results are ready for review: #1. Use tasks show.';
+    const f = await fixture(async (request) => {
+      if (isChild(request)) {
+        await childMaySubmit.promise;
+        return [text('Reviewed')];
+      }
+      if (!calls(request, 'tasks').length) return [publish('Review')];
+      if (!calls(request, 'delegate_task').length) return [call('delegate_task', { task: '#1', target: { kind: 'create', role: 'review' } })];
+      const notices = requestText(request).split(reviewText).length - 1;
+      if (!notices) {
+        if (delivery === 'active run') {
+          childMaySubmit.resolve();
+          await until(() => f.coordination.reviewNotifications(f.root.id).length, 'Review notification was not staged.');
+        }
+        return [text('Initial answer')];
+      }
+      assert.equal(notices, 1);
+      if (calls(request, 'tasks').length === 1) return [team('tasks', { action: 'accept', task: '#1' })];
+      return [text('Review accepted')];
+    });
+    try {
+      const events: AgentStreamEvent[] = [];
+      const initial = await f.coordinator.start(f.root, input('Delegate a review'), options, (event) => events.push(event));
+      let reviewRun = initial;
+      if (delivery === 'idle reviewer') {
+        assert.equal(initial.finalOutput, 'Initial answer');
+        childMaySubmit.resolve();
+        reviewRun = await until(() => f.root.runs.find((run) => run.id !== initial.id && run.status === 'completed'), 'Reviewer did not wake.');
+        assert.equal(f.root.runs.length, 2);
+      } else {
+        assert.equal(f.root.runs.length, 1);
+        assert.equal(events.filter((event) => event.type === 'response.created').length, 1);
+        assert.ok(events.some((event) => event.type === 'response.output_item.done' && event.response_id === initial.id &&
+          event.item.type === 'message' && event.item.role === 'user' && event.item.source?.kind === 'runtime'));
+      }
+      assert.equal(reviewRun.finalOutput, 'Review accepted');
+      const delivered = delivery === 'active run' ? reviewRun.timeline : reviewRun.input;
+      assert.equal(delivered.filter((item) => item.type === 'message' && item.role === 'user' && item.source?.kind === 'runtime' &&
+        item.content.some((part) => part.type === 'text' && part.text === reviewText)).length, 1);
+      assert.equal(f.coordination.reviewNotifications(f.root.id).length, 0);
+    } finally {
+      childMaySubmit.resolve();
+      await f.close();
+    }
+  });
+}
+
+test('interrupting a waiting child cancels its current work and allows explicit redelegation', async () => {
+  const f = await fixture(async (request) => {
+    if (isChild(request)) {
+      if (requestText(request).includes('Begin task #2: Replacement')) return [text('Replacement submitted')];
+      return [team('wait', { action: 'start', condition: { kind: 'mail', purpose: 'urgent' }, timeoutMs: 20000 })];
+    }
+    const taskCalls = calls(request, 'tasks');
+    if (taskCalls.length < 2) return [publish(taskCalls.length === 0 ? 'Pause' : 'Replacement')];
+    const delegations = calls(request, 'delegate_task');
+    if (delegations.length === 0) return [call('delegate_task', { task: '#1', target: { kind: 'create', role: 'review', name: 'Reviewer' } })];
+    const waits = calls(request, 'wait');
+    if (waits.length === 0) return [team('wait', { action: 'start', condition: { kind: 'agent_state', agent: '@Reviewer', states: ['waiting'] } })];
+    if (!calls(request, 'interrupt_agent').length) {
+      assert.equal(toolOutput<{ state: string }>(request, 'wait').state, 'waiting');
+      return [call('interrupt_agent', { agent: '@Reviewer' })];
+    }
+    if (delegations.length === 1) {
+      assert.deepEqual(toolOutput(request, 'interrupt_agent'), { stopped: true });
+      return [call('delegate_task', { task: '#2', target: { kind: 'agent', agent: '@Reviewer' } })];
+    }
+    if (waits.length === 1) return [team('wait', { action: 'start', condition: { kind: 'task_state', task: '#2', states: ['review_required'] } })];
+    if (taskCalls.length === 2) return [team('tasks', { action: 'accept', task: '#2' })];
+    return [text('Finished')];
+  });
+  try {
+    const run = await f.coordinator.start(f.root, input('Interrupt and reassign'), options);
+    assert.equal(run.status, 'completed');
+    const [first, second] = f.coordination.tasks(f.root.id);
+    assert.equal(first?.status, 'cancelled');
+    assert.equal(first?.attempt?.reason, 'Agent was interrupted.');
+    assert.equal(second?.status, 'completed');
+    assert.equal(second?.attempt?.ownerSessionId, first?.attempt?.ownerSessionId);
+    const child = (await f.workspace.getSession(second!.attempt!.ownerSessionId, owner))!;
+    assert.equal(f.coordination.isStopped(child.id), false);
+    assert.equal(f.coordination.wait(child.id), undefined);
+    assert.deepEqual(child.runs.map(({ status }) => status), ['cancelled', 'completed']);
   } finally { await f.close(); }
 });
 
@@ -671,13 +835,75 @@ test('stopping an active wait aborts its tool, clears its wait and releases admi
   } finally { await f.close(); }
 });
 
+test('automatic tasks without an idle matching child report the shortage without creating an agent', async () => {
+  const f = await fixture(async (request) => {
+    if (!calls(request, 'tasks').length) return [team('tasks', { action: 'publish', ...taskDraft('Needs a reviewer'), autoAssign: true })];
+    const published = toolOutput<{ status: string; pendingReason: string; message: string }>(request, 'tasks');
+    assert.equal(published.status, 'pending');
+    assert.equal(published.pendingReason, 'no_idle_agent');
+    assert.match(published.message, /role "review"/);
+    if (!calls(request, 'wait').length) return [team('wait', { action: 'start', condition: { kind: 'task_state', task: '#1', states: ['review_required'] } })];
+    const waiting = toolOutput<{ status: string; task: string; role: string }>(request, 'wait');
+    assert.deepEqual([waiting.status, waiting.task, waiting.role], ['needs_agent', '#1', 'review']);
+    return [text('Waiting for a reviewer')];
+  });
+  try {
+    const run = await f.coordinator.start(f.root, input('Publish without a reviewer'), options);
+    assert.equal(run.status, 'completed');
+    const snapshot = await f.coordinator.snapshot(f.root);
+    assert.equal(snapshot.members.length, 1);
+    assert.equal(snapshot.tasks?.[0]?.pendingReason, 'no_idle_agent');
+    assert.equal(snapshot.tasks?.[0]?.status, 'pending');
+  } finally { await f.close(); }
+});
+
+test('retiring a child frees a slot and keeps its submitted result through restart', async () => {
+  const f = await fixture(async (request) => {
+    if (isChild(request)) return [text('Review submitted')];
+    const tasks = calls(request, 'tasks');
+    const delegates = calls(request, 'delegate_task');
+    const waits = calls(request, 'wait');
+    if (tasks.length < 2) return [publish(tasks.length ? 'Second review' : 'First review')];
+    if (!delegates.length) return [call('delegate_task', { task: '#1', target: { kind: 'create', role: 'review', name: 'First reviewer' } })];
+    if (!waits.length) return [team('wait', { action: 'start', condition: { kind: 'task_state', task: '#1', states: ['review_required'] } })];
+    const createReplacement = () => call('delegate_task', { task: '#2', target: { kind: 'create', role: 'review', name: 'Replacement' } });
+    if (delegates.length === 1) return [createReplacement()];
+    if (!calls(request, 'retire_agent').length) {
+      assert.match(toolResult(request, delegates[1]?.callId).envelope.error ?? '', /At most 12/);
+      return [call('retire_agent', { agent: '@First reviewer' })];
+    }
+    assert.deepEqual(toolOutput(request, 'retire_agent'), { agent: '@First reviewer', retired: true });
+    if (tasks.length === 2) return [team('tasks', { action: 'accept', task: '#1' })];
+    if (delegates.length === 2) return [createReplacement()];
+    assert.equal(toolOutput<{ attempt: { agent: string } }>(request, 'delegate_task').attempt.agent, '@Replacement');
+    if (waits.length === 1) return [team('wait', { action: 'start', condition: { kind: 'task_state', task: '#2', states: ['review_required'] } })];
+    if (tasks.length === 3) return [team('tasks', { action: 'accept', task: '#2' })];
+    return [text('Both reviews accepted')];
+  });
+  try {
+    for (let i = 0; i < 11; i += 1) await childOf(f, `Reserve ${i}`);
+    const run = await f.coordinator.start(f.root, input('Rotate reviewers'), options);
+    assert.equal(run.status, 'completed');
+    const [first, second] = f.coordination.tasks(f.root.id);
+    assert.equal(first?.attempt?.result?.output, 'Review submitted');
+    assert.equal(second?.status, 'completed');
+    await f.restart();
+    const retired = await f.coordinator.directory.resolve(f.root, '@First reviewer');
+    assert.equal(retired.id, first?.attempt?.ownerSessionId);
+    assert.equal(f.coordination.isRetired(retired.id), true);
+    assert.equal(retired.runs[0]?.finalOutput, 'Review submitted');
+    assert.equal((await f.coordinator.directory.list(f.root)).find(({ agent }) => agent === '@First reviewer')?.status, 'retired');
+    assert.throws(() => post(f, f.root.id, retired.id, 'Wake up', 'question'), /retired/);
+  } finally { await f.close(); }
+});
+
 test('automatic assignment uses idle matching agents and reuses sessions for newly ready work', async () => {
   const f = await fixture(async (request) => [text(isChild(request) ? 'Child result' : 'Root')]);
   try {
     await f.coordinator.start(f.root, input('Plan'), options);
     const root = f.root.id;
-    const first = f.coordination.createTask(root, root, { ...taskDraft('First'), autoAssign: true }, 'first');
-    const second = f.coordination.createTask(root, root, { ...taskDraft('Second'), autoAssign: true, blockedBy: [first.id] }, 'second');
+    const first = f.coordination.createTask(root, root, { ...taskDraft('First', 'Read the initial file.'), autoAssign: true }, 'first');
+    const second = f.coordination.createTask(root, root, { ...taskDraft('Second', 'Read the next file.'), autoAssign: true, blockedBy: [first.id] }, 'second');
     const general = await f.workspace.createSession(owner, { parentSessionId: root, projectId: f.project.id });
     assert.equal(f.coordination.task(root, first.id)?.status, 'pending');
     const review = await childOf(f, 'Reviewer');
@@ -685,10 +911,24 @@ test('automatic assignment uses idle matching agents and reuses sessions for new
     assert.equal(f.coordination.task(root, first.id)?.attempt?.ownerSessionId, review.id);
     assert.equal(f.coordination.task(root, second.id)?.status, 'pending');
     assert.equal(general.runs.length, 0);
+    const firstAttempt = f.coordination.task(root, first.id)?.attempt?.id;
+    f.coordination.decideTask(root, first.id, root, { kind: 'reject', reason: 'Include the error path.' });
+    await until(() => {
+      const task = f.coordination.task(root, first.id);
+      return task?.status === 'review_required' && task.attempt?.id !== firstAttempt;
+    }, 'The rejected task was not assigned again.');
     f.coordination.decideTask(root, first.id, root, { kind: 'accept' });
     await until(() => f.coordination.task(root, second.id)?.status === 'review_required', 'The dependency did not unlock scheduling.');
     assert.equal(f.coordination.task(root, second.id)?.attempt?.ownerSessionId, review.id);
-    assert.equal(review.runs.length, 2);
+    const deliveries = review.runs.map((run) => run.input.flatMap(({ content }) =>
+      content.flatMap((part) => part.type === 'text' ? [part.text] : [])));
+    assert.equal(deliveries.length, 3);
+    assert.match(deliveries[0]![0]!, /Role selected by @parent/);
+    assert.match(deliveries[0]![1]!, /Begin task #1: First[\s\S]*Read the initial file\./);
+    assert.equal(deliveries[1]?.length, 1);
+    assert.match(deliveries[1]![0]!, /Begin task #1: First[\s\S]*Previous attempt \(rejected\): Include the error path\./);
+    assert.equal(deliveries[2]?.length, 1);
+    assert.match(deliveries[2]![0]!, /Begin task #2: Second[\s\S]*Read the next file\./);
   } finally { await f.close(); }
 });
 

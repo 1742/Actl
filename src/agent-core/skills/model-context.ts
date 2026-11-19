@@ -1,4 +1,4 @@
-import type { TranscriptItem, TranscriptMessage } from "../model/types.js";
+import type { TranscriptItem } from "../model/types.js";
 
 export interface SelectedSkillMetadata {
   id: string;
@@ -7,34 +7,26 @@ export interface SelectedSkillMetadata {
 }
 
 /**
- * Projects structured Skill references into model-readable text. Historical
- * references stay as compact markers. References in the current run also get
- * a lightweight metadata block appended to the containing user message; the
- * full Skill instructions remain available on demand through a tool.
+ * Replay the metadata captured when the user selected the Skill, including
+ * when the message is reloaded or the installed Skill has since changed.
  */
 export function materializeSelectedSkillReferences(
   transcript: readonly TranscriptItem[],
-  currentInput: readonly TranscriptMessage[],
-  selectedSkills: readonly SelectedSkillMetadata[],
 ): TranscriptItem[] {
-  const currentMessageIds = new Set(currentInput.map((message) => message.id));
-  const skillsById = new Map(selectedSkills.map((skill) => [skill.id, skill]));
-
   return transcript.map((item): TranscriptItem => {
-    if (item.type !== "message") return structuredClone(item);
-    const isCurrentInput = currentMessageIds.has(item.id);
+    if (item.type !== "message") return item;
     const referenced: SelectedSkillMetadata[] = [];
     const seen = new Set<string>();
     const content = item.content.map((part) => {
-      if (part.type !== "skill") return structuredClone(part);
-      const skill = skillsById.get(part.id);
-      if (isCurrentInput && skill && !seen.has(skill.id)) {
-        referenced.push(skill);
-        seen.add(skill.id);
+      if (part.type !== "skill") return part;
+      const name = part.name ?? part.id;
+      if (item.role === "user" && part.description !== undefined && !seen.has(part.id)) {
+        referenced.push({ id: part.id, name, description: part.description });
+        seen.add(part.id);
       }
       return {
         type: "text" as const,
-        text: `skill:${skill?.name ?? part.name ?? part.id}`,
+        text: `skill:${name}`,
       };
     });
     if (referenced.length > 0) {
@@ -43,7 +35,7 @@ export function materializeSelectedSkillReferences(
         text: `\n\n${referenced.map(formatSelectedSkillReference).join("\n\n")}`,
       });
     }
-    return { ...structuredClone(item), content };
+    return { ...item, content };
   });
 }
 

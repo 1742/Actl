@@ -11,14 +11,16 @@ export function toResponseTools(tools: ToolSchema[], nativeWebSearch = false): T
   return encoded;
 }
 
-export function toResponseInput(items: TranscriptItem[]): ResponseInputItem[] {
-  return projectToolResultImages(items).flatMap((item): ResponseInputItem[] => {
+export function toResponseInput(items: TranscriptItem[], instructions = ""): ResponseInputItem[] {
+  const input = projectToolResultImages(items).flatMap((item): ResponseInputItem[] => {
     if (item.type === "message") return [toResponseMessage(item)];
     if (item.type === "reasoning") return [toResponseReasoning(item)];
     if (item.type === "tool_call") return [{ type: "function_call", call_id: item.callId, name: item.name, arguments: item.argumentsJson }];
     if (item.type === "tool_result") return [{ type: "function_call_output", call_id: item.callId, output: contentToText(item.content) }];
     return [];
   });
+  if (instructions) input.unshift({ role: "developer", content: instructions });
+  return input;
 }
 
 function toResponseReasoning(item: Extract<TranscriptItem, { type: "reasoning" }>): ResponseReasoningItem {

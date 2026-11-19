@@ -132,6 +132,12 @@ END;
 ${RUN_STATE_CHANGED_TRIGGER}
 `;
 
+export const RETIRED_AGENT_SCHEMA = `
+CREATE TABLE agent_retired_sessions (
+  session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE
+) STRICT;
+`;
+
 export function replaceAgentCoordination(db: DatabaseSync): void {
   db.exec(`
     DROP TABLE agent_task_assignments;

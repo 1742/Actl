@@ -109,7 +109,7 @@ async function assembleAppDependencies(
   await mcpManager.initialize();
   toolRegistry.registerProvider(mcpManager);
 
-  const promptCompiler = new PromptCompiler(promptSettingsRepository, coordinationRepository);
+  const promptCompiler = new PromptCompiler(promptSettingsRepository);
 
   const agentCoordinator = new AgentCoordinator(workspaceStore, coordinationRepository, processSupervisor, {
     models: modelStore,

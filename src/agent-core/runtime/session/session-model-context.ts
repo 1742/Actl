@@ -1,5 +1,6 @@
 import { matchesWaitMail } from "../multi-agents/coordination-waits.js";
 import { agentReference } from "../multi-agents/coordination-references.js";
+import { reviewNotificationInput } from "../multi-agents/coordination-input.js";
 import { findModelCompatibilityIssues } from "../../model/compatibility.js";
 import type { McpServerManager } from "../../mcp/mcp-server-manager.js";
 import { materializeSelectedMcpReferences } from "../../mcp/model-context.js";
@@ -46,7 +47,7 @@ export class SessionModelContext {
     const selectedSkills = await this.resolveSelectedSkills(skillIdsFromInput(input), this.session);
     this.validateSelectedMcpServers(mcpNamesFromInput(input));
     signal.throwIfAborted();
-    return withSkillDisplayNames(input, selectedSkills);
+    return withReferenceMetadata(input, selectedSkills);
   }
 
   async compact(model: string, reasoningEffort: ReasoningEffort | undefined, signal: AbortSignal): Promise<boolean> {
@@ -55,16 +56,10 @@ export class SessionModelContext {
     return this.compactSession(this.session, snapshot, true, signal);
   }
 
-  async resolveReferences(run: AgentRunRecord) {
-    return {
-      skills: await this.resolveSelectedSkills(skillIdsFromInput(run.input), this.session),
-      mcp: mcpNamesFromInput(run.input),
-    };
-  }
-
-  async prepareModelStep(run: AgentRunRecord, references: Awaited<ReturnType<SessionModelContext["resolveReferences"]>>, signal: AbortSignal, onEvent: AgentDomainEventHandler) {
+  async prepareModelStep(run: AgentRunRecord, signal: AbortSignal, onEvent: AgentDomainEventHandler) {
     const session = this.session;
     await this.deliverMessages(run, signal, onEvent);
+    await this.deliverReviewNotifications(run, signal, onEvent);
     signal.throwIfAborted();
     const search = this.services.webSearch?.resolveExecutionStrategy(session.ownerId, run.modelSnapshot);
     const registeredTools = await this.tools.listTools(run);
@@ -73,8 +68,7 @@ export class SessionModelContext {
     const transcriptWithFiles = await this.services.files.materializeTranscript(
       session.id, this.workspaceStore.getModelContext(session), run.modelSnapshot.capabilities,
     );
-    const transcriptWithSkills = materializeSelectedSkillReferences(transcriptWithFiles, run.input, references.skills);
-    const transcript = materializeSelectedMcpReferences(transcriptWithSkills, run.input, references.mcp);
+    const transcript = materializeSelectedMcpReferences(materializeSelectedSkillReferences(transcriptWithFiles));
     const prompt = await this.services.promptCompiler.compile(session, transcript, this.agentReferences(session), run.permissionSnapshot.permissionMode);
     return { prompt, tools, search, nativeWebSearch };
   }
@@ -82,6 +76,25 @@ export class SessionModelContext {
   pendingWait(run: AgentRunRecord) {
     const wait = this.inbox.wait(this.session.id);
     return wait?.runId === run.id ? wait : undefined;
+  }
+
+  async deliverReviewNotifications(run: AgentRunRecord, signal: AbortSignal, onEvent: AgentDomainEventHandler): Promise<boolean> {
+    signal.throwIfAborted();
+    const session = this.session;
+    const reviews = this.inbox.reviewNotifications(session.id);
+    if (!reviews.length) return false;
+
+    const item = reviewNotificationInput(reviews);
+    const outputIndex = run.timeline.push(item) - 1;
+    try {
+      await this.workspaceStore.touch(session, run, { kind: 'review_notifications', notificationIds: reviews.map((review) => review.eventId) });
+    } catch (error) {
+      run.timeline.pop();
+      throw error;
+    }
+    await onEvent(run, { type: "item_started", item, outputIndex });
+    await onEvent(run, { type: "item_completed", item, outputIndex });
+    return true;
   }
 
   private async deliverMessages(run: AgentRunRecord, signal: AbortSignal, onEvent: AgentDomainEventHandler): Promise<void> {
@@ -153,24 +166,20 @@ export class SessionModelContext {
     if (new Set(ids).size !== ids.length) {
       throw new AgentLoopError("skills_invalid", "Selected Skill IDs must be unique.");
     }
-    // Resolve each requested skill directly instead of scanning the whole
-    // catalog, so a large installed library does not slow down every run.
-    const entries = await Promise.all(ids.map(async (id) => {
+    return Promise.all(ids.map(async (id) => {
       const entry = await this.services.skills?.findSkill(id, session.cwd);
       if (!entry) throw new AgentLoopError("skill_not_found", `Skill not found: ${id}`);
-      return entry;
-    }));
-    return entries.map((entry) => {
       if (!entry.available || !entry.package) {
         const reason = entry.diagnostics.map((diagnostic) => diagnostic.message).join("; ");
         throw new AgentLoopError("skill_unavailable", reason || `Skill is unavailable: ${entry.name}`);
       }
       return {
-        id: entry.package.id,
+        // Windows realpath can change the spelling of the path used to derive the ID.
+        id,
         name: entry.package.manifest.name,
         description: entry.package.manifest.description,
       };
-    });
+    }));
   }
 
   private validateSelectedMcpServers(names: readonly string[]): void {
@@ -237,17 +246,18 @@ function mcpNamesFromInput(input: readonly TranscriptMessage[]): string[] {
   );
 }
 
-function withSkillDisplayNames(
+function withReferenceMetadata(
   input: readonly TranscriptMessage[],
   selectedSkills: readonly SelectedSkillMetadata[],
 ): TranscriptMessage[] {
-  const namesById = new Map(selectedSkills.map((skill) => [skill.id, skill.name]));
+  const skillsById = new Map(selectedSkills.map((skill) => [skill.id, skill]));
   return input.map((message) => ({
-    ...structuredClone(message),
+    ...message,
     content: message.content.map((part) => {
+      if (part.type === "mcp_server") return { ...part, selected: true as const };
       if (part.type !== "skill") return structuredClone(part);
-      const name = namesById.get(part.id);
-      return { ...part, ...(name ? { name } : {}) };
+      const skill = skillsById.get(part.id);
+      return skill ? { ...part, name: skill.name, description: skill.description } : { ...part };
     }),
   }));
 }

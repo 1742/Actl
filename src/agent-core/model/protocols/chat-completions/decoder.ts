@@ -18,7 +18,13 @@ export class ChatStreamDecoder {
   async consume(chunk: ChatCompletionChunk): Promise<void> {
     this.id ??= chunk.id;
     if (chunk.usage) {
-      this.usage = { inputTokens: chunk.usage.prompt_tokens, outputTokens: chunk.usage.completion_tokens, totalTokens: chunk.usage.total_tokens };
+      const cachedInputTokens = chunk.usage.prompt_tokens_details?.cached_tokens;
+      this.usage = {
+        inputTokens: chunk.usage.prompt_tokens,
+        ...(typeof cachedInputTokens === "number" ? { cachedInputTokens } : {}),
+        outputTokens: chunk.usage.completion_tokens,
+        totalTokens: chunk.usage.total_tokens,
+      };
       await this.emit({ type: "usage", usage: this.usage });
     }
     for (const choice of chunk.choices) {

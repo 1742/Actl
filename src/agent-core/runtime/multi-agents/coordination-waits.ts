@@ -4,6 +4,7 @@ import type { AgentCoordinationRepository, AgentWait, WaitOutcome } from '../../
 import { isTerminalRun } from '../agent-domain.js';
 import type { WorkspaceStore } from '../workspace-store.js';
 import { directoryState } from './agent-directory.js';
+import { DEFAULT_AGENT_PROFILE } from './agent-profile-catalog.js';
 
 export type WaitDelivery = WaitOutcome | { kind: 'interrupted'; mail: AgentMail[] };
 
@@ -58,6 +59,12 @@ export class CoordinationWaits {
         if (observed) return { kind: condition.kind, task: condition.task, state: observed };
         const task = beforeDeadline && this.state.task(wait.rootId, condition.task);
         if (task && condition.states.includes(task.status)) return { kind: condition.kind, task: task.id, state: task.status };
+        if (task && task.ready && task.autoAssign && task.reviewerSessionId === wait.sessionId &&
+          condition.states.some((state) => ['assigned', 'running', 'review_required', 'completed'].includes(state)) &&
+          !this.workspace.descendants(wait.rootId).some((member) => member.parentSessionId === wait.rootId &&
+            (member.profile ?? DEFAULT_AGENT_PROFILE).id === task.type && !this.state.isStopped(member.id))) {
+          return { kind: 'needs_agent', task: task.id, role: task.type };
+        }
         break;
       }
       case 'agent_state': {

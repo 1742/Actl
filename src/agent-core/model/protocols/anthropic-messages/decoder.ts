@@ -2,11 +2,18 @@ import type { ModelTurnEventHandler } from "../../client.js";
 import type { ModelFinishReason, ModelUsage, TranscriptItem, TranscriptMessage, TranscriptReasoning, TranscriptToolCall } from "../../types.js";
 
 type Event = Record<string, any>;
+type Usage = {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+};
 
 export class AnthropicStreamDecoder {
   private messageId: string | undefined;
   private finishReason: ModelFinishReason = "unknown";
   private usage: ModelUsage | undefined;
+  private uncachedInputTokens: number | undefined;
   private stopped = false;
   private readonly blocks = new Map<number, TranscriptMessage | TranscriptReasoning | TranscriptToolCall>();
   private readonly output: TranscriptItem[] = [];
@@ -122,14 +129,21 @@ export class AnthropicStreamDecoder {
     await this.emit({ type: "reasoning_delta", itemId: item.id, section: "content", contentIndex: 0, delta });
   }
 
-  private updateUsage(value: Event | undefined): void {
+  private updateUsage(value: Usage | undefined): void {
     if (!value) return;
+    this.uncachedInputTokens = value.input_tokens ?? this.uncachedInputTokens;
+    const cachedInputTokens = value.cache_read_input_tokens ?? this.usage?.cachedInputTokens;
+    const cacheWriteInputTokens = value.cache_creation_input_tokens ?? this.usage?.cacheWriteInputTokens;
+    const outputTokens = value.output_tokens ?? this.usage?.outputTokens;
+    const inputTokens = this.uncachedInputTokens === undefined ? undefined
+      : this.uncachedInputTokens + (cachedInputTokens ?? 0) + (cacheWriteInputTokens ?? 0);
     this.usage = {
-      inputTokens: value.input_tokens ?? this.usage?.inputTokens,
-      outputTokens: value.output_tokens ?? this.usage?.outputTokens,
+      ...(inputTokens === undefined ? {} : { inputTokens }),
+      ...(cachedInputTokens === undefined ? {} : { cachedInputTokens }),
+      ...(cacheWriteInputTokens === undefined ? {} : { cacheWriteInputTokens }),
+      ...(outputTokens === undefined ? {} : { outputTokens }),
     };
-    if (this.usage.inputTokens !== undefined && this.usage.outputTokens !== undefined)
-      this.usage.totalTokens = this.usage.inputTokens + this.usage.outputTokens;
+    if (inputTokens !== undefined && outputTokens !== undefined) this.usage.totalTokens = inputTokens + outputTokens;
   }
 
   private itemId(index: number): string { return `${this.messageId ?? "message"}_block_${index}`; }

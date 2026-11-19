@@ -2,7 +2,7 @@ import type {
   AgentMail, AgentMessagePurpose, AgentPlan, AgentTask, AgentTaskInput, AgentTaskState, PlanItem, TaskAttempt,
 } from '../../shared/agent/coordination.js';
 
-export const directoryStates = ['idle', 'running', 'waiting', 'waiting_permission', 'assigned', 'stopped'] as const;
+export const directoryStates = ['idle', 'running', 'waiting', 'waiting_permission', 'assigned', 'stopped', 'retired'] as const;
 export type DirectoryState = (typeof directoryStates)[number];
 
 export type WaitCondition =
@@ -27,6 +27,7 @@ export type WaitOutcome =
   | { kind: 'task_state'; task: string; state: AgentTaskState }
   | { kind: 'agent_state'; agent: string; state: DirectoryState }
   | { kind: 'run_finished'; run: string; state: string; output?: string }
+  | { kind: 'needs_agent'; task: string; role: string }
   | { kind: 'timed_out' };
 
 export interface MailFilter {
@@ -68,6 +69,8 @@ export type WaitReceipt =
   | { kind: 'settled'; waitId: string; mailIds?: readonly string[] }
   | { kind: 'interrupted'; waitId: string; callId: string; mailIds: readonly string[] };
 
+export type RunUpdateReceipt = WaitReceipt | { kind: 'review_notifications'; notificationIds: readonly number[] };
+
 export interface RunActivation {
   work: { kind: 'conversation' } | { kind: 'attempt'; attemptId: string };
   mailIds: string[];
@@ -93,7 +96,10 @@ export interface TaskStore {
   requestAssignment(rootId: string, taskId: string): void;
   decideTask(rootId: string, taskId: string, actorId: string, decision: TaskDecision, operation?: string): AgentTask;
   failAttempt(attemptId: string, reason: string): void;
+  interruptAgent(rootId: string, agentId: string): void;
   stopAgent(rootId: string, agentId: string): void;
+  retireAgent(rootId: string, agentId: string): void;
+  isRetired(agentId: string): boolean;
   isStopped(agentId: string): boolean;
   enableAgent(agentId: string): void;
   finishRun(runId: string): void;

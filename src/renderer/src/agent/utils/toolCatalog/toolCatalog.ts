@@ -75,6 +75,7 @@ const tools: Readonly<Record<string, ToolDisplay>> = {
   mail: { presentation: 'agent_team', title: 'Mail', icon: Mail },
   wait: { presentation: 'agent_team', title: 'Wait', icon: Hourglass },
   interrupt_agent: { presentation: 'agent_team', title: 'Interrupt', icon: Hand },
+  retire_agent: { presentation: 'agent_team', title: 'Retire Agent', icon: CircleStop },
   plan: { presentation: 'agent_team', title: 'Plan', icon: ListOrdered },
 
   // MCP

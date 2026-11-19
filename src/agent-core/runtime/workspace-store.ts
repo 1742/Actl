@@ -1,4 +1,4 @@
-import type { RunActivation, WaitReceipt } from "../repositories/agent-coordination-repository.js";
+import type { RunActivation, RunUpdateReceipt } from "../repositories/agent-coordination-repository.js";
 import { mkdir, realpath, rmdir, stat } from "node:fs/promises";
 import path from "node:path";
 import type { ProjectSettings } from "../../shared/agent/sessions.js";
@@ -567,14 +567,14 @@ export class WorkspaceStore {
     return undefined;
   }
 
-  async touch(session: Session, response: AgentRunRecord, waitReceipt?: WaitReceipt): Promise<void> {
+  async touch(session: Session, response: AgentRunRecord, receipt?: RunUpdateReceipt): Promise<void> {
     const now = nowIso();
     response.updatedAt = now;
     session.updated_at = now;
     this.requireSessionMetadata(session.id).updated_at = now;
     const snapshot = timelineUpdateSnapshot(response, this.persistedTimelinePayloads.get(response.id) ?? []);
     await this.enqueue(async () => {
-      await this.sessionRepository.updateRun(response, snapshot.updates, response.timeline.length, now, waitReceipt);
+      await this.sessionRepository.updateRun(response, snapshot.updates, response.timeline.length, now, receipt);
       this.persistedTimelinePayloads.set(response.id, snapshot.payloads);
     });
   }
@@ -589,10 +589,10 @@ export class WorkspaceStore {
     });
   }
 
-  async recordModelUsage(session: Session, responseId: string, step: number, usage: import("../model/types.js").ModelUsage): Promise<void> {
+  async recordModelUsage(session: Session, responseId: string, usage: import("../model/types.js").ModelUsage): Promise<void> {
     const now = nowIso();
     await this.enqueue(async () => {
-      await this.sessionRepository.appendModelInvocationUsage({ runId: responseId, step, ...usage, createdAt: now });
+      await this.sessionRepository.appendModelInvocationUsage({ runId: responseId, ...usage, createdAt: now });
       const prior = session.contextState;
       const next: SessionContextStateRecord = {
         sessionId: session.id, summary: prior?.summary ?? "", summarizedRunCount: prior?.summarizedRunCount ?? 0,

@@ -57,7 +57,8 @@ export class AgentDirectory {
   }
 }
 
-export function directoryState(state: Pick<AgentCoordinationRepository, 'isStopped' | 'wait' | 'activeTask'>, session: Session): DirectoryState {
+export function directoryState(state: Pick<AgentCoordinationRepository, 'isRetired' | 'isStopped' | 'wait' | 'activeTask'>, session: Session): DirectoryState {
+  if (state.isRetired(session.id)) return 'retired';
   if (state.isStopped(session.id)) return 'stopped';
   const latest = session.runs.at(-1);
   if (latest?.status === 'waiting_permission') return 'waiting_permission';

@@ -189,18 +189,38 @@ export class SqliteAgentCoordinationRepository implements AgentCoordinationRepos
   stopAgent(rootId: string, agentId: string): void {
     withSqliteTransaction(this.db, () => {
       this.db.prepare('INSERT INTO agent_stopped_sessions(session_id) VALUES (?) ON CONFLICT DO NOTHING').run(agentId);
-      this.db.prepare('DELETE FROM agent_waits WHERE session_id = ?').run(agentId);
-      const task = this.activeTask(rootId, agentId);
-      if (task) {
-        this.endAttempt(task, 'cancelled', 'Agent was stopped.');
-        this.changeState(task, 'cancelled');
-      }
+      this.cancelAgentWork(rootId, agentId, 'Agent was stopped.');
       this.emit(rootId, 'agent_changed', agentId, null, 'stopped');
     });
   }
 
+  interruptAgent(rootId: string, agentId: string): void {
+    withSqliteTransaction(this.db, () => this.cancelAgentWork(rootId, agentId, 'Agent was interrupted.'));
+  }
+
+  retireAgent(rootId: string, agentId: string): void {
+    withSqliteTransaction(this.db, () => {
+      this.assertMember(rootId, agentId);
+      const result = this.db.prepare('INSERT INTO agent_retired_sessions(session_id) VALUES (?) ON CONFLICT DO NOTHING').run(agentId);
+      if (result.changes) this.emit(rootId, 'agent_changed', agentId, null, 'retired');
+    });
+  }
+
+  private cancelAgentWork(rootId: string, agentId: string, reason: string): void {
+    this.db.prepare('DELETE FROM agent_waits WHERE session_id = ?').run(agentId);
+    const task = this.activeTask(rootId, agentId);
+    if (task) {
+      this.endAttempt(task, 'cancelled', reason);
+      this.changeState(task, 'cancelled');
+    }
+  }
+
+  isRetired(agentId: string): boolean {
+    return Boolean(this.db.prepare('SELECT 1 FROM agent_retired_sessions WHERE session_id = ?').get(agentId));
+  }
+
   isStopped(agentId: string): boolean {
-    return Boolean(this.db.prepare('SELECT 1 FROM agent_stopped_sessions WHERE session_id = ?').get(agentId));
+    return this.isRetired(agentId) || Boolean(this.db.prepare('SELECT 1 FROM agent_stopped_sessions WHERE session_id = ?').get(agentId));
   }
 
   enableAgent(agentId: string): void {
@@ -239,6 +259,7 @@ export class SqliteAgentCoordinationRepository implements AgentCoordinationRepos
         if (existing.sender_id !== draft.fromSessionId || existing.recipient_id !== draft.toSessionId) throw new Error('This operation used a different recipient.');
         return toMail(existing);
       }
+      if (this.isRetired(draft.toSessionId)) throw new Error('The recipient agent has been retired.');
       const original = draft.replyTo === null ? undefined : this.mail(draft.rootId, draft.replyTo);
       if (draft.replyTo && (original?.fromSessionId !== draft.toSessionId || original?.toSessionId !== draft.fromSessionId)) {
         throw new Error('replyTo must identify mail received from this agent.');
@@ -403,6 +424,7 @@ export class SqliteAgentCoordinationRepository implements AgentCoordinationRepos
   rootsWithWork(): string[] {
     return this.db.prepare(`SELECT root_id FROM agent_tasks WHERE status IN ('assigned','running') OR (status = 'pending' AND auto_assign = 1)
       UNION SELECT root_id FROM agent_mail WHERE delivered = 0 AND purpose IN ('question','urgent')
+        AND NOT EXISTS (SELECT 1 FROM agent_retired_sessions WHERE session_id = agent_mail.recipient_id)
       UNION SELECT event.root_id FROM agent_coordination_events event
         JOIN agent_results result ON result.id = event.subject_id
         JOIN agent_task_attempts a ON a.id = result.attempt_id
@@ -491,9 +513,13 @@ export function activateAgentRun(db: DatabaseSync, run: AgentRunRecord, activati
   for (const id of activation.mailIds) {
     db.prepare('UPDATE agent_mail SET delivered = 1 WHERE id = ? AND recipient_id = ?').run(id, run.sessionId);
   }
-  for (const id of activation.notificationIds) {
-    db.prepare('UPDATE agent_coordination_events SET delivered = 1 WHERE id = ? AND recipient_id = ?').run(id, run.sessionId);
-  }
+  markReviewNotificationsDelivered(db, run.sessionId, activation.notificationIds);
+}
+
+export function markReviewNotificationsDelivered(db: DatabaseSync, sessionId: string, notificationIds: readonly number[]): void {
+  if (!notificationIds.length) return;
+  const deliver = db.prepare("UPDATE agent_coordination_events SET delivered = 1 WHERE id = ? AND recipient_id = ? AND kind = 'review_requested'");
+  for (const id of notificationIds) deliver.run(id, sessionId);
 }
 
 export function recordAgentWaitReceipt(db: DatabaseSync, run: AgentRunRecord, receipt: WaitReceipt): void {

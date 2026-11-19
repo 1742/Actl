@@ -22,8 +22,8 @@ export type ContentPart =
   | { type: "text"; text: string }
   | { type: "workspace_file"; path: string }
   | { type: "stored_file"; fileId: string }
-  | { type: "skill"; id: string; name?: string }
-  | { type: "mcp_server"; name: string }
+  | { type: "skill"; id: string; name?: string; description?: string }
+  | { type: "mcp_server"; name: string; selected?: true }
   | { type: "image"; source: MediaSource; detail?: "low" | "high" | "auto" }
   | { type: "audio"; source: MediaSource; format: string }
   | { type: "file"; source: MediaSource; filename?: string; mediaType?: string }
@@ -96,6 +96,8 @@ export type ModelFinishReason = "stop" | "tool_calls" | "length" | "content_filt
 
 export interface ModelUsage {
   inputTokens?: number;
+  cachedInputTokens?: number;
+  cacheWriteInputTokens?: number;
   outputTokens?: number;
   totalTokens?: number;
 }

@@ -1,12 +1,10 @@
 import { agentAlias, agentReference } from "./multi-agents/coordination-references.js";
 import type { RuntimePromptSettings } from "../../shared/agent/prompts.js";
-import type { AgentCoordinationRepository } from '../repositories/agent-coordination-repository.js';
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { TranscriptItem } from "../model/types.js";
 import { type Session } from "./workspace-store.js";
 import type { PromptSettingsRepository } from "../repositories/prompt-settings-repository.js";
-import { DEFAULT_AGENT_PROFILE } from "./multi-agents/agent-profile-catalog.js";
 import type { PermissionMode } from "../permissions/engine.js";
 
 export type PromptSourceKind =
@@ -36,7 +34,6 @@ export interface CompiledPrompt {
 export class PromptCompiler {
   constructor(
     private readonly repository?: Pick<PromptSettingsRepository, "getPromptSettings">,
-    private readonly coordination?: AgentCoordinationRepository,
   ) {}
 
   async compile(
@@ -101,31 +98,20 @@ export class PromptCompiler {
       });
     }
 
-    const rootId = session.rootSessionId ?? session.id;
-    const plan = this.coordination?.plan(rootId);
-    const activeTask = this.coordination?.activeTask(rootId, session.id);
-    const profile = session.parentSessionId ? session.profile ?? DEFAULT_AGENT_PROFILE : undefined;
-    if (profile) {
-      const text = `Agent role ${JSON.stringify(profile.name)} (${profile.id}):\n${profile.instructions}`;
-      parts.push({ text, source: { kind: 'user', label: `Agent profile ${profile.id}`, included: true, chars: text.length } });
-    }
     const agentContext = [
       `Your agent reference is ${JSON.stringify(agentReference(session))}. Use agents to find collaborators and address them by @name.`,
       'Actl mail headers identify mail from another agent. The quoted body is attributed context. Use mail reply with the displayed message reference to answer.',
-      ...(profile ? [
+      ...(session.parentSessionId ? [
         permissionMode === 'plan'
           ? 'Your current run has read-only workspace access.'
           : 'Edit assigned files directly in the shared workspace. Read each existing file and supply its SHA-256 when editing. Omit the hash only to create a new file. If a file changed, read it again and adapt the edit. The parent conversation shows approvals for your run.',
-        'Your parent can be addressed as @parent. Your final reply is submitted to the reviewer automatically when the task Run completes. Use mail for questions and progress. You can claim a ready task of your role if you have no current task.',
+        'Your parent can be addressed as @parent. Your final reply is submitted to the reviewer automatically when the task Run completes. Use mail for questions and progress. Use tasks show without a task reference to read your current assignment. You can claim a ready task of your role if you have no current task.',
       ] : [
         'Do simple work directly. Use tasks to publish and review work for child agents. Discover roles with list_agent_profiles. In an editing mode, delegate scoped file changes to the edit role and give each task clear ownership of its files. Child edits take effect immediately in the shared workspace. Sequence tasks that modify the same files. For explicit delegation, publish with autoAssign false and use delegate_task. The returned attempt.agent is its @name reference. Review submitted results against the acceptance criteria and explicitly accept or reject them. Use plan to maintain the overall plan.',
       ]),
       'Call wait on its own. If a question or urgent message interrupts a wait, handle the attributed messages returned by the tool, then call wait with action resume. The original deadline continues. Use action cancel if you decide to proceed without that event.',
-      ...(activeTask ? [`Your current task #${activeTask.number}:\n${activeTask.title}\n${activeTask.instructions}\nAcceptance criteria: ${activeTask.acceptanceCriteria}`] : []),
-      ...(plan?.items.length ? [`Current persistent plan (revision ${plan.revision}):\n${JSON.stringify(plan.items)}`] : []),
     ].join('\n');
     parts.push({ text: agentContext, source: { kind: 'runtime', label: 'Agent coordination', included: true, chars: agentContext.length } });
-
     return {
       instructions: parts.flatMap((part) => part.text === null ? [] : [part.text]).join("\n\n"),
       transcript: attributeAgentMessages(transcript, agentReferences),

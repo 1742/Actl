@@ -21,6 +21,8 @@ import type { Session, WorkspaceStore } from "../workspace-store.js";
 import { AgentRunFinalizer } from "./agent-run-finalizer.js";
 import { ToolBatchExecutor } from "./tool-batch-executor.js";
 
+const MAX_AGENT_STEPS = 100;
+
 export class AgentLoop {
   private readonly toolExecutor: ToolBatchExecutor;
   private readonly finalizer: AgentRunFinalizer;
@@ -56,8 +58,7 @@ export class AgentLoop {
     try {
       signal.throwIfAborted();
       if (decisions) await this.toolExecutor.resolvePermissions(session, run, decisions, signal, onEvent);
-      const references = await this.context.resolveReferences(run);
-      for (let step = 0; step < 100; step += 1) {
+      for (let step = 0; step < MAX_AGENT_STEPS; step += 1) {
         signal.throwIfAborted();
         const unresolvedToolCalls = findUnresolvedToolCalls(run.timeline);
         if (unresolvedToolCalls.length > 0) {
@@ -66,7 +67,7 @@ export class AgentLoop {
           continue;
         }
 
-        const { prompt, tools, search, nativeWebSearch } = await this.context.prepareModelStep(run, references, signal, onEvent);
+        const { prompt, tools, search, nativeWebSearch } = await this.context.prepareModelStep(run, signal, onEvent);
         signal.throwIfAborted();
         const itemIndexes = new Map<string, number>();
         const startedAt = performance.now();
@@ -87,10 +88,15 @@ export class AgentLoop {
             return this.consumeModelEvent(session, run, itemIndexes, event, onEvent);
           }, { signal });
           signal.throwIfAborted();
+          const { inputTokens, cachedInputTokens, cacheWriteInputTokens } = invocation.usage ?? {};
           this.logger.info({
             event: "agent.model.completed", ...logFields(session, run), step,
             ...(invocation.providerRequestId ? { providerResponseId: invocation.providerRequestId } : {}),
             inputItemCount: prompt.transcript.length, toolCount: tools.length,
+            ...(invocation.usage ? { inputUsage: {
+              total: inputTokens, cacheRead: cachedInputTokens, cacheWrite: cacheWriteInputTokens,
+              ...(inputTokens && cachedInputTokens !== undefined ? { cacheHitRate: cachedInputTokens / inputTokens } : {}),
+            } } : {}),
             webSearchStrategy: search?.kind ?? "external",
             webSearchProvider: search ? ("provider" in search ? search.provider : search.reason) : "brave",
             durationMs: Math.round(performance.now() - startedAt),
@@ -103,7 +109,7 @@ export class AgentLoop {
         }
 
         if (invocation.providerRequestId) await this.workspaceStore.recordProviderResponseId(run.id, invocation.providerRequestId);
-        if (invocation.usage) await this.workspaceStore.recordModelUsage(session, run.id, step, invocation.usage);
+        if (invocation.usage) await this.workspaceStore.recordModelUsage(session, run.id, invocation.usage);
         await this.ensureInvocationItems(session, run, itemIndexes, invocation.output, onEvent);
         signal.throwIfAborted();
         if (invocation.finishReason === "unknown") throw new Error("Model stream ended without a recognized finish reason.");
@@ -147,6 +153,7 @@ export class AgentLoop {
           continue;
         }
 
+        if (step + 1 < MAX_AGENT_STEPS && await this.context.deliverReviewNotifications(run, signal, onEvent)) continue;
         return this.finalizer.completed(session, run, text, onEvent);
       }
       throw new Error("Agent loop exceeded maximum steps.");

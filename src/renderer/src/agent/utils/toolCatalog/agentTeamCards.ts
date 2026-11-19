@@ -150,6 +150,7 @@ function taskState(task: Record<string, unknown>): Status | undefined {
   const state = string(task.status);
   if (state === 'pending') {
     if (task.ready === false || task.pendingReason === 'dependencies') return status('agents.taskStatus.blocked', 'warning');
+    if (task.pendingReason === 'no_idle_agent') return status('agentToolCards.noMatchingAgent', 'warning');
     return status('agentToolCards.pending');
   }
   if (!agentTaskStates.some((known) => known === state)) return undefined;
@@ -194,6 +195,7 @@ function waitRows(data: Record<string, unknown>, command: Record<string, unknown
       return [{ title: tr('agentToolCards.interrupted'), detail, status: status('agents.waiting', 'warning') },
         ...list(data.messages).map(mailRow)];
     case 'timed_out': return [{ title: tr('agents.waitTimedOut'), detail }];
+    case 'needs_agent': return [{ title: string(data.task), detail: string(data.role), status: status('agentToolCards.noMatchingAgent', 'warning') }];
     case 'cancelled': return [{ title: tr('agentToolCards.waitCancelled') }];
     case 'no_wait': return [{ title: tr('agentToolCards.noWait') }];
     default: return detail ? [{ title: tr('agents.waiting'), detail }] : [];
@@ -224,6 +226,7 @@ function runOrAgentState(state: string): Status | undefined {
     case 'completed': return status('agents.done', 'success');
     case 'cancelled':
     case 'stopped': return status('agents.cancelled');
+    case 'retired': return status('agents.retired');
     case 'incomplete': return status('agents.failed');
     case 'failed': return status('agents.taskStatus.failed', 'error');
     case 'idle': return status('agentToolCards.idle');

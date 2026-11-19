@@ -1,4 +1,4 @@
-import type { Response, ResponseFunctionWebSearch, ResponseOutputItem, ResponseOutputText, ResponseStreamEvent } from "openai/resources/responses/responses";
+import type { Response, ResponseFunctionWebSearch, ResponseOutputItem, ResponseOutputText, ResponseStreamEvent, ResponseUsage } from "openai/resources/responses/responses";
 import type { ModelTurnEventHandler } from "../../client.js";
 import type {
   ContentPart, ModelFinishReason, ModelUsage, TranscriptItem, TranscriptMessage, TranscriptReasoning, TranscriptToolCall, TranscriptWebSearch,
@@ -40,8 +40,13 @@ export function decodeTerminal(response: Response): { output: TranscriptItem[]; 
       : response.status === "incomplete"
         ? "unknown"
       : output.some((item) => item.type === "tool_call") ? "tool_calls" : "stop";
-  const usage = response.usage ? {
+  const inputDetails: (ResponseUsage.InputTokensDetails & { cache_write_tokens?: number }) | undefined = response.usage?.input_tokens_details;
+  const cachedInputTokens = inputDetails?.cached_tokens;
+  const cacheWriteInputTokens = inputDetails?.cache_write_tokens;
+  const usage: ModelUsage | undefined = response.usage ? {
     inputTokens: response.usage.input_tokens,
+    ...(typeof cachedInputTokens === "number" ? { cachedInputTokens } : {}),
+    ...(typeof cacheWriteInputTokens === "number" ? { cacheWriteInputTokens } : {}),
     outputTokens: response.usage.output_tokens,
     totalTokens: response.usage.total_tokens,
   } : undefined;

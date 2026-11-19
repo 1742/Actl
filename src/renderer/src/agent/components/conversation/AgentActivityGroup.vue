@@ -102,7 +102,7 @@ const singleReasoningBlock = computed(() =>
             compact
             :item="block.item"
           />
-          <MessageOutput v-else-if="block.type === 'context_message'" :item="block.item" :show-tools="false" />
+          <MessageOutput v-else-if="block.type === 'context_message'" :item="block.item" :show-tools="false" compact />
           <div v-else-if="block.type === 'permission'" class="text-sm text-amber-600">
             {{
               block.item.status === 'pending'

@@ -1,9 +1,9 @@
 import { AgentDirectory, directoryState } from './agent-directory.js';
 import { AgentMailbox, type SendMailInput } from './agent-mailbox.js';
 import { WaitToolOutput } from '../transcript.js';
-import type { AgentMail, AgentTask, AgentTaskInput, AgentTreeEvent, AgentTreeSnapshot, PlanItem, TaskAttempt } from '../../../shared/agent/coordination.js';
+import type { AgentMail, AgentTask, AgentTaskInput, AgentTaskPendingReason, AgentTreeEvent, AgentTreeSnapshot, PlanItem, TaskAttempt } from '../../../shared/agent/coordination.js';
 import type { AgentCoordinationRepository, AgentWait, RunActivation, TaskDecision, WaitCondition, WaitOutcome } from '../../repositories/agent-coordination-repository.js';
-import type { TranscriptMessage } from '../../model/types.js';
+import { initialAgentRoleInput, reviewNotificationInput, taskAssignmentInput } from './coordination-input.js';
 import { runAlias } from './coordination-references.js';
 import { CoordinationWaits } from './coordination-waits.js';
 import type { ReasoningEffort } from '../../model/catalog-types.js';
@@ -28,15 +28,15 @@ import { childRunResults } from './child-run-results.js';
 const MAX_ACTIVE_CHILDREN = 3;
 const MAX_CHILDREN = 12;
 
+function noIdleAgentMessage(role: string): string {
+  return `No idle child agent with role "${role}" is available. Create one explicitly with delegate_task or wait for a matching child to become idle.`;
+}
+
 export type DelegationTarget = { kind: 'agent'; agent: string } | { kind: 'create'; role: string; name?: string | undefined };
 export type WaitCommand =
   | { action: 'start'; condition: WaitCondition; timeoutMs: number }
   | { action: 'resume' }
   | { action: 'cancel' };
-
-function runtimeInput(text: string): TranscriptMessage {
-  return { id: createRandomId('coordination'), type: 'message', role: 'user', source: { kind: 'runtime' }, content: [{ type: 'text', text }] };
-}
 
 export class AgentCoordinator {
   readonly directory: AgentDirectory;
@@ -176,7 +176,10 @@ export class AgentCoordinator {
       };
     });
     return {
-      rootSessionId, members, plan: this.state.plan(rootSessionId), tasks: this.state.tasks(rootSessionId),
+      rootSessionId, members, plan: this.state.plan(rootSessionId), tasks: this.state.tasks(rootSessionId).map((task) => {
+        const pendingReason = this.pendingTaskReason(task);
+        return pendingReason ? { ...task, pendingReason } : task;
+      }),
       childRunResults: sessions.length > 1 ? childRunResults(sessions, this.state.taskSourceRuns(rootSessionId)) : [],
     };
   }
@@ -191,8 +194,9 @@ export class AgentCoordinator {
     return this.state.tasks(session.rootSessionId ?? session.id).map((task) => this.presentTask(session, task));
   }
 
-  taskDetails(session: Session, ref: string) {
-    const task = this.requireTask(session, ref);
+  taskDetails(session: Session, ref?: string) {
+    const task = ref === undefined ? this.state.activeTask(session.rootSessionId ?? session.id, session.id) : this.requireTask(session, ref);
+    if (!task) throw new Error('You have no active task. Use tasks list and pass a task reference to show.');
     const attempts = this.state.attemptHistory(task.rootSessionId, task.id).map((attempt) => this.presentAttempt(session, attempt));
     return { ...this.presentTask(session, task), attempts };
   }
@@ -241,7 +245,7 @@ export class AgentCoordinator {
       }
       if (!child) {
         this.state.requestAssignment(task.rootSessionId, task.id);
-        return { ...this.presentTask(parent, task), reason: 'unassigned' };
+        return { ...this.presentTask(parent, { ...task, autoAssign: true }), reason: 'unassigned' };
       }
       try {
         const assigned = this.state.assignTask(parent.id, task.id, child.id, { kind: 'delegate', sourceRunId: run.id }, operation);
@@ -343,7 +347,39 @@ export class AgentCoordinator {
   async interrupt(caller: Session, ref: string): Promise<void> {
     const target = await this.directory.resolve(caller, ref);
     if (target.parentSessionId !== caller.id) throw new Error('Only a parent can interrupt its child.');
-    await this.stopTree(target);
+    const root = caller.rootSessionId ?? caller.id;
+    const { stopping } = await this.serialized(root, () => {
+      this.assertOpen(caller);
+      this.assertSessionExists(target);
+      if (this.state.isRetired(target.id)) throw new Error('The child agent has been retired.');
+      this.state.interruptAgent(root, target.id);
+      return { stopping: this.runtime(target).stop() };
+    });
+    try {
+      await stopping;
+    } finally {
+      this.changed(root);
+    }
+  }
+
+  async retireChild(parent: Session, ref: string) {
+    this.assertRoot(parent);
+    const { target, stopping } = await this.mutate(parent, async () => {
+      const target = await this.directory.resolve(parent, ref);
+      if (target.parentSessionId !== parent.id) throw new Error('Only a parent can retire its child.');
+      const runtime = this.runtimes.get(target.id);
+      const status = directoryState(this.state, target);
+      if (status === 'retired') return { target, stopping: runtime?.stop() };
+      if ((status !== 'idle' && status !== 'stopped') || this.stops.has(target.id) || runtime?.isStopping || runtime?.preparing || runtime?.executing ||
+        target.runs.some((run) => !isTerminalRun(run)) || this.state.activeTask(parent.id, target.id)) {
+        throw new Error('Only an idle or stopped child with no active task can be retired.');
+      }
+      this.state.retireAgent(parent.id, target.id);
+      return { target, stopping: runtime?.stop() };
+    });
+    await stopping;
+    this.forget([target.id]);
+    return { agent: this.directory.reference(parent, target.id), retired: true };
   }
 
   private async resolveCondition(session: Session, condition: WaitCondition): Promise<WaitCondition> {
@@ -386,20 +422,30 @@ export class AgentCoordinator {
 
   private requireTask(session: Session, ref: string): AgentTask {
     const root = session.rootSessionId ?? session.id;
-    const number = /^#([1-9][0-9]*)$/.exec(ref)?.[1];
+    const number = /^#?([1-9][0-9]*)$/.exec(ref.trim().normalize('NFKC'))?.[1];
     const task = number ? this.state.tasks(root).find((item) => item.number === Number(number)) : this.state.task(root, ref);
-    if (!task) throw new Error('Task not found in this conversation.');
+    if (!task) throw new Error('Task not found in this conversation. Use tasks list for available references.');
     return task;
   }
 
   private presentTask(session: Session, task: AgentTask) {
+    const pendingReason = this.pendingTaskReason(task);
     return {
       task: `#${task.number}`, title: task.title, type: task.type, status: task.status, ready: task.ready,
       instructions: task.instructions, acceptanceCriteria: task.acceptanceCriteria, autoAssign: task.autoAssign,
       blockedBy: this.state.tasks(task.rootSessionId).filter((item) => task.blockedBy.includes(item.id)).map((item) => `#${item.number}`),
-      ...(task.status === 'pending' ? { pendingReason: task.ready ? 'unassigned' : 'dependencies' } : {}),
+      ...(pendingReason ? { pendingReason } : {}),
+      ...(pendingReason === 'no_idle_agent' ? { message: noIdleAgentMessage(task.type) } : {}),
       reviewer: this.directory.reference(session, task.reviewerSessionId), ...(task.attempt ? { attempt: this.presentAttempt(session, task.attempt) } : {}),
     };
+  }
+
+  private pendingTaskReason(task: AgentTask): AgentTaskPendingReason | undefined {
+    if (task.status !== 'pending') return undefined;
+    if (!task.ready) return 'dependencies';
+    if (task.autoAssign && !this.workspace.descendants(task.rootSessionId).some((member) =>
+      member.parentSessionId === task.rootSessionId && this.matches(member, task) && this.isAvailable(member))) return 'no_idle_agent';
+    return 'unassigned';
   }
 
   private presentAttempt(session: Session, attempt: TaskAttempt) {
@@ -416,6 +462,8 @@ export class AgentCoordinator {
       case 'task_state': return { status: 'matched', ...outcome, task: `#${this.requireTask(session, outcome.task).number}` };
       case 'agent_state': return { status: 'matched', ...outcome, agent: this.directory.reference(session, outcome.agent) };
       case 'run_finished': return { status: 'matched', ...outcome, run: runAlias(outcome.run) };
+      case 'needs_agent': return { status: 'needs_agent', task: `#${this.requireTask(session, outcome.task).number}`, role: outcome.role,
+        message: noIdleAgentMessage(outcome.role) };
       case 'timed_out': return { status: 'timed_out' };
     }
   }
@@ -440,7 +488,7 @@ export class AgentCoordinator {
 
   private isAvailable(session: Session): boolean {
     const runtime = this.runtimes.get(session.id);
-    return !runtime?.preparing && !runtime?.executing && directoryState(this.state, session) === 'idle' &&
+    return !this.stops.has(session.id) && !runtime?.isStopping && !runtime?.preparing && !runtime?.executing && directoryState(this.state, session) === 'idle' &&
       !this.state.activeTask(session.rootSessionId ?? session.id, session.id);
   }
 
@@ -454,8 +502,13 @@ export class AgentCoordinator {
   private async createChild(parent: Session, run: AgentRunRecord, callId: string, target: Extract<DelegationTarget, { kind: 'create' }>): Promise<Session> {
     const children = this.workspace.descendants(parent.id).filter((item) => item.parentSessionId === parent.id);
     const existing = children.find((item) => item.originRunId === run.id && item.originCallId === callId);
-    if (existing) return (await this.workspace.getSession(existing.id, parent.ownerId))!;
-    if (children.length >= MAX_CHILDREN) throw new Error(`At most ${MAX_CHILDREN} child sessions per conversation.`);
+    if (existing) {
+      if (this.state.isRetired(existing.id)) throw new Error('The child created by this delegation has been retired.');
+      return (await this.workspace.getSession(existing.id, parent.ownerId))!;
+    }
+    if (children.filter((child) => !this.state.isRetired(child.id)).length >= MAX_CHILDREN) {
+      throw new Error(`At most ${MAX_CHILDREN} non-retired child agents per conversation. Retire an idle child to free a slot.`);
+    }
     const profile = await this.profiles.resolve(target.role);
     const { model, reasoningEffort } = this.childModel(run, profile);
     await this.services.models.resolveSnapshot(parent.ownerId, model, reasoningEffort);
@@ -487,7 +540,7 @@ export class AgentCoordinator {
     });
     const stopped = await Promise.allSettled(members.map(async (member) => {
       const loaded = await this.workspace.getSession(member.id, session.ownerId);
-      if (loaded) await this.runtime(loaded).stop();
+      if (loaded && !this.state.isRetired(member.id)) await this.runtime(loaded).stop();
     }));
     this.changed(root);
     const failure = stopped.find((result) => result.status === 'rejected');
@@ -606,7 +659,7 @@ export class AgentCoordinator {
       if (!member || this.stops.has(member.id) || this.state.isStopped(member.id)) continue;
       const task = this.state.activeTask(rootId, member.id);
       const runtime = this.runtimes.get(member.id);
-      const active = runtime?.preparing || runtime?.executing || member.runs.some((run) => !isTerminalRun(run));
+      const active = runtime?.isStopping || runtime?.preparing || runtime?.executing || member.runs.some((run) => !isTerminalRun(run));
 
       if (task?.attempt) {
         if (active || task.status === 'assigned') {
@@ -652,13 +705,14 @@ export class AgentCoordinator {
     if (!explicit && !hasUrgentMail && !reviews.length && task?.status !== 'assigned') return undefined;
 
     const input = mail.map((item) => mailInput(item, session, item.replyTo ? this.state.mail(item.rootId, item.replyTo)?.number : undefined));
+    const role = initialAgentRoleInput(session);
+    if (role) input.unshift(role);
     if (reviews.length) {
-      input.push(runtimeInput(`Results are ready for review: ${reviews.map((event) => `#${event.taskNumber}`).join(', ')}. Use tasks show.`));
+      input.push(reviewNotificationInput(reviews));
     }
     if (task?.status === 'assigned') {
       const previous = this.state.attemptHistory(task.rootSessionId, task.id).at(-2);
-      const feedback = previous?.reason ? `\nPrevious attempt (${previous.outcome}): ${previous.reason}` : '';
-      input.push(runtimeInput(`Begin task #${task.number}: ${task.title}${feedback}`));
+      input.push(taskAssignmentInput(session, task, previous));
     }
     const activation: RunActivation = {
       work: task?.attempt ? { kind: 'attempt', attemptId: task.attempt.id } : { kind: 'conversation' },

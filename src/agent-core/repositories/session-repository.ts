@@ -1,4 +1,4 @@
-import type { RunActivation, WaitReceipt } from "./agent-coordination-repository.js";
+import type { RunActivation, RunUpdateReceipt } from "./agent-coordination-repository.js";
 import type { AgentRunRecord, AgentTimelineItem } from "../runtime/agent-domain.js";
 import type { ModelUsage } from "../model/types.js";
 import type { AgentProfile } from "../../shared/agent/profiles.js";
@@ -77,10 +77,10 @@ export interface SessionRepository {
     timelineUpdates: readonly TimelineItemUpdate[],
     timelineLength: number,
     sessionUpdatedAt: string,
-    waitReceipt?: WaitReceipt,
+    receipt?: RunUpdateReceipt,
   ): Promise<void>;
   appendProviderResponseId(runId: string, providerResponseId: string): Promise<void>;
-  appendModelInvocationUsage(usage: ModelInvocationUsageRecord): Promise<void>;
+  appendModelInvocationUsage(usage: Omit<ModelInvocationUsageRecord, "step">): Promise<void>;
   saveSessionContext(state: SessionContextStateRecord): Promise<void>;
   appendContextCompression(record: ContextCompressionRecord): Promise<void>;
   appendFileChange(change: FileChangeRecord): Promise<void>;

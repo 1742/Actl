@@ -38,10 +38,16 @@ export function toAnthropicRequest(request: ModelTurnRequest): Record<string, un
   }
 
   const tools = request.tools.map(toTool);
+  const cacheControl = { type: "ephemeral" };
+  const systemBlocks: Block[] = system.length
+    ? [{ type: "text", text: system.join("\n\n"), cache_control: cacheControl }]
+    : [];
+  const lastUserBlock = messages.findLast((message) => message.role === "user")?.content.at(-1);
+  if (lastUserBlock) lastUserBlock.cache_control = cacheControl;
   return {
     model: request.model,
     max_tokens: request.maxOutputTokens ?? 8192,
-    ...(system.length ? { system: system.join("\n\n") } : {}),
+    ...(systemBlocks.length ? { system: systemBlocks } : {}),
     messages,
     ...(tools.length ? { tools, tool_choice: { type: "auto", disable_parallel_tool_use: !request.parallelToolCalls } } : {}),
     ...(request.reasoningEffort && ["low", "medium", "high", "xhigh", "max"].includes(request.reasoningEffort)

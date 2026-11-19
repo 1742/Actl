@@ -19,6 +19,7 @@ const error = computed(() => team?.error.value);
 const statusColors = {
   ready: 'bg-sky-50 text-sky-700',
   blocked: 'bg-amber-50 text-amber-800',
+  no_idle_agent: 'bg-amber-50 text-amber-800',
   assigned: 'bg-indigo-50 text-indigo-700',
   running: 'bg-blue-50 text-blue-700',
   review_required: 'bg-violet-50 text-violet-700',
@@ -28,7 +29,10 @@ const statusColors = {
 };
 
 function taskStatus(task: AgentTask) {
-  if (task.status === 'pending') return task.ready ? 'ready' : 'blocked';
+  if (task.status === 'pending') {
+    if (task.pendingReason === 'no_idle_agent') return 'no_idle_agent';
+    return task.ready ? 'ready' : 'blocked';
+  }
   return task.status;
 }
 

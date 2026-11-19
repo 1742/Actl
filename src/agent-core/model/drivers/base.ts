@@ -24,8 +24,7 @@ export class ResponsesDriverBase implements ModelClient {
     const requestId = getRequestContext()?.requestId;
     const body = {
       model: request.model,
-      input: toResponseInput(request.transcript),
-      ...(request.instructions ? { instructions: request.instructions } : {}),
+      input: toResponseInput(request.transcript, request.instructions),
       tools: toResponseTools(request.tools, request.nativeWebSearch),
       parallel_tool_calls: request.parallelToolCalls,
       include: [
