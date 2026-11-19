@@ -6,7 +6,6 @@ import type { AIResponseContext } from '../responses/types';
 import { buildAgentOutputBlocks } from '../../utils';
 import AgentReasoningBlock from './AgentReasoningBlock.vue';
 import AgentToolBlock from './AgentToolBlock.vue';
-import AgentWebSearchBlock from './AgentWebSearchBlock.vue';
 
 const props = defineProps<{ context: AIResponseContext }>();
 const blocks = computed(() => buildAgentOutputBlocks(props.context));
@@ -33,8 +32,7 @@ const dotClass = (type: string, status?: string) => {
       <div class="min-w-0">
         <MessageOutput v-if="block.type === 'message' || block.type === 'context_message'" :item="block.item" />
         <AgentReasoningBlock v-else-if="block.type === 'reasoning'" :item="block.item" />
-        <AgentWebSearchBlock v-else-if="block.type === 'web_search'" :item="block.item" />
-        <AgentToolBlock v-else-if="block.type === 'tool'" :block="block" />
+        <AgentToolBlock v-else-if="block.type === 'tool' || block.type === 'web_search'" :block="block" />
         <div v-else-if="block.type === 'permission'" class="text-xs text-amber-600">
           {{
             block.item.status === 'pending'

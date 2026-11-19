@@ -10,14 +10,13 @@ import type { AgentOutputBlock } from './types';
 import { agentOutputHint } from '../../utils';
 import AgentReasoningBlock from './AgentReasoningBlock.vue';
 import AgentToolBlock from './AgentToolBlock.vue';
-import AgentWebSearchBlock from '../web-search/AgentWebSearchBlock.vue';
 
 const props = defineProps<{
   blocks: Exclude<AgentOutputBlock, { type: 'message' }>[];
   responseActive?: boolean;
-  showDetails?: boolean;
+  initiallyExpanded?: boolean;
 }>();
-const expanded = ref(false);
+const expanded = ref(Boolean(props.initiallyExpanded));
 const itemCount = computed(() => props.blocks.filter((block) => block.type !== 'reasoning' && block.type !== 'context_message').length);
 const lastBlock = computed(() => props.blocks.at(-1));
 const lastItemHint = computed(() => {
@@ -70,8 +69,7 @@ const singleReasoningBlock = computed(() =>
     />
     <template v-else>
       <button
-        v-if="!showDetails"
-        class="group flex min-w-0 max-w-full items-center gap-1.5 py-0.5 text-left text-sm text-gray-500 hover:text-gray-700"
+        class="group flex min-w-0 max-w-full items-center gap-1.5 py-0.5 text-left text-[15px] leading-5 text-gray-500 hover:text-gray-700"
         type="button"
         :aria-label="visibleHint || statusLabel"
         :aria-expanded="expanded"
@@ -84,28 +82,28 @@ const singleReasoningBlock = computed(() =>
           :title="visibleHint"
           >{{ visibleHint }}</span
         >
-        <span v-else class="shrink-0 text-xs text-gray-400">{{ statusLabel }}</span>
+        <span v-else class="truncate">{{ statusLabel }}</span>
         <ChevronRight
           :size="14"
           class="shrink-0 transition-transform"
           :class="{ 'rotate-90': expanded }"
         />
       </button>
-      <div v-if="showDetails || expanded" class="flex min-w-0 flex-col gap-2" :class="{ 'mt-2': !showDetails }">
+      <div v-if="expanded" class="mt-1 ml-1.5 flex min-w-0 flex-col gap-2 border-l border-gray-200 pl-3">
         <template v-for="block in blocks" :key="block.key">
           <AgentReasoningBlock
             v-if="block.type === 'reasoning'"
             :item="block.item"
             :completed="groupStatus === 'completed'"
           />
-          <AgentToolBlock v-else-if="block.type === 'tool'" :block="block" />
+          <AgentToolBlock v-else-if="block.type === 'tool' || block.type === 'web_search'" :block="block" />
           <AgentMailMessage
             v-else-if="block.type === 'context_message' && isAgentMailMessage(block.item)"
+            compact
             :item="block.item"
           />
           <MessageOutput v-else-if="block.type === 'context_message'" :item="block.item" :show-tools="false" />
-          <AgentWebSearchBlock v-else-if="block.type === 'web_search'" :item="block.item" />
-          <div v-else-if="block.type === 'permission'" class="text-xs text-amber-600">
+          <div v-else-if="block.type === 'permission'" class="text-sm text-amber-600">
             {{
               block.item.status === 'pending'
                 ? $t('status.waitingToolPermission')

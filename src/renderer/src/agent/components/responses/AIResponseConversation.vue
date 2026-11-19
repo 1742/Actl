@@ -121,7 +121,7 @@ watch(
         v-else
         ref="contentRef"
         class="mx-auto flex w-full max-w-5xl flex-col"
-        :class="displayMode === 'compact' ? 'gap-5 px-3 pt-4' : 'gap-8 px-4 pt-8 sm:px-6 lg:px-14'"
+        :class="displayMode === 'compact' ? 'gap-5 px-6 pt-4' : 'gap-8 px-4 pt-8 sm:px-6 lg:px-14'"
         :style="{ paddingBottom: bottomPadding }"
       >
         <template v-for="(context, contextIndex) in contexts" :key="context.response.id">

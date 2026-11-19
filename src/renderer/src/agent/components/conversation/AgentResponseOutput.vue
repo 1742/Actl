@@ -85,7 +85,7 @@ watch(isActive, (active, wasActive) => {
 </script>
 
 <template>
-  <div class="group/message flex min-w-0 flex-col gap-4">
+  <div class="group/message flex min-w-0 flex-col gap-3">
     <div v-if="completedHistory.length" class="min-w-0">
       <AgentReasoningBlock
         v-if="completedHistoryReasoning"
@@ -94,8 +94,9 @@ watch(isActive, (active, wasActive) => {
       />
       <template v-else>
         <button
-          class="group flex min-w-0 max-w-full items-center gap-1.5 py-0.5 text-left text-sm text-gray-500 hover:text-gray-700"
+          class="group flex min-w-0 max-w-full items-center gap-1.5 py-0.5 text-left text-[15px] leading-5 text-gray-500 hover:text-gray-700"
           type="button"
+          :aria-expanded="completedHistoryExpanded"
           @click="completedHistoryExpanded = !completedHistoryExpanded"
         >
           <span class="truncate">{{ completedHistoryStatus }}</span>
@@ -105,11 +106,10 @@ watch(isActive, (active, wasActive) => {
             :class="{ 'rotate-90': completedHistoryExpanded }"
           />
         </button>
-        <div v-if="completedHistoryExpanded" class="mt-2 border-b border-gray-200"></div>
-        <div v-if="completedHistoryExpanded" class="mt-2 flex min-w-0 flex-col gap-4">
+        <div v-if="completedHistoryExpanded" class="mt-2 flex min-w-0 flex-col gap-3 border-t border-gray-200 pt-2">
           <template v-for="group in completedHistory" :key="group.key">
             <MessageOutput v-if="group.type === 'message'" :item="group.item" :show-tools="false" />
-            <AgentActivityGroup v-else :blocks="group.blocks" :response-active="isActive" show-details />
+            <AgentActivityGroup v-else :blocks="group.blocks" :response-active="isActive" initially-expanded />
           </template>
         </div>
       </template>
@@ -125,7 +125,7 @@ watch(isActive, (active, wasActive) => {
       :content="finalText"
       :timestamp="context.completedAt || context.updatedAt || context.createdAt"
     />
-    <div v-if="!groups.length && isActive" class="flex items-center py-0.5 text-sm text-gray-500">
+    <div v-if="!groups.length && isActive" class="flex items-center py-0.5 text-[15px] leading-5 text-gray-500">
       <span :class="{ 'status-shimmer': context.response.status === 'in_progress' }">{{
         context.response.status === 'waiting_permission'
           ? $t('ui.awaitingPermission')

@@ -19,6 +19,7 @@ export type AgentToolPresentation =
   | "web_search"
   | "web_fetch"
   | "agent_team"
+  | "mcp"
   | "generic";
 
 export type AgentToolStatus = "preparing" | "waiting_permission" | "running" | "success" | "error" | "incomplete";

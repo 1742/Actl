@@ -3,64 +3,11 @@ import type { AIFunctionCallItem, AIFunctionCallOutputItem, AIMessageItem, AIRea
 import { conversationMessageKind, normalizeResponseContext, readContentText } from './aiResponse';
 import type { AgentComposerDocument, ResolvedAgentComposer } from '../components/composer/types';
 import type { ResponseInputPartDto, AgentResponseDto, PermissionRequestItemDto } from '../../../../shared/agent/responses';
-import type { AgentOutputBlock, AgentToolPresentation, AgentToolResultEnvelope, AgentToolStatus, AgentToolTimelineBlock } from '../components/conversation/types';
+import type { AgentOutputBlock, AgentToolResultEnvelope, AgentToolStatus, AgentToolTimelineBlock } from '../components/conversation/types';
 import type { RuntimeSkill } from '../../../../shared/agent/skills';
 
-const toolPresentations: Readonly<Record<string, AgentToolPresentation>> = {
-  shell: 'shell',
-  shell_poll: 'process',
-  shell_stop: 'process',
-  read_file: 'read',
-  read_uploaded_file: 'read',
-  read_skill_resource: 'skill',
-  write_file: 'write',
-  apply_patch: 'edit',
-  list_directory: 'list',
-  search_files: 'glob',
-  search_content: 'grep',
-  move_path: 'move',
-  delete_path: 'delete',
-  run_skill_script: 'skill',
-  web_search: 'web_search',
-  web_fetch: 'web_fetch',
-  list_agent_profiles: 'agent_team',
-  tasks: 'agent_team',
-  delegate_task: 'agent_team',
-  agents: 'agent_team',
-  mail: 'agent_team',
-  wait: 'agent_team',
-  interrupt_agent: 'agent_team',
-  plan: 'agent_team',
-};
-
-const agentTeamToolTitles: Readonly<Record<string, string>> = {
-  list_agent_profiles: 'Roles',
-  tasks: 'Tasks',
-  delegate_task: 'Delegate',
-  agents: 'Agents',
-  mail: 'Mail',
-  wait: 'Wait',
-  interrupt_agent: 'Interrupt',
-  plan: 'Plan',
-};
-
-const toolLabels: Record<AgentToolPresentation, string> = {
-  shell: 'Shell',
-  read: 'Read',
-  write: 'Write',
-  edit: 'Edit',
-  list: 'List',
-  glob: 'Glob',
-  grep: 'Grep',
-  move: 'Move',
-  delete: 'Delete',
-  process: 'Process',
-  skill: 'Skill',
-  web_search: 'Web Search',
-  web_fetch: 'Web Fetch',
-  agent_team: 'Sub Agent',
-  generic: 'Tool',
-};
+import { agentTeamToolDetail } from './toolCatalog/agentTeamCards';
+import { toolDisplay } from './toolCatalog/toolCatalog';
 
 const asRecord = (value: unknown): Record<string, unknown> | null =>
   value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -157,7 +104,7 @@ export function buildAgentOutputBlocks(context: Pick<AIResponseContext, 'respons
           call,
           ...(resultItem ? { resultItem } : {}),
           ...(permission ? { permission } : {}),
-          presentation: toolPresentations[call.name] || 'generic',
+          presentation: toolDisplay(call.name).presentation,
           arguments: parseToolArguments(call.arguments),
           ...(result ? { result } : {}),
           status: toolStatus(context.response.status, call, result, permission),
@@ -255,7 +202,7 @@ export function agentToolHeading(block: AgentToolTimelineBlock, view: 'row' | 'a
       detail = [stringArg('source'), stringArg('destination')].filter(Boolean).join(' → ');
       break;
     case 'skill':
-      detail = stringArg('path') || stringArg('skillId');
+      detail = stringArg('path') || stringArg('skillId') || stringArg('query');
       break;
     case 'web_search':
       detail = stringArg('query');
@@ -277,36 +224,17 @@ export function agentToolHeading(block: AgentToolTimelineBlock, view: 'row' | 'a
       break;
     }
     case 'agent_team':
-      return { title: agentTeamToolTitles[block.call.name] ?? toolLabels.agent_team, detail: agentTeamToolDetail(block) };
+      detail = agentTeamToolDetail(block);
+      break;
+    case 'mcp':
+      detail = block.call.name.startsWith('mcp__') ? block.call.name
+        : stringArg('toolName') || stringArg('query') || stringArg('server');
+      break;
     case 'generic':
       detail = block.call.name || (view === 'row' ? 'tool' : '');
       break;
   }
-  return { title: toolLabels[presentation], detail };
-}
-
-function agentTeamToolDetail(block: AgentToolTimelineBlock) {
-  const args = block.arguments;
-  const command = asRecord(args?.command);
-  const result = asRecord(block.result?.output);
-  const text = (value: unknown) => typeof value === 'string' ? value : '';
-
-  switch (block.call.name) {
-    case 'list_agent_profiles':
-      return Array.isArray(block.result?.output) ? tr('agents.profileCount', { count: block.result.output.length }) : '';
-    case 'tasks':
-      return Array.isArray(block.result?.output) ? tr('agents.taskCount', { count: block.result.output.length })
-        : text(result?.title) || text(command?.title) || text(command?.task);
-    case 'delegate_task':
-      return text(result?.title) || text(args?.task);
-    case 'mail':
-      return text(result?.subject) || text(command?.subject) || text(command?.message);
-    case 'wait':
-      if (result?.status === 'timed_out') return tr('agents.waitTimedOut');
-      return result?.status === 'interrupted' ? tr('agents.mail') : '';
-    default:
-      return '';
-  }
+  return { title: toolDisplay(block.call.name).title, detail };
 }
 
 /** Groups execution activity between messages for compact rendering. */
