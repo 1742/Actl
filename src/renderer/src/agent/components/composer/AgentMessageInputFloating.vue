@@ -5,6 +5,8 @@
     :model-options="props.modelOptions"
     :reasoning-effort="props.reasoningEffort"
     :reasoning-options="props.reasoningOptions"
+    :default-reasoning-effort="props.defaultReasoningEffort"
+    :model-preference-saving="props.modelPreferenceSaving ?? false"
     :show-reasoning-control="props.showReasoningControl"
     :placeholder="props.placeholder"
     :loading="props.loading"
@@ -32,13 +34,14 @@
 
 <script setup lang="ts">
 import AgentMessageInputCore, { type AgentMessageInputProps } from "./AgentMessageInputCore.vue";
+import type { ReasoningEffort } from '../../../../../shared/agent/models';
 
 defineOptions({ inheritAttrs: false });
 const props = defineProps<AgentMessageInputProps>();
 const emit = defineEmits<{
   "update:modelValue": [value: string];
   "update:model": [value: string];
-  "update:reasoningEffort": [value: string];
+  "update:reasoningEffort": [value: ReasoningEffort];
   submit: [value: string];
   stop: [];
   heightChange: [height: number];

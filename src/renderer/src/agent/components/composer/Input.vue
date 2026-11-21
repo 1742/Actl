@@ -24,7 +24,8 @@ import { getAgentRuntimeContext } from '../../services/runtimeClient';
 import { composerPlainText, createEmptyAgentComposer } from '../../composables/useAgentComposer';
 import { resolveAgentComposer } from '../../utils';
 import type { AgentComposerAttachment, AgentComposerContextKey, AgentComposerDocument } from './types';
-import type { ReasoningEffort } from '../../../../../shared/agent/models';
+import { reasoningEfforts, type ReasoningEffort } from '../../../../../shared/agent/models';
+import type { ActionResult } from '../../../types/common';
 
 interface ComposerEditorHandle {
   focus: () => void;
@@ -46,13 +47,22 @@ const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const MAX_ATTACHMENTS_TOTAL_BYTES = 100 * 1024 * 1024;
 const MAX_ATTACHMENTS = 10;
 let attachmentPanelObserver: ResizeObserver | undefined;
+const modelPreferenceSaving = ref(false);
+
+async function saveModelPreference(update: () => Promise<ActionResult>, errorKey: string) {
+  if (modelPreferenceSaving.value) return;
+  modelPreferenceSaving.value = true;
+  try {
+    const result = await update();
+    if (result.status === 'error') notify.error(result.message || tr(errorKey));
+  } finally {
+    modelPreferenceSaving.value = false;
+  }
+}
 
 const model = computed({
   get: () => agentStore.selectedModel,
-  set: async (value: string) => {
-    const result = await selectAgentModel(value);
-    if (result.status === 'error') notify.error(result.message || tr('ui.failedToSwitchModel'));
-  },
+  set: (value: string) => saveModelPreference(() => selectAgentModel(value), 'ui.failedToSwitchModel'),
 });
 const modelOptions = computed(() =>
   agentStore.models
@@ -71,10 +81,13 @@ const reasoningLabels = computed<Record<ReasoningEffort, string>>(() => ({
   xhigh: tr('ui.extraHigh'),
   max: tr('ui.maximum'),
 }));
-const reasoningOptions = computed(() =>
-  (
-    agentStore.models.find((item) => item.id === model.value)?.capabilities.reasoningEfforts ?? []
-  ).map((effort) => ({
+const selectedModelCapabilities = computed(() => agentStore.models.find((item) => item.id === model.value)?.capabilities);
+const defaultReasoningEffort = computed(() =>
+  selectedModelCapabilities.value?.defaultReasoningEffort ?? selectedModelCapabilities.value?.reasoningEfforts[0],
+);
+const reasoningOptions = computed(() => reasoningEfforts
+  .filter((effort) => selectedModelCapabilities.value?.reasoningEfforts.includes(effort))
+  .map((effort) => ({
     value: effort,
     label: reasoningLabels.value[effort],
     ...(effort === 'max' ? { description: tr('ui.usesYourQuotaFaster') } : {}),
@@ -82,11 +95,7 @@ const reasoningOptions = computed(() =>
 );
 const reasoningEffort = computed({
   get: () => agentStore.selectedReasoningEffort,
-  set: async (value: ReasoningEffort | undefined) => {
-    const result = await selectAgentReasoning(value);
-    if (result.status === 'error')
-      notify.error(result.message || tr('ui.failedToChangeReasoningEffort'));
-  },
+  set: (value: ReasoningEffort | undefined) => saveModelPreference(() => selectAgentReasoning(value), 'ui.failedToChangeReasoningEffort'),
 });
 const permissionMode = computed({
   get: () => agentStore.selectedPermissionMode,
@@ -512,6 +521,8 @@ watch(
         v-model:reasoning-effort="reasoningEffort"
         :model-options="modelOptions"
         :reasoning-options="reasoningOptions"
+        :default-reasoning-effort="defaultReasoningEffort"
+        :model-preference-saving="modelPreferenceSaving"
         show-reasoning-control
         :placeholder="placeholder"
         :loading="agentStore.isRunning"

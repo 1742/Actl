@@ -139,6 +139,8 @@ export default {
     chooseAModelAndReasoningEffort: '选择模型与推理强度',
     model: '模型',
     reasoningEffort: '推理强度',
+    resetReasoningEffort: '恢复默认推理强度',
+    chooseReasoningEffort: '选择推理强度',
     chooseModel: '选择模型',
     stopGenerating: '停止生成',
     send: '发送',

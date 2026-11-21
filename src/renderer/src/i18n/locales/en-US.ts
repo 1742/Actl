@@ -141,6 +141,8 @@ export default {
     chooseAModelAndReasoningEffort: 'Choose a model and reasoning effort',
     model: 'Model',
     reasoningEffort: 'Reasoning effort',
+    resetReasoningEffort: 'Reset reasoning effort',
+    chooseReasoningEffort: 'Choose reasoning effort',
     chooseModel: 'Choose model',
     stopGenerating: 'Stop generating',
     send: 'Send',
