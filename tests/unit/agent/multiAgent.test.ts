@@ -1022,7 +1022,7 @@ test('a shell process can be polled across runs only by its owning session', { t
   const f = await fixture(async (request) => {
     if (request.transcript.at(-1)?.type === 'tool_result') return [text('done')];
     const user = request.transcript.findLast((item) => item.type === 'message' && item.role === 'user');
-    const command = `"${process.execPath}" -e "console.log(123); setTimeout(() => {}, 1500)"`;
+    const command = `${process.platform === "win32" ? "& " : ""}"${process.execPath}" -e "console.log(123); setTimeout(() => {}, 1500)"`;
     return user?.type === 'message' && user.content.some((part) => part.type === 'text' && part.text === 'start shell')
       ? [call('shell', { command, yieldTimeMs: 0 })]
       : [call('shell_poll', { processId, waitMs: 5000, waitForExit: true })];

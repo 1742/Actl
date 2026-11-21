@@ -87,23 +87,20 @@ apply_patch 采用**JSON 精确字符串替换**，不接受 unified diff 或 Be
 1. action=read/list、capability 以 .read 结尾或 filesystem.search，自动允许。
 2. full_access 允许其他操作。
 3. plan 拒绝其他操作。
-4. accept_edits 允许 filesystem.write/patch/move，以及可识别的 read_only/trusted_dev shell 启动。
+4. accept_edits 允许 filesystem.write/patch/move，以及 Windows 工作区沙箱中的 shell 启动。
 5. 其余 ask。
 
 因此 shell_poll 自动允许，shell_stop 仍为副作用操作；plan 即使遇只读 shell 命令也拒绝 shell 启动。联网搜索被声明为 read，所以 plan 可以查询。MCP 实际调用为 execute，外部只读标注不降低审批要求。
 
 capability 分类是工具实现的可信声明，不能让模型通过输入自定义 action=read 获取授权。权限模式冻结在 Run，而不是从每次工具调用推断。
 
-## 6. shell 风险分类
+## 6. Windows 工作区写入沙箱
 
-[shell-command-policy.ts](../../src/agent-core/permissions/shell-command-policy.ts) 返回 read_only、trusted_dev、destructive、unknown。主要规则：
+在 accept_edits 下，shell 以会话工作区作为写入授权根目录。调用方的 cwd 只指定命令的工作目录。独立 runner 使用受限令牌、低完整性级别与 NTFS ACL 启动 pwsh 及其普通子进程，并给每次执行分配私有 TEMP/TMP。初始化失败时返回错误。shell_poll 和 shell_stop 继续使用原进程 ID。
 
-- dir/type/cat/pwd 等查询和部分 git 查询归 read_only。
-- python/node 执行、可识别的 build/test/lint/typecheck/dev 等归 trusted_dev。
-- 删除/写入 PowerShell 命令和 git 提交、reset、checkout、push、pull 等修改类操作归 destructive。
-- 管道、文件重定向、分号、命令替换等复杂语法归 unknown；部分 `&&/&` 链分段分类。
+工作区可写包含删除。读取与网络仍使用宿主可用资源；硬链接指向同一文件对象。工作区 ACL 和可继承的低完整性标签会保留，这也影响同用户的其他低完整性进程。子进程捕获孙进程输出时可能遇到 Windows 命名管道权限限制。
 
-这个分类是 accept_edits 的便利策略，不是命令安全解析器或沙箱。trusted_dev 可执行用户脚本，仍可产生任意宿主权限副作用。unknown/destructive 在 accept_edits 中询问，而非统一禁止。
+工具可以通过 hostAccessReason 请求单次宿主权限。审批绑定命令、工作目录与理由，通过后启动新进程。重试前应检查上次执行产生的部分修改。ask 仍逐次审批宿主命令，plan 拒绝 shell 启动，full_access 直接使用宿主权限。
 
 ## 7. 权限批次执行
 
@@ -115,7 +112,7 @@ capability 分类是工具实现的可信声明，不能让模型通过输入自
 
 ## 8. Windows shell 和 ProcessSupervisor
 
-[shell.ts](../../src/agent-core/tools/builtin/shell.ts) 默认使用环境 ComSpec 或 cmd.exe，**不是 PowerShell**。shell 参数支持 cmd 语法；如需 PowerShell，由具体命令显式调用。环境复制 process.env，使用宿主现有 PATH；不会自动安装 Node/Python。
+[shell.ts](../../src/agent-core/tools/builtin/shell.ts) 使用 PowerShell 7。按 PATH 中的绝对目录和标准安装目录查找 pwsh.exe，传入 -NoProfile -NonInteractive -Command 执行。找不到时报告安装提示。环境复制 process.env，使用宿主现有 PATH；不会自动安装 Node/Python。
 
 shell 返回退出结果或 processId，不必阻塞直到命令结束。yieldTimeMs 默认 10000，最大 120000；超时返回控制不代表命令被结束。shell_poll 支持 cursor 增量或 1-based line 两种互斥读取；waitForExit 可等待最终状态。仅 status=exited 时 exitCode 才表示自然命令结果，stopped 表示请求了终止。
 
@@ -131,7 +128,7 @@ shell 返回退出结果或 processId，不必阻塞直到命令结束。yieldTi
 | 强制终止延迟   | 1 秒    |
 | 终止确认宽限   | 3 秒    |
 
-输出由 [process-output-buffer.ts](../../src/agent-core/runtime/process/process-output-buffer.ts) 限界保存，返回截断信息，cursor/line 不提供无限日志历史。Windows 通过 chcp 探测输出编码，使用 iconv 解码；单次输出另有 UTF-8 优先处理。
+输出由 [process-output-buffer.ts](../../src/agent-core/runtime/process/process-output-buffer.ts) 限界保存，返回截断信息，cursor/line 不提供无限日志历史。PowerShell 输出按 UTF-8 解码。
 
 进程由 session owner 管理，其他会话不能 poll/stop。Windows 用 taskkill `/T` 处置树，必要时 `/F`；无法确认时记日志。删除会话/项目或 Agent.dispose 会回收；进程表在内存，不跨重启恢复。停止 Run 的信号会中止正在等待的启动/轮询，但已返回到会话的长期进程应通过明确回收入口处置。
 
@@ -141,4 +138,4 @@ shell 返回退出结果或 processId，不必阻塞直到命令结束。yieldTi
 
 单条 shell_stop 仍使用 ProcessSupervisor 的命令记录和 taskkill；不能把 Agent 级 Job 统一清理理解为每次 shell_stop 都有独立 Job。
 
-yieldTimeMs 只限制命令启动后的观察等待，不是硬执行超时，也不包括审批。当前启动前的 chcp 编码探测未设置独立超时或取消信号；这一步阻塞时尚未进入 ProcessSupervisor 的等待计时。排查长期等待时应区分审批、准备、启动观察、后台运行及 shell_poll。
+yieldTimeMs 只限制命令启动后的观察等待，不是硬执行超时，也不包括审批。排查长期等待时应区分审批、准备、启动观察、后台运行及 shell_poll。

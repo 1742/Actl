@@ -1,7 +1,5 @@
-import { spawn } from "node:child_process";
-import { isUtf8 } from "node:buffer";
+import fs from 'node:fs';
 import path from "node:path";
-import iconv from "iconv-lite";
 import { z } from "zod";
 import type { SessionProcessAccess } from "../../runtime/process/process-types.js";
 import {
@@ -21,11 +19,13 @@ interface ResolvedShellCommand {
   resource: string;
   yieldTimeMs?: number;
   env: NodeJS.ProcessEnv;
+  workspaceWriteRoot?: string;
 }
 
 const nonEmptyStringSchema = z.string().trim().min(1);
 export const shellInputSchema = z.object({
   command: nonEmptyStringSchema.describe("Shell command to execute."),
+  hostAccessReason: nonEmptyStringSchema.optional().describe("Request host permissions for this command only. Explain why it requires access beyond the workspace write sandbox. Requires approval in accept_edits."),
   cwd: nonEmptyStringSchema.optional().describe("Optional absolute path or path relative to the Session cwd."),
   yieldTimeMs: z.number().int().min(0).max(MAX_WAIT_MS).optional()
     .describe("Wait up to this many milliseconds for the command to exit before returning control. The process keeps running if the wait expires. Default: 10000; maximum: 120000."),
@@ -71,7 +71,7 @@ export class ShellToolProvider implements ToolProvider {
     return [
       {
         name: "shell",
-        description: `Run a shell command with the host process permissions. Return immediately when it exits, or after yieldTimeMs with a processId while it keeps running. Use shell_poll to wait for completion or read later output, and shell_stop to terminate it. Current shell: ${runtime.description}`,
+        description: `Run a shell command. In accept_edits, Windows restricts writes to the session workspace and private temp directory. To request a wider scope, supply hostAccessReason on a new call. Check partial effects before retrying. Use shell_poll and shell_stop for background processes. Current shell: ${runtime.description}`,
         inputSchema: shellInputSchema,
       },
       {
@@ -96,7 +96,7 @@ export class ShellToolProvider implements ToolProvider {
     if (name === "shell") {
       const resolved = await this.resolveCommand(input, context);
       return {
-        capability: "process.spawn",
+        capability: resolved.workspaceWriteRoot ? "process.spawn.workspace" : "process.spawn",
         resource: resolved.resource,
         action: "execute",
       };
@@ -120,14 +120,18 @@ export class ShellToolProvider implements ToolProvider {
     const runtime = getShellRuntime();
     if (name === "shell") {
       const resolved = await this.resolveCommand(input, context);
-      this.assertAuthorization(context, "process.spawn", "execute", resolved.resource);
-      const outputEncoding = await detectShellOutputEncoding(runtime);
+      this.assertAuthorization(context, resolved.workspaceWriteRoot ? "process.spawn.workspace" : "process.spawn", "execute", resolved.resource);
+      if (!resolved.workspaceWriteRoot && context.permissionMode === 'accept_edits' && !context.authorization?.approvedByUser) {
+        throw new Error("Host shell execution requires approval for this call.");
+      }
+      const shell = runtime.platform === "win32" ? resolvePowerShell() : runtime.executable;
       const processes = this.requireProcesses(context);
       const started = await processes.start({
         command: resolved.command,
         cwd: resolved.cwd,
-        shell: runtime.executable,
-        outputEncoding,
+        shell,
+        ...(resolved.workspaceWriteRoot ? { workspaceWriteRoot: resolved.workspaceWriteRoot } : {}),
+        outputEncoding: "utf8",
         env: resolved.env,
         startupWaitMs: resolved.yieldTimeMs ?? DEFAULT_YIELD_TIME_MS,
         ...(context.signal ? { signal: context.signal } : {}),
@@ -182,6 +186,13 @@ export class ShellToolProvider implements ToolProvider {
       resource: "",
     };
     resolved.resource = createShellResource(parsed.command, resolvedCwd);
+    if (context.permissionMode === 'accept_edits' && !parsed.hostAccessReason) {
+      if (!context.cwd || process.platform !== 'win32') throw new Error('A Windows session workspace is required for confined shell execution. Request hostAccessReason for an approved host command.');
+      resolved.workspaceWriteRoot = await canonicalizePotentialPath(context.cwd);
+      resolved.resource = JSON.stringify({ shell: getShellRuntime().executable, command: parsed.command, cwd: resolvedCwd, workspace: resolved.workspaceWriteRoot });
+    } else if (parsed.hostAccessReason) {
+      resolved.resource = JSON.stringify({ shell: getShellRuntime().executable, command: parsed.command, cwd: resolvedCwd, access: 'host', reason: parsed.hostAccessReason });
+    }
     if (parsed.yieldTimeMs !== undefined) resolved.yieldTimeMs = parsed.yieldTimeMs;
     return resolved;
   }
@@ -200,57 +211,35 @@ export class ShellToolProvider implements ToolProvider {
 }
 
 function createShellResource(command: string, cwd: string): string {
-  return JSON.stringify({ cwd: path.normalize(cwd), command });
+  return JSON.stringify({ shell: getShellRuntime().executable, cwd: path.normalize(cwd), command });
 }
 
-export function getShellRuntime(
-  platform: NodeJS.Platform = process.platform,
-  environment: NodeJS.ProcessEnv = process.env,
-): ShellRuntime {
+export function getShellRuntime(platform: NodeJS.Platform = process.platform): ShellRuntime {
   if (platform === "win32") {
     return {
       platform,
-      executable: environment.ComSpec?.trim() || "cmd.exe",
-      description: "Windows cmd.exe. Use cmd syntax and commands (for example dir), not Unix-only commands such as ls.",
+      executable: "pwsh.exe",
+      description: "PowerShell 7 (pwsh.exe). Use PowerShell syntax, including $env:NAME for environment variables.",
     };
   }
   return { platform, executable: "/bin/sh", description: "POSIX /bin/sh. Use POSIX shell syntax and commands (for example ls)." };
 }
 
-export async function detectShellOutputEncoding(runtime: ShellRuntime): Promise<string> {
-  if (runtime.platform !== "win32") return "utf8";
-  try {
-    const output = await runCodePageProbe(runtime.executable);
-    return encodingForWindowsCodePage(parseWindowsCodePage(output));
-  } catch {
-    return "utf8";
+export function resolvePowerShell(environment = process.env): string {
+  const directories = (environment.PATH ?? '').split(path.delimiter)
+    .map(directory => directory.trim().replace(/^"|"$/g, '')).filter(directory => path.isAbsolute(directory));
+  if (environment.ProgramFiles) directories.push(path.join(environment.ProgramFiles, 'PowerShell', '7'));
+  const checked: string[] = [];
+  for (const directory of new Set(directories)) {
+    const executable = path.join(directory, 'pwsh.exe');
+    try {
+      if (fs.statSync(executable, { throwIfNoEntry: false })?.isFile()) return executable;
+      checked.push(executable);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'EACCES' && code !== 'EPERM' && code !== 'ENOTDIR' && code !== 'ELOOP') throw error;
+      checked.push(`${executable} (${code})`);
+    }
   }
-}
-
-export function parseWindowsCodePage(output: Buffer): number | null {
-  const match = output.toString("ascii").match(/(?:^|\D)(\d{3,5})(?:\D|$)/);
-  return match ? Number(match[1]) : null;
-}
-
-export function encodingForWindowsCodePage(codePage: number | null): string {
-  if (codePage === null || codePage === 65001) return "utf8";
-  const aliases: Record<number, string> = { 932: "shift_jis", 936: "gbk", 949: "cp949", 950: "big5" };
-  const encoding = aliases[codePage] ?? `cp${codePage}`;
-  return iconv.encodingExists(encoding) ? encoding : "utf8";
-}
-
-export function decodeShellOutput(output: Buffer, fallbackEncoding: string): string {
-  return isUtf8(output) ? output.toString("utf8") : iconv.decode(output, fallbackEncoding);
-}
-
-function runCodePageProbe(shell: string): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const child = spawn("chcp", { shell, windowsHide: true });
-    const chunks: Buffer[] = [];
-    child.stdout?.on("data", (chunk: Buffer) => chunks.push(chunk));
-    child.on("error", reject);
-    child.on("close", (exitCode) => exitCode === 0
-      ? resolve(Buffer.concat(chunks))
-      : reject(new Error(`chcp exited with code ${exitCode ?? "unknown"}.`)));
-  });
+  throw new Error(`PowerShell 7 (pwsh.exe) was not found. Install PowerShell 7 or add its directory to PATH and restart Actl. Checked: ${checked.join('; ') || '(no absolute search directories)'}`);
 }

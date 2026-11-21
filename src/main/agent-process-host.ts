@@ -71,6 +71,7 @@ export class AgentProcessHost {
     this.job = job;
     return new Promise((resolve, reject) => {
       const environment = { ...process.env };
+      environment.ACTL_SHELL_RUNNER = path.join(__dirname, 'windows-shell-runner.cjs').replace(/app\.asar(?=[\\/])/, 'app.asar.unpacked');
       delete environment.ELECTRON_RUN_AS_NODE;
       let child: UtilityProcess;
       try {

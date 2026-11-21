@@ -75,7 +75,13 @@ const workingDirectory = computed(() => {
     ? input.cwd
     : '';
 });
+const hostAccessReason = computed(() => {
+  const input = permission.value?.tool_call.input;
+  return shellCommand.value && input && typeof input === 'object' &&
+    'hostAccessReason' in input && typeof input.hostAccessReason === 'string' ? input.hostAccessReason : '';
+});
 const permissionTitle = computed(() =>
+  hostAccessReason.value ? tr('ui.allowHostShellCommand') :
   shellCommand.value
     ? tr('ui.allowThisShellCommand')
     : tr('dynamic.permissionTool', { name: permission.value?.tool_call.name || tr('ui.thisTool') }),
@@ -209,6 +215,9 @@ async function stop() {
       </div>
     </div>
 
+    <div
+      v-if="hostAccessReason" class="px-2 py-1 text-sm text-gray-800"
+    >{{ hostAccessReason }}</div>
     <div
       v-if="workingDirectory"
       class="mt-2 flex min-w-0 items-baseline gap-2 px-2 text-xs text-gray-500"

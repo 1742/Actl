@@ -11,6 +11,14 @@ extraResources:
   - from: out/fixtures
     to: verification-fixtures
 asar: true
+asarUnpack:
+  - out/main/windows-shell-runner.cjs
+  - out/main/chunks/**
+  - node_modules/koffi/**
+  - node_modules/@koromix/koffi-win32-x64/**
+extraFiles:
+  - from: vendor/windows-sandbox/LICENSE
+    to: licenses/deepseek-windows-sandbox.txt
 npmRebuild: false
 win:
   executableName: Actl

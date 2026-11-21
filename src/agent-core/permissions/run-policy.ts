@@ -3,7 +3,6 @@ import { permissionModes, type PermissionMode } from "../../shared/agent/respons
 import type { ToolCall } from "../runtime/transcript.js";
 import type { ToolPermissionRequirement } from "../tools/registry.js";
 import type { PermissionDecision, PermissionEngine } from "./types.js";
-import { classifyShellCommand } from "./shell-command-policy.js";
 
 export const permissionModeSchema = z.enum(permissionModes);
 export type { PermissionMode };
@@ -33,7 +32,8 @@ export class RunPermissionEngine implements PermissionEngine {
     if (mode === "plan") {
       return { type: "deny", reason: `${requirement.capability} is disabled in plan mode.` };
     }
-    if (mode === "accept_edits" && (isOrdinaryFileEdit(requirement) || isTrustedShellCommand(toolCall, requirement))) {
+    if (mode === "accept_edits" && (isOrdinaryFileEdit(requirement) ||
+      (toolCall.name === "shell" && requirement.capability === "process.spawn.workspace"))) {
       return { type: "allow" };
     }
     return { type: "ask", prompt: permissionPrompt(toolCall, requirement) };
@@ -49,15 +49,6 @@ function isOrdinaryFileEdit(requirement: ToolPermissionRequirement): boolean {
   return requirement.capability === "filesystem.write" ||
     requirement.capability === "filesystem.patch" ||
     requirement.capability === "filesystem.move";
-}
-
-function isTrustedShellCommand(toolCall: ToolCall, requirement: ToolPermissionRequirement): boolean {
-  if (toolCall.name !== "shell") return false;
-  if (requirement.capability !== "process.spawn") return false;
-  const input = toolCall.input;
-  if (!input || typeof input !== "object" || !("command" in input) || typeof input.command !== "string") return false;
-  const risk = classifyShellCommand(input.command);
-  return risk === "read_only" || risk === "trusted_dev";
 }
 
 function permissionPrompt(toolCall: ToolCall, requirement: ToolPermissionRequirement): string {

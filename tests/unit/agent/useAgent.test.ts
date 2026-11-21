@@ -10,7 +10,7 @@ import { useAgentStore } from '../../../src/renderer/src/agent/stores/agent';
 import { localClient } from '../../../src/renderer/src/agent/services/localClient';
 import { conversationMessageKind, isMessageItem, normalizeResponseContext, subagentRunContexts } from '../../../src/renderer/src/agent/utils/aiResponse';
 import { buildAgentOutputGroups } from '../../../src/renderer/src/agent/utils';
-import { agentTeamCard, agentTeamCardKind } from '../../../src/renderer/src/agent/utils/agentTeamCards';
+import { agentTeamCard, agentTeamCardKind } from '../../../src/renderer/src/agent/utils/toolCatalog/agentTeamCards';
 import type { AgentResponseDto, PendingPermissionBatchDto, AgentStreamEvent, ResponseMessageItemDto } from '../../../src/shared/agent/responses';
 import type { AgentSession, SessionContext } from '../../../src/shared/agent/sessions';
 

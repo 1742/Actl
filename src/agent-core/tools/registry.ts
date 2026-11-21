@@ -46,6 +46,7 @@ export interface ToolExecutionAuthorization {
 }
 
 export interface ToolCallContext {
+  permissionMode?: import('../permissions/run-policy.js').PermissionMode;
   cwd: string | null;
   fileEditRoots?: readonly string[];
   runId: string;

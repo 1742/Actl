@@ -1,5 +1,9 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { isUtf8 } from "node:buffer";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { powerShellArgs } from "./powershell.js";
 import iconv from "iconv-lite";
 import { createSilentLogger, type Logger } from "../../observability/logger.js";
 import { createRandomId, nowIso } from "../../utils.js";
@@ -288,6 +292,29 @@ export class ProcessSupervisor {
   }
 
   private spawnCommand(input: ProcessCommandInput): ChildProcess {
+    if (input.workspaceWriteRoot !== undefined) {
+      const runner = process.env.ACTL_SHELL_RUNNER;
+      if (this.platform !== 'win32' || !runner) throw new Error('Windows workspace sandbox unavailable.');
+      // The supervisor owns cleanup even when shell_stop terminates the runner.
+      const temp = mkdtempSync(path.join(tmpdir(), 'actl-shell-'));
+      const cleanup = () => {
+        try { rmSync(temp, { recursive: true, force: true, maxRetries: 3 }); }
+        catch (error) { this.logger.warn({ event: 'shell.temp_cleanup_failed', error: String(error) }); }
+      };
+      try {
+        const child = spawn(process.execPath, [runner, input.workspaceWriteRoot, temp, input.cwd, input.shell, input.command], {
+          windowsHide: true, env: { ...input.env, ELECTRON_RUN_AS_NODE: '1' },
+        });
+        child.once('close', cleanup);
+        return child;
+      } catch (error) {
+        cleanup();
+        throw error;
+      }
+    }
+    if (this.platform === "win32" && path.basename(input.shell).toLowerCase() === "pwsh.exe") {
+      return spawn(input.shell, powerShellArgs(input.command), { cwd: input.cwd, env: input.env, windowsHide: true });
+    }
     return spawn(input.command, {
       cwd: input.cwd,
       shell: input.shell,

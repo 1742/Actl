@@ -12,6 +12,7 @@ export interface ProcessCommandInput {
   command: string;
   cwd: string;
   shell: string;
+  workspaceWriteRoot?: string;
   outputEncoding: string;
   env?: NodeJS.ProcessEnv;
 }

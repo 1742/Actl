@@ -122,7 +122,7 @@ async function startFixture(processCommands: Map<string, string>, explicitWorksp
       } else if (text.includes('workspace-shell-') && payload.messages.at(-1)?.role !== 'tool') {
         workspaceMessages = payload.messages;
         emit({ tool_calls: [{ index: 0, id: `call-${randomUUID()}`, type: 'function', function: {
-          name: 'shell', arguments: JSON.stringify({ command: 'cd', ...(text.includes('workspace-shell-explicit') ? { cwd: explicitWorkspace } : {}) }),
+          name: 'shell', arguments: JSON.stringify({ command: '(Get-Location).Path', ...(text.includes('workspace-shell-explicit') ? { cwd: explicitWorkspace } : {}) }),
         } }] }, 'tool_calls');
         done();
       } else if (text.includes('slow-fixture')) {
@@ -222,7 +222,7 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
   const launchOrphan = async (label: string) => {
     const marker = path.join(root, `${label}.json`);
     const script = fixturePath;
-    processCommands.set(label, `set "ELECTRON_RUN_AS_NODE=1" && "${process.execPath}" "${script}" --orphan-probe "${marker}"`);
+    processCommands.set(label, `$env:ELECTRON_RUN_AS_NODE="1"; & "${process.execPath}" "${script}" --orphan-probe "${marker}"`);
     const pending = success(await run(`process-fixture:${label}`));
     assert.equal(pending.status, 'waiting_permission');
     assert.equal((await resume(pending, 'approve')).status, 'completed');
@@ -278,7 +278,7 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
       assert.equal((await resume(pendingWrite, 'approve', first.id)).status, 'completed');
       assert.equal(await readFile(path.join(firstCwd, 'standalone.txt'), 'utf8'), 'approved by IPC');
       await assert.rejects(access(path.join(secondCwd, 'standalone.txt')), { code: 'ENOENT' });
-      processCommands.set('standalone-cwd', 'echo standalone>shell-cwd.txt');
+      processCommands.set('standalone-cwd', 'Set-Content shell-cwd.txt standalone');
       const pendingShell = success(await run('process-fixture:standalone-cwd', undefined, second.id));
       assert.equal((await resume(pendingShell, 'approve', second.id)).status, 'completed');
       assert.equal((await readFile(path.join(secondCwd, 'shell-cwd.txt'), 'utf8')).trim(), 'standalone');

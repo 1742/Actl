@@ -10,6 +10,7 @@ export default defineConfig({
         input: {
           index: resolve('src/main/index.ts'),
           'agent-worker': resolve('src/runtime/agent-worker.ts'),
+          'windows-shell-runner': resolve('src/runtime/windows-shell-runner.ts'),
         },
         output: {
           format: 'cjs',

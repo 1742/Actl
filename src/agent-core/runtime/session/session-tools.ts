@@ -75,6 +75,7 @@ export class SessionTools {
     const session = this.session;
     return {
       cwd: session.cwd,
+      permissionMode: run.permissionSnapshot.permissionMode,
       ...(session.parentSessionId ? {
         fileEditRoots: [...(session.cwd ? [session.cwd] : []), ...(session.additionalWorkspacePaths ?? [])],
       } : {}),

@@ -12,7 +12,7 @@ import { createFileLogger } from '../../src/agent-core/observability/logger';
 import { runWithRequestContext } from '../../src/agent-core/observability/request-context';
 import { ProcessSupervisor } from '../../src/agent-core/runtime/process/process-supervisor';
 import { SecretProtector } from '../../src/agent-core/security/secret-protector';
-import { detectShellOutputEncoding, getShellRuntime } from '../../src/agent-core/tools/builtin/shell';
+import { resolvePowerShell } from '../../src/agent-core/tools/builtin/shell';
 import type { VerificationCheck } from './types';
 
 const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -193,11 +193,11 @@ export async function runCoreChecks(dataDirectory: string, fixturePath: string):
   });
 
   const childEnvironment = { ...process.env, ELECTRON_RUN_AS_NODE: '1' };
-  const shell = process.env.ComSpec ?? 'C:\\Windows\\System32\\cmd.exe';
+  const shell = resolvePowerShell();
   await check('Windows 命令进程', async () => {
     const supervisor = new ProcessSupervisor({ terminationGraceMs: 2_000, forceKillDelayMs: 300 });
     try {
-      const encoding = await detectShellOutputEncoding(getShellRuntime());
+      const encoding = 'utf8';
       const result = await supervisor.execute({
         command: 'echo Actl_中文_shell_probe',
         cwd: options.dataDirectory, shell, outputEncoding: encoding, timeoutMs: 5_000,
@@ -206,7 +206,7 @@ export async function runCoreChecks(dataDirectory: string, fixturePath: string):
       assert.match(result.stdout, /Actl_中文_shell_probe/);
       const owner = { type: 'session' as const, id: 'verification' };
       const started = await supervisor.start({
-        command: `"${process.execPath}" "${options.fixturePath}" --process-probe`,
+        command: `& "${process.execPath}" "${options.fixturePath}" --process-probe`,
         cwd: options.dataDirectory, shell, outputEncoding: 'utf8', env: childEnvironment,
         owner, startupWaitMs: 500,
       });

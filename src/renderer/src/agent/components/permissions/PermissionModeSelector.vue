@@ -39,7 +39,7 @@ const options = computed<PermissionModeOption[]>(() => [
   {
     value: 'accept_edits',
     label: tr('ui.edit'),
-    description: tr('ui.allowFileEditsAndLowRisk'),
+    description: tr('ui.workspaceShellAccess'),
     icon: FileCheck2,
   },
   {
