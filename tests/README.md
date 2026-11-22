@@ -25,7 +25,7 @@ pnpm test:multi-agent
 
 语言引用检查扫描 `src/renderer/src/`，测试文件移动不改变其检查范围。
 
-multiAgent.test.ts 使用临时 SQLite、真实 AgentLoop/Coordinator 和本地内存模型替身，覆盖 v20→v21 迁移、计划 revision、并发子会话、只读执行防护、消息去重、审批暂停和整树取消。Electron 集成验证另覆盖持续树订阅、detach 后执行、follow-up 自动唤醒与重启恢复。
+multiAgent.test.ts 使用临时 SQLite、真实 AgentLoop/Coordinator 和本地内存模型替身，覆盖 v20→v21 迁移、计划 revision、并发子会话、只读执行防护、消息去重、审批暂停和整树取消。Electron 集成验证另覆盖持续树订阅、detach 后执行、子会话拒收用户消息、代理邮件自动唤醒与重启恢复。
 
 ## Electron 集成验证
 

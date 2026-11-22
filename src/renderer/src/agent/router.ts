@@ -1,9 +1,44 @@
 import type { RouteRecordRaw, Router } from 'vue-router';
+import { tr } from '../i18n';
+import type { ActionResult } from '../types/common';
+import { runtimeResourceKey, selectAgentSession } from './composables/useAgent';
+import { useAgentStore } from './stores/agent';
 
 export async function enterAgentConversation(router: Router) {
   if (router.currentRoute.value.name !== 'aiAgentRightSidebarHome') {
     await router.push({ name: 'aiAgent' });
   }
+}
+
+export async function openAgentSubagent(router: Router, sessionId: string) {
+  const store = useAgentStore();
+  if (!store.currentTree?.members[sessionId]?.session.parentSessionId) return;
+  if (router.currentRoute.value.name !== 'aiAgentRightSidebarHome') {
+    await router.push({ name: 'aiAgentRightSidebarHome' });
+  }
+  if (router.currentRoute.value.name === 'aiAgentRightSidebarHome' &&
+      store.currentTree?.members[sessionId]?.session.parentSessionId) {
+    store.requestedSubagentId = sessionId;
+  }
+}
+
+export async function openAgentSearchResult(router: Router, sessionId: string): Promise<ActionResult> {
+  const store = useAgentStore();
+  const session = store.sessionById(sessionId);
+  if (!session) return { status: 'error', message: tr('ui.conversationDoesNotExistOrHas') };
+
+  const parentId = session.parentSessionId
+    ? runtimeResourceKey(session.runtimeKind, session.parentSessionId)
+    : undefined;
+  const conversationId = parentId ?? session.id;
+  if (store.selectedSessionId !== conversationId) {
+    const result = await selectAgentSession(conversationId);
+    if (result.status === 'error') return result;
+  }
+  if (store.selectedSessionId !== conversationId) return { status: 'success' };
+  if (parentId) await openAgentSubagent(router, session.id);
+  else await enterAgentConversation(router);
+  return { status: 'success' };
 }
 
 const agentRoutes: RouteRecordRaw = {

@@ -6,7 +6,6 @@ export const agentOperations = [
   'runtime.info',
   'agents.tree',
   'agents.watch',
-  'agents.message',
   'agents.stop',
   'projects.list',
   'projects.create',

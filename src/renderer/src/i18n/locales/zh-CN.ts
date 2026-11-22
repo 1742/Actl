@@ -16,6 +16,7 @@ export default {
     profileCount: '{count} 个角色', taskCount: '{count} 项任务',
     running: '运行中', approval: '等待审批', stopping: '正在停止', failed: '未完成', cancelled: '已停止', done: '已结束', retired: '已回收',
     approvals: '代理审批', openConversation: '查看子会话',
+    sendInParentConversation: '请在父对话中发送消息。',
     followup: '追加指令', followupHint: '为当前任务追加说明', send: '发送', stop: '停止',
   },
   agentToolCards: {

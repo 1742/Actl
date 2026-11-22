@@ -1,29 +1,19 @@
 <script setup lang="ts">
-import { computed, inject, ref } from 'vue';
+import { computed, ref } from 'vue';
 import { ArrowUpRight } from '@lucide/vue';
 import { useRouter } from 'vue-router';
-import { agentTreeKey } from '../../composables/useAgentTree';
+import { openAgentSubagent } from '../../router';
 import { useAgentStore, type TreePermissionRequest } from '../../stores/agent';
 import PermissionPanel from './PermissionPanel.vue';
 
 const store = useAgentStore();
 const router = useRouter();
-const team = inject(agentTreeKey);
 const selectedKey = ref('');
 const requests = computed(() => store.permissionRequests);
 const selected = computed(() => requests.value.find((request) => key(request) === selectedKey.value) ?? requests.value[0]);
 
 function key(request: TreePermissionRequest) {
   return `${request.sessionId}:${request.responseId}:${request.batchId}`;
-}
-
-async function openConversation(sessionId: string) {
-  if (!team) return;
-  if (router.currentRoute.value.name !== 'aiAgentRightSidebarHome') {
-    await router.push({ name: 'aiAgentRightSidebarHome' });
-  }
-  // The same approval may be used to reopen a tab the user has closed.
-  team.requestedMember.value = { sessionId };
 }
 </script>
 
@@ -41,7 +31,7 @@ async function openConversation(sessionId: string) {
       </button>
       <button v-if="selected.session.parentSessionId" type="button"
         class="ml-auto flex shrink-0 items-center gap-1 px-1 py-1 text-xs text-gray-600 hover:text-gray-900"
-        @click="openConversation(selected.sessionId)">
+        @click="openAgentSubagent(router, selected.sessionId)">
         {{ $t('agents.openConversation') }} <ArrowUpRight :size="13" />
       </button>
     </div>

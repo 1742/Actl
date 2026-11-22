@@ -16,6 +16,7 @@ export default {
     profileCount: '1 role | {count} roles', taskCount: '1 task | {count} tasks',
     running: 'Running', approval: 'Needs approval', stopping: 'Stopping', failed: 'Incomplete', cancelled: 'Stopped', done: 'Finished', retired: 'Retired',
     approvals: 'Agent approvals', openConversation: 'Open subagent chat',
+    sendInParentConversation: 'Send messages in the parent conversation.',
     followup: 'Follow up', followupHint: 'Add instructions for the current task', send: 'Send', stop: 'Stop',
   },
   agentToolCards: {

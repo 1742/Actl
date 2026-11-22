@@ -10,12 +10,10 @@ export function useAgentTree() {
   const store = useAgentStore();
   const tree = computed(() => store.currentTree);
   const rootId = computed(() => tree.value?.members[tree.value.rootId]?.session.runtimeId);
-  const requestedMember = ref<{ sessionId: string }>();
   const errors = ref<Record<string, string>>({});
   const error = computed(() => errors.value[rootId.value ?? ''] ?? '');
   const subscriptions = new Map<string, () => void>();
 
-  watch(rootId, () => { requestedMember.value = undefined; }, { flush: 'sync' });
   watch(() => {
     const roots = new Set<string>();
     if (rootId.value) roots.add(rootId.value);
@@ -97,5 +95,5 @@ export function useAgentTree() {
     };
   }
 
-  return { rootId, tree, error, requestedMember };
+  return { rootId, tree, error };
 }

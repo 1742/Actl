@@ -711,6 +711,8 @@ export async function sendAgentMessage(
   const draftContextKey = store.draftContextKey;
   const draftProjectId = store.draftProjectId;
   const initialSessionId = store.selectedSessionId;
+  if (store.session?.parentSessionId)
+    return { status: 'error', message: tr('agents.sendInParentConversation') };
   if (!content.length && !attachments.length)
     return { status: 'error', message: tr('ui.enterAMessageOrAddAn') };
   if (!store.selectedModel)

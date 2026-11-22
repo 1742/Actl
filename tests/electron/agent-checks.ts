@@ -17,9 +17,16 @@ import type { RuntimeProjectFileSearchResult, RuntimeWorkspaceFileSearchResult, 
 
 type FixtureMessage = { role: string; content: unknown };
 
+function mailGate() {
+  let release!: () => void;
+  const promise = new Promise<void>((resolve) => { release = resolve; });
+  return { promise, release };
+}
+
 // This loopback provider exists only behind --verify-agent. It never forwards requests.
 async function startFixture(processCommands: Map<string, string>, explicitWorkspace: string) {
   let workspaceMessages: FixtureMessage[] = [];
+  const waitMail = { question: mailGate(), information: mailGate() };
   const server = createServer(async (request, response) => {
     try {
       assert.equal(request.url, '/v1/chat/completions');
@@ -41,16 +48,25 @@ async function startFixture(processCommands: Map<string, string>, explicitWorksp
         tool_calls: [{ index: 0, id: `call-${randomUUID()}`, type: 'function', function: { name, arguments: JSON.stringify(input) } }],
       }, 'tool_calls');
       emit({ role: 'assistant' });
-      if (text.includes('wait-mail-fixture:')) {
-        const purpose = text.includes('wait-mail-fixture:question') ? 'question' : 'information';
-        if (payload.messages.at(-1)?.role === 'tool') emit({ content: 'Mail sent' }, 'stop');
-        else invoke('mail', { command: { action: 'send', purpose, to: '@parent',
-          subject: 'Wait test', body: purpose === 'question' ? 'Unexpected question' : 'Expected answer' } });
+      if (text.includes('wait-mail-fixture')) {
+        const last = payload.messages.at(-1);
+        const sent = last?.role === 'tool' ? JSON.parse(String(last.content)).output : undefined;
+        if (sent?.purpose === 'information') {
+          emit({ content: 'Mail sent' }, 'stop');
+        } else {
+          const purpose = sent?.purpose === 'question' ? 'information' : 'question';
+          await waitMail[purpose].promise;
+          invoke('mail', { command: { action: 'send', purpose, to: '@parent',
+            subject: 'Wait test', body: purpose === 'question' ? 'Unexpected question' : 'Expected answer' } });
+        }
         done();
       } else if (waitPeer) {
-        const lastWait = payload.messages.findLast((message) => message.role === 'tool');
-        const result = lastWait && JSON.parse(String(lastWait.content)).output;
-        if (result?.kind === 'mail' && result.status === 'matched') {
+        const last = payload.messages.at(-1);
+        const result = last?.role === 'tool' ? JSON.parse(String(last.content)).output : undefined;
+        if (last?.role !== 'tool') {
+          invoke('mail', { command: { action: 'send', purpose: 'question', to: waitPeer,
+            subject: 'Wait test', body: 'wait-mail-fixture' } });
+        } else if (result?.kind === 'mail' && result.status === 'matched') {
           assert.equal(result.body, 'Expected answer');
           emit({ content: 'Completed in the original run' }, 'stop');
         } else if (result?.status === 'interrupted') {
@@ -179,7 +195,9 @@ async function startFixture(processCommands: Map<string, string>, explicitWorksp
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address(); assert.ok(address && typeof address !== 'string');
-  return { baseURL: `http://127.0.0.1:${address.port}/v1`, workspaceMessages: () => workspaceMessages, close: async () => {
+  return { baseURL: `http://127.0.0.1:${address.port}/v1`, workspaceMessages: () => workspaceMessages,
+    releaseWaitMail: (purpose: keyof typeof waitMail) => waitMail[purpose].release(), close: async () => {
+    waitMail.question.release(); waitMail.information.release();
     server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve()));
   } };
 }
@@ -514,7 +532,7 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
         await running;
       }
     });
-    await step('Background agent tree, follow-up and exact result after restart', async () => {
+    await step('Background agent tree, read-only child sessions and exact result after restart', async () => {
       await writeFile(path.join(workspace, 'review-probe.txt'), 'review shell fixture');
       const rootSession = await request<{ id: string }>({ operation: 'sessions.create', body: { projectId } });
       const events: AgentTreeEvent[] = [];
@@ -541,20 +559,16 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
       assert.equal(task?.attempt?.result?.runId, child.response?.id);
       assert.equal(task?.attempt?.result?.output, 'child running child result ready');
       host.detach(subscription);
-      const count = events.length;
-      const followUp = await request<{ sessionId: string; messageId: string; accepted: boolean }>({
-        operation: 'agents.message', params: { sessionId: rootSession.id },
-        body: { targetSessionId: '@ReviewBot', message: 'Continue with a short summary.' },
+      const direct = await run('Direct user message', undefined, child.session.id);
+      assert.ok(!direct.ok);
+      assert.equal(direct.error.code, 'child_session_read_only');
+      assert.equal(direct.error.status, 403);
+      const legacy = await host.request({
+        operation: 'agents.message' as AgentCommand['operation'], params: { sessionId: rootSession.id },
+        body: { targetSessionId: '@ReviewBot', message: 'Direct user message by legacy IPC' },
       });
-      assert.equal(followUp.sessionId, child.session.id);
-      assert.ok(followUp.accepted && followUp.messageId);
-      await waitFor(async () => {
-        const context = await request<{ responses: AgentResponseDto[] }>({ operation: 'sessions.context', params: { sessionId: child.session.id } });
-        return context.responses.length === 2 && context.responses[1]?.status === 'completed';
-      }, 'Idle child did not resume after a follow-up.');
-      assert.equal(events.length, count, 'Detached subscription received more events.');
-      // Stop any queued root follow-up before checking process restart persistence.
-      await request({ operation: 'agents.stop', params: { sessionId: rootSession.id } });
+      assert.ok(!legacy.ok);
+      assert.equal(legacy.error.code, 'invalid_operation');
       await host.close(); host = new AgentProcessHost(options); await host.ready();
       const restored = await request<AgentTreeSnapshot>({ operation: 'agents.tree', params: { sessionId: rootSession.id } });
       assert.equal(restored.members.length, 2);
@@ -564,7 +578,7 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
       const firstRun = history.responses[0];
       assert.ok(firstRun);
       assert.deepEqual(firstRun.input[0], taskInput);
-      assert.equal(history.responses[1]?.input[0]?.source?.kind, 'user');
+      assert.equal(history.responses.length, 1);
 
       const waitEvents: AgentStreamEvent[] = [];
       const parentRun = success(await run(`wait-child-fixture:@reviewbot:${firstRun.id}`, (events) => waitEvents.push(...events), rootSession.id));
@@ -586,21 +600,21 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
       assert.deepEqual(parentHistory.responses.at(-1)?.output.find((item) => item.id === waitResult.id), waitResult);
 
       const activeEvents: AgentStreamEvent[] = [];
+      const waitSubscription = randomUUID();
+      assert.ok((await host.watchTree(waitSubscription, rootSession.id, (event) => events.push(event))).ok);
       const active = run('same-run-wait-fixture:@ReviewBot', (events) => activeEvents.push(...events), rootSession.id);
-      const followChild = (purpose: 'question' | 'information') => request({
-        operation: 'agents.message', params: { sessionId: rootSession.id },
-        body: { targetSessionId: child.session.id, message: `wait-mail-fixture:${purpose}` },
-      });
       await waitFor(async () => {
         const latest = await request<AgentTreeSnapshot>({ operation: 'agents.tree', params: { sessionId: rootSession.id } });
         const root = latest.members.find((member) => member.session.id === rootSession.id);
         return root?.waiting === true && root.response?.status === 'in_progress';
       }, 'The parent did not enter an active wait.');
-      await followChild('question');
+      host.detach(waitSubscription);
+      const count = events.length;
+      fixture.releaseWaitMail('question');
       await waitFor(() => activeEvents.some((event) => event.type === 'response.output_item.done' &&
         event.item.type === 'function_call' && event.item.name === 'wait' && event.item.source === 'runtime'),
       'The runtime did not issue wait resume in the parent stream.');
-      await followChild('information');
+      fixture.releaseWaitMail('information');
       const final = success(await active);
       assert.equal(final.status, 'completed');
       assert.equal(activeEvents.filter((event) => event.type === 'response.created').length, 1);
@@ -615,6 +629,12 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
       const afterWait = await request<{ responses: AgentResponseDto[] }>({ operation: 'sessions.context', params: { sessionId: rootSession.id } });
       assert.equal(afterWait.responses.length, parentHistory.responses.length + 1);
       assert.deepEqual(afterWait.responses.at(-1)?.output.find((item) => item.id === resumedCall.id), resumedCall);
+      await waitFor(async () => {
+        const context = await request<{ responses: AgentResponseDto[] }>({ operation: 'sessions.context', params: { sessionId: child.session.id } });
+        return context.responses.length === 2 && context.responses[1]?.status === 'completed' &&
+          context.responses[1].input[0]?.source?.kind === 'agent';
+      }, 'Idle child did not resume after agent mail.');
+      assert.equal(events.length, count, 'Detached subscription received more events.');
     });
     await step('Unexpected runtime exit fails in-flight calls and recovers history', async () => {
       const orphanPid = await launchOrphan('crash-orphan');

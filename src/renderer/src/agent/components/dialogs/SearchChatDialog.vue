@@ -5,9 +5,9 @@ import { FolderOpen, MessageCircle, Search, X } from '@lucide/vue';
 import { useRouter } from 'vue-router';
 
 import { useNotifyStore } from '../../../composables/notify';
-import { enterAgentConversation } from '../../router';
+import { enterAgentConversation, openAgentSearchResult } from '../../router';
 import { useAgentStore } from '../../stores/agent';
-import { selectAgentSession, startNewAgentDraft } from '../../composables/useAgent';
+import { startNewAgentDraft } from '../../composables/useAgent';
 import { conversationName, projectName } from '../../utils';
 
 const props = defineProps<{ open: boolean }>();
@@ -58,15 +58,11 @@ function close() {
 }
 
 async function openSession(sessionId: string) {
-  if (sessionId !== store.selectedSessionId) {
-    const result = await selectAgentSession(sessionId);
-    if (result.status === 'error') {
-      notify.error(result.message || tr('ui.failedToOpenConversation'));
-      return;
-    }
+  const result = await openAgentSearchResult(router, sessionId);
+  if (result.status === 'error') {
+    notify.error(result.message || tr('ui.failedToOpenConversation'));
+    return;
   }
-
-  await enterAgentConversation(router);
   close();
 }
 

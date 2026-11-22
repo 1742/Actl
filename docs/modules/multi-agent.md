@@ -76,6 +76,8 @@ Actl 的协作范围是同一个根会话（Root）。Root 及其子 Agent 共�
 
 前端按根会话维护 Agent 树，树内保存成员对话、运行状态、计划和任务。父会话输入区显示树内的待审批请求，每张卡携带发起者的会话、Run 和批次标识，并可打开对应的子会话。右侧栏显示 Plan、任务状态、当前 Attempt 成果和子 Agent Run，分别标注工具等待和审批等待。时间线展开 `Roles`、`Plan`、`Tasks`、`Delegate`、`Agents`、`Mail` 和 `Wait` 时，通过卡片显示适合阅读的字段。
 
+搜索结果中的子会话会打开父对话，并在右侧栏显示子会话。用户在父对话中发送消息。Runtime 对直接发给子会话的消息返回 `403 child_session_read_only`，子 Agent 通过任务分配和代理间邮件接收指令。
+
 ## 实现与验证
 
 - [协调器](../../src/agent-core/runtime/multi-agents/agent-coordinator.ts)、[等待条件](../../src/agent-core/runtime/multi-agents/coordination-waits.ts)和 [Run 收尾](../../src/agent-core/runtime/agent-loop/agent-loop.ts)

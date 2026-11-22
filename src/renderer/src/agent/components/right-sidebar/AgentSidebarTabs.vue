@@ -29,7 +29,6 @@ import AgentWorkspacePreview from '../workspace/AgentWorkspacePreview.vue';
 import AgentSidebarReview from '../review/AgentSidebarReview.vue';
 import AgentSidebarSubagents from '../sub-agents/AgentSidebarSubagents.vue';
 import { reviewTargetKey, useTreeReviewTarget } from '../review/reviewNavigation';
-import { agentTreeKey } from '../../composables/useAgentTree';
 import type { RuntimeSession } from '../navigation/types';
 
 const emit = defineEmits<{ close: [] }>();
@@ -47,7 +46,6 @@ const projectLabel = computed(() =>
 const strip = ref<HTMLElement>();
 const visible = ref(true);
 const reviewTarget = inject(reviewTargetKey);
-const team = inject(agentTreeKey);
 
 watch(projectId, (id) => {
   if (groups.has(id)) return;
@@ -111,9 +109,10 @@ function openSubagent(session: RuntimeSession) {
   openTab({ id: `subagent:${session.id}`, kind: 'subagent', sessionId: session.id });
 }
 
-watch(() => team?.requestedMember.value, (request) => {
-  const member = request && store.currentTree?.members[request.sessionId];
-  if (member) openSubagent(member.session);
+watch(() => visible.value ? store.currentTree?.members[store.requestedSubagentId] : undefined, (member) => {
+  if (!member) return;
+  openSubagent(member.session);
+  store.requestedSubagentId = '';
 }, { immediate: true });
 function fileTitle(tab: Extract<Tab, { kind: 'file' }>) {
   const directory = workspaces.value.find(({ id }) => id === tab.workspaceId)?.path;

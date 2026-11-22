@@ -67,11 +67,6 @@ export class AgentApplication {
     switch (command.operation) {
       case 'agents.tree':
       case 'agents.watch': return d.agentCoordinator.snapshot(await this.session(sessionId()));
-      case 'agents.message': {
-        const sender = await this.session(sessionId());
-        const input = z.object({ targetSessionId: z.string().min(1), message: z.string().trim().min(1).max(16000) }).strict().parse(body);
-        return d.agentCoordinator.sendUserFollowUp(sender, input.targetSessionId, input.message, crypto.randomUUID());
-      }
       case 'agents.stop': {
         await d.agentCoordinator.stopTree(await this.session(sessionId()));
         return;

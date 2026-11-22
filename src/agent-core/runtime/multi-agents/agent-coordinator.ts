@@ -74,7 +74,9 @@ export class AgentCoordinator {
   async start(session: Session, prepareInput: PrepareRunInput, options: AgentRunOptions, listener?: (event: AgentStreamEvent) => void): Promise<AgentRunRecord> {
     const { running } = await this.serialized(session.rootSessionId ?? session.id, async () => {
       this.assertSessionExists(session);
-      if (session.parentSessionId) throw new Error('Start child work through task assignment or a follow-up.');
+      if (session.parentSessionId) {
+        throw new AgentLoopError('child_session_read_only', 'Send messages in the parent conversation.');
+      }
       this.assertAvailableForUser(session);
       this.state.enableAgent(session.id);
       const wake = this.prepareWake(session, this.state.activeTask(session.id, session.id), true);
@@ -278,23 +280,6 @@ export class AgentCoordinator {
     const plan = this.state.updatePlan(session.id, revision, items);
     this.changed(session.id);
     return plan;
-  }
-
-  async sendUserFollowUp(sender: Session, targetId: string, body: string, operation: string) {
-    const target = await this.directory.resolve(sender, targetId);
-    if (target.parentSessionId !== sender.id) throw new Error('User follow-ups go to a direct child.');
-    const rootId = sender.rootSessionId ?? sender.id;
-    const mail = await this.serialized(rootId, () => {
-      this.assertAvailableForUser(sender);
-      this.assertAvailableForUser(target);
-      const stored = this.state.sendMail({ rootId: target.rootSessionId!, fromSessionId: sender.id, toSessionId: target.id,
-        subject: 'User follow-up', body, author: 'user', purpose: 'urgent', replyTo: null }, `user-mail:${operation}`);
-      this.state.enableAgent(sender.id);
-      this.state.enableAgent(target.id);
-      this.changed(rootId);
-      return stored;
-    });
-    return { accepted: true, sessionId: target.id, messageId: mail.id };
   }
 
   sendMail(session: Session, run: AgentRunRecord, callId: string, input: SendMailInput) {

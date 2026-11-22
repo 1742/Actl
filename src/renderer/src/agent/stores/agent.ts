@@ -116,6 +116,7 @@ export const useAgentStore = defineStore("agent", {
     projects: [] as RuntimeProject[],
     trees: {} as Record<string, AgentTree>,
     selectedSessionId: "",
+    requestedSubagentId: "",
     draftProjectId: "",
     composerDrafts: {} as Record<string, AgentComposerDocument>,
     attachmentDrafts: {} as Record<string, AgentComposerAttachment[]>,

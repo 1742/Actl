@@ -4,15 +4,18 @@ import { useRouter } from "vue-router";
 
 import AgentMessages from "../conversation/MessagesArea.vue";
 import AgentInput from "../composer/Input.vue";
+import AgentTreePermissions from '../permissions/AgentTreePermissions.vue';
 import AgentTopBar from "./AgentTopBar.vue";
 import RightSidebarContainer from "../right-sidebar/AgentSidebarContainer.vue";
 import { reviewTargetKey, type ReviewTarget } from '../review/reviewNavigation';
 import { agentTreeKey, useAgentTree } from '../../composables/useAgentTree';
+import { useAgentStore } from '../../stores/agent';
 
 const emit = defineEmits<{
   openNavSidebar: [];
 }>();
 const router = useRouter();
+const store = useAgentStore();
 provide(reviewTargetKey, shallowRef<ReviewTarget>());
 provide(agentTreeKey, useAgentTree());
 
@@ -29,7 +32,11 @@ async function toggleRightSidebar() {
       <AgentTopBar @open-nav-sidebar="emit('openNavSidebar')" @toggle-right-sidebar="toggleRightSidebar" />
       <AgentMessages :bottom-inset="0" />
 
-      <AgentInput />
+      <AgentInput v-if="!store.session?.parentSessionId" />
+      <div v-else class="mx-auto w-full max-w-5xl shrink-0 px-4 sm:px-6 lg:px-8">
+        <AgentTreePermissions />
+        <p class="px-4 py-3 text-center text-sm text-gray-500">{{ $t('agents.sendInParentConversation') }}</p>
+      </div>
     </section>
 
     <RightSidebarContainer class="shrink-0" />

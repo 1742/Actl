@@ -2,12 +2,14 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createPinia, setActivePinia } from 'pinia';
 import { effectScope, shallowRef } from 'vue';
+import { createMemoryHistory, createRouter } from 'vue-router';
 import { applyAgentTreeSnapshot, applyRuntimeEvent, loadSubagentHistory, resolveAgentPermissionBatch, selectAgentSession, sendAgentMessage, stopAgentResponse } from '../../../src/renderer/src/agent/composables/useAgent';
 import { useAgentTree } from '../../../src/renderer/src/agent/composables/useAgentTree';
 import { useRunReview } from '../../../src/renderer/src/agent/components/review/useRunReview';
 import { useFileChanges } from '../../../src/renderer/src/agent/components/review/useFileChanges';
 import { useAgentStore } from '../../../src/renderer/src/agent/stores/agent';
 import { localClient } from '../../../src/renderer/src/agent/services/localClient';
+import { openAgentSearchResult } from '../../../src/renderer/src/agent/router';
 import { conversationMessageKind, isMessageItem, normalizeResponseContext, subagentRunContexts } from '../../../src/renderer/src/agent/utils/aiResponse';
 import { buildAgentOutputGroups } from '../../../src/renderer/src/agent/utils';
 import { agentTeamCard, agentTeamCardKind } from '../../../src/renderer/src/agent/utils/toolCatalog/agentTeamCards';
@@ -49,6 +51,50 @@ function setup(id: string) {
 const approve = (id: string, batch = 'a', responseId = 'response') => resolveAgentPermissionBatch(
   { sessionId: id, responseId, batchId: batch }, [{ permission_id: `permission-${batch}`, decision: 'approve' }],
 );
+
+test('opening a child search result selects the parent and requests the child sidebar tab', async (t) => {
+  const store = setup('local:other');
+  const root: AgentSession = { id: 'parent', rootSessionId: 'parent', projectId: null, created_at: '', updated_at: '' };
+  const child: AgentSession = { ...root, id: 'child', parentSessionId: 'parent' };
+  applyAgentTreeSnapshot({ rootSessionId: root.id, plan: { revision: 0, items: [] }, childRunResults: [],
+    members: [{ session: root, waiting: false }, { session: child, waiting: false }] });
+  const getContext = t.mock.method(localClient, 'getContext', async (id) => ({
+    session_id: id, responses: [], context: { summarized_run_count: 0, compressions: [] },
+  }));
+  const component = { render: () => null };
+  const router = createRouter({ history: createMemoryHistory(), routes: [
+    { path: '/agent', name: 'aiAgent', component },
+    { path: '/agent/sidebars', name: 'aiAgentRightSidebarHome', component },
+    { path: '/settings', name: 'settings', component },
+  ] });
+  await router.push({ name: 'settings' });
+
+  assert.equal((await openAgentSearchResult(router, 'local:child')).status, 'success');
+  assert.equal(store.selectedSessionId, 'local:parent');
+  assert.equal(router.currentRoute.value.name, 'aiAgentRightSidebarHome');
+  assert.equal(store.requestedSubagentId, 'local:child');
+  assert.deepEqual(getContext.mock.calls.map(({ arguments: args }) => args), [['parent']]);
+  assert.equal(store.runtimeBySessionId('local:child')?.hydrated, false);
+
+  store.requestedSubagentId = '';
+  await openAgentSearchResult(router, 'local:child');
+  assert.equal(store.requestedSubagentId, 'local:child');
+  assert.equal(getContext.mock.callCount(), 1);
+});
+
+test('sending from a selected child session stops before streaming or changing its state', async (t) => {
+  const store = setup('local:other');
+  store.upsertSession({ id: 'local:child', runtimeId: 'child', runtimeKind: 'local', projectId: null, runtimeProjectId: null,
+    rootSessionId: 'parent', parentSessionId: 'parent', created_at: '', updated_at: '' });
+  store.selectSession('local:child');
+  store.selectedModel = 'fixture-model';
+  const stream = t.mock.method(localClient, 'streamResponse');
+
+  const result = await sendAgentMessage([{ type: 'input_text', text: 'Direct user message' }]);
+  assert.equal(result.status, 'error');
+  assert.equal(stream.mock.callCount(), 0);
+  assert.equal(store.status, 'idle');
+});
 
 for (const projectId of [undefined, 'project'] as const) {
   test(`first send from a ${projectId ? 'project' : 'standalone'} draft registers the new tree before streaming`, async (t) => {
