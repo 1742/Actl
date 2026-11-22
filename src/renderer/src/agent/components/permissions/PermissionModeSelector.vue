@@ -27,7 +27,7 @@ const options = computed<PermissionModeOption[]>(() => [
   {
     value: 'plan',
     label: tr('ui.plan'),
-    description: tr('ui.analyzeReadAndSearchWithoutMaking'),
+    description: tr('ui.readOnlyShellAccess'),
     icon: ListChecks,
   },
   {

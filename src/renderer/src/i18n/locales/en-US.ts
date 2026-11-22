@@ -360,7 +360,7 @@ export default {
     enableThisServerToDiscoverIts: 'Enable this Server to discover its tools.',
     selectAServerOrAddA: 'Select a Server or add a new local MCP Server.',
     plan: 'Plan',
-    analyzeReadAndSearchWithoutMaking: 'Analyze, read, and search without making changes',
+    readOnlyShellAccess: 'Read, search, and run commands in a read-only sandbox',
     ask: 'Ask',
     alwaysAskBeforeWritingDeletingOr: 'Always ask before writing, deleting, or running commands',
     workspaceShellAccess: 'Allow file edits and shell writes in the workspace. Ask before running a command with host permissions.',

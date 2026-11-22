@@ -44,11 +44,11 @@ const builtInProfiles: readonly AgentProfile[] = [
     instructions: "Prioritize actionable findings. For each finding, cite its location, explain the conditions that trigger it and its impact, and identify a useful verification step.",
   },
   {
-    id: "edit",
-    name: "Editor",
+    id: "build",
+    name: "Build",
     access: "edit",
-    description: "Implement a scoped change in the shared workspace and report what changed.",
-    instructions: "Read the assigned files before editing, keep changes within the task, and report changed paths and what you verified. Coordinate overlapping changes with your parent.",
+    description: "Implement and verify a scoped change in the shared workspace.",
+    instructions: "Read the assigned files before editing, keep changes within the task, and run relevant checks with shell when available. Report changed paths and what you verified. Coordinate overlapping changes with your parent.",
   },
 ];
 

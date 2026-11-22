@@ -16,6 +16,7 @@ import type {
   PollProcessInput,
   ProcessCommandInput,
   ProcessOwner,
+  ProcessSandbox,
   SessionProcessScope,
   StartProcessInput,
   StopProcessInput,
@@ -42,6 +43,7 @@ interface ManagedProcessRecord {
   owner: ProcessOwner;
   command: string;
   cwd: string;
+  sandboxMode?: ProcessSandbox['mode'];
   child: ChildProcess;
   output: ProcessOutputBuffer;
   status: ManagedProcessStatus;
@@ -193,6 +195,7 @@ export class ProcessSupervisor {
       owner: structuredClone(input.owner),
       command: input.command,
       cwd: input.cwd,
+      ...(input.sandbox ? { sandboxMode: input.sandbox.mode } : {}),
       child,
       output: new ProcessOutputBuffer(this.maxOutputBytes),
       status: "running",
@@ -259,7 +262,7 @@ export class ProcessSupervisor {
   forSession(sessionId: string): SessionProcessScope {
     const owner: ProcessOwner = { type: 'session', id: sessionId };
     return {
-      owns: (processId) => this.owns(owner, processId),
+      owns: (processId, sandboxMode) => this.owns(owner, processId, sandboxMode),
       start: (input) => this.start({ ...input, owner }),
       poll: (input) => this.poll({ ...input, owner }),
       stop: (input) => this.stop({ ...input, owner }),
@@ -286,15 +289,19 @@ export class ProcessSupervisor {
     this.foregroundProcesses.clear();
   }
 
-  owns(owner: ProcessOwner, processId: string): boolean {
+  owns(owner: ProcessOwner, processId: string, sandboxMode?: ProcessSandbox['mode']): boolean {
     const record = this.processes.get(processId);
-    return record !== undefined && sameOwner(record.owner, owner);
+    return record !== undefined && sameOwner(record.owner, owner) &&
+      (sandboxMode === undefined || sandboxMode === record.sandboxMode);
   }
 
   private spawnCommand(input: ProcessCommandInput): ChildProcess {
-    if (input.workspaceWriteRoot !== undefined) {
+    if (input.sandbox) {
       const runner = process.env.ACTL_SHELL_RUNNER;
-      if (this.platform !== 'win32' || !runner) throw new Error('Windows workspace sandbox unavailable.');
+      if (this.platform !== 'win32' || !runner) throw new Error('Windows shell sandbox unavailable.');
+      const args = [runner, input.sandbox.mode, input.cwd, input.shell, input.command];
+      const options = { windowsHide: true, env: { ...input.env, ELECTRON_RUN_AS_NODE: '1' } };
+      if (input.sandbox.mode === 'read-only') return spawn(process.execPath, args, options);
       // The supervisor owns cleanup even when shell_stop terminates the runner.
       const temp = mkdtempSync(path.join(tmpdir(), 'actl-shell-'));
       const cleanup = () => {
@@ -302,9 +309,7 @@ export class ProcessSupervisor {
         catch (error) { this.logger.warn({ event: 'shell.temp_cleanup_failed', error: String(error) }); }
       };
       try {
-        const child = spawn(process.execPath, [runner, input.workspaceWriteRoot, temp, input.cwd, input.shell, input.command], {
-          windowsHide: true, env: { ...input.env, ELECTRON_RUN_AS_NODE: '1' },
-        });
+        const child = spawn(process.execPath, [...args, input.sandbox.workspaceRoot, temp], options);
         child.once('close', cleanup);
         return child;
       } catch (error) {

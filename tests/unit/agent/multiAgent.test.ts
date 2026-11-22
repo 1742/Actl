@@ -64,7 +64,7 @@ const team = (name: string, command: unknown) => call(name, { command });
 const taskDraft = (title: string, instructions = 'Inspect the example.') =>
   ({ title, instructions, acceptanceCriteria: 'Report evidence.', type: 'review', autoAssign: false });
 const publish = (title: string) => team('tasks', { action: 'publish', ...taskDraft(title) });
-const publishEdit = (title: string) => team('tasks', { action: 'publish', ...taskDraft(title, 'Edit the shared file.'), type: 'edit' });
+const publishBuild = (title: string) => team('tasks', { action: 'publish', ...taskDraft(title, 'Edit the shared file.'), type: 'build' });
 
 function requestText(request: ModelTurnRequest) {
   return request.transcript.filter((item) => item.type === 'message' && item.role === 'user')
@@ -239,7 +239,8 @@ test('concurrent editor approvals validate the shared file version under the pro
   const f = await fixture(async (request) => {
     if (isChild(request)) {
       assert.ok(request.tools.some(({ name }) => name === 'write_file'));
-      assert.ok(!request.tools.some(({ name }) => ['shell', 'move_path', 'delete_path', 'call_mcp_tool'].includes(name)));
+      assert.ok(request.tools.some(({ name }) => name === 'shell'));
+      assert.ok(!request.tools.some(({ name }) => ['move_path', 'delete_path', 'call_mcp_tool'].includes(name)));
       if (!calls(request, 'read_file').length) return [call('read_file', { path: 'shared.txt' })];
       if (!calls(request, 'write_file').length) {
         const read = toolOutput<{ sha256: string; content: string }>(request, 'read_file');
@@ -255,10 +256,10 @@ test('concurrent editor approvals validate the shared file version under the pro
       return [text('Updated the shared file')];
     }
     const published = calls(request, 'tasks').length;
-    if (published < 2) return [publishEdit(`Edit shared file ${published + 1}`)];
+    if (published < 2) return [publishBuild(`Edit shared file ${published + 1}`)];
     const delegated = calls(request, 'delegate_task').length;
     if (delegated < 2) return [call('delegate_task', { task: `#${delegated + 1}`,
-      target: { kind: 'create', role: 'edit', name: `Editor ${delegated + 1}` } })];
+      target: { kind: 'create', role: 'build', name: `Builder ${delegated + 1}` } })];
     return [text('Delegated both edits')];
   });
   try {
@@ -270,7 +271,7 @@ test('concurrent editor approvals validate the shared file version under the pro
       const members = tree.members.filter(({ response, session }) =>
         session.parentSessionId === f.root.id && response?.status === 'waiting_permission');
       return members.length === 2 ? members : undefined;
-    }, 'Both editors should request approval after reading the same file.');
+    }, 'Both builders should request approval after reading the same file.');
     assert.equal(await readFile(file, 'utf8'), 'original\r\ntext\r\n');
     const finished = await Promise.all(pending.map(async ({ session, response }) => {
       const child = (await f.workspace.getSession(session.id, owner))!;
@@ -284,12 +285,13 @@ test('concurrent editor approvals validate the shared file version under the pro
   } finally { await f.close(); }
 });
 
-test('the edit role shares the root permission ceiling and may only edit bound workspace files', async () => {
+test('the build role respects the root permission mode and workspace boundary', async () => {
   const f = await fixture(async (request) => {
     if (isChild(request)) {
       if (request.instructions.includes('read-only workspace access')) {
+        assert.ok(request.tools.some(({ name }) => name === 'shell'));
         assert.ok(!request.tools.some(({ name }) => ['write_file', 'apply_patch'].includes(name)));
-        return [text('Read-only editor')];
+        return [text('Read-only builder')];
       }
       if (!calls(request, 'write_file').length) return [
         call('write_file', { path: '../outside.txt', content: 'outside' }),
@@ -300,16 +302,19 @@ test('the edit role shares the root permission ceiling and may only edit bound w
       assert.ok(!toolResult(request, inside?.callId).result.isError);
       return [text('Edited inside the workspace')];
     }
-    if (!calls(request, 'tasks').length) return [publishEdit('Edit if permitted')];
-    if (!calls(request, 'delegate_task').length) return [call('delegate_task', { task: '#1', target: { kind: 'create', role: 'edit' } })];
+    if (!calls(request, 'list_agent_profiles').length) return [call('list_agent_profiles', {})];
+    const profiles = toolOutput<{ id: string }[]>(request, 'list_agent_profiles');
+    assert.deepEqual(profiles.map(({ id }) => id), ['build', 'explore', 'general', 'review']);
+    if (!calls(request, 'tasks').length) return [publishBuild('Edit if permitted')];
+    if (!calls(request, 'delegate_task').length) return [call('delegate_task', { task: '#1', target: { kind: 'create', role: 'build' } })];
     return [text('Delegated')];
   });
   try {
     for (const mode of ['plan', 'accept_edits'] as const) {
       const root = await f.workspace.createSession(owner, { projectId: f.project.id });
-      await f.coordinator.start(root, input('Delegate an edit'), { ...options, permissionMode: mode });
-      const result = await until(async () => (await f.coordinator.snapshot(root)).tasks?.[0]?.attempt?.result, 'Editor should finish.');
-      assert.equal(result.output, mode === 'plan' ? 'Read-only editor' : 'Edited inside the workspace');
+      await f.coordinator.start(root, input('Delegate a build'), { ...options, permissionMode: mode });
+      const result = await until(async () => (await f.coordinator.snapshot(root)).tasks?.[0]?.attempt?.result, 'Builder should finish.');
+      assert.equal(result.output, mode === 'plan' ? 'Read-only builder' : 'Edited inside the workspace');
       await f.coordinator.stopTree(root);
     }
     await assert.rejects(access(path.join(f.directory, 'outside.txt')), { code: 'ENOENT' });
@@ -512,7 +517,8 @@ test('deleting a child with a submitted result keeps the task retryable', async 
 test('tools publish, delegate and wait for review in the original root run', async () => {
   const f = await fixture(async (request) => {
     if (isChild(request)) {
-      assert.ok(!request.tools.some(({ name }) => ['shell', 'write_file', 'delegate_task', 'call_mcp_tool'].includes(name)));
+      assert.deepEqual(request.tools.map(({ name }) => name).filter((name) => name.startsWith('shell')), ['shell', 'shell_poll', 'shell_stop']);
+      assert.ok(!request.tools.some(({ name }) => ['write_file', 'delegate_task', 'call_mcp_tool'].includes(name)));
       assert.doesNotMatch(request.instructions, /Inspect the example|Report evidence|Prioritize actionable findings|Parent checklist/);
       const userText = requestText(request);
       assert.equal(userText.split('Role selected by @parent').length - 1, 1);
@@ -530,6 +536,8 @@ test('tools publish, delegate and wait for review in the original root run', asy
       if (taskLookups.length === 2) return [team('tasks', { action: 'show' })];
       if (!calls(request, 'write_file').length) return [call('write_file', { path: 'forbidden.txt', content: 'must not write' })];
       assert.ok(toolResult(request, calls(request, 'write_file')[0]?.callId).result.isError);
+      if (!calls(request, 'shell').length) return [call('shell', { command: 'Get-Location', hostAccessReason: 'Request host shell' })];
+      assert.match(toolResult(request, calls(request, 'shell')[0]?.callId).envelope.error ?? '', /cannot request host shell access/);
       const mailCalls = calls(request, 'mail');
       if (!mailCalls.length) return [team('mail', '{"action":"search","unexpected":true}')];
       assert.match(toolResult(request, mailCalls[0]?.callId).envelope.error ?? '', /Unrecognized key/);

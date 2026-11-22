@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from "node:path";
 import { z } from "zod";
-import type { SessionProcessAccess } from "../../runtime/process/process-types.js";
+import type { ProcessSandbox, SessionProcessAccess } from "../../runtime/process/process-types.js";
 import {
   type ToolCallContext,
   type ToolDefinition,
@@ -19,13 +19,13 @@ interface ResolvedShellCommand {
   resource: string;
   yieldTimeMs?: number;
   env: NodeJS.ProcessEnv;
-  workspaceWriteRoot?: string;
+  sandbox?: ProcessSandbox;
 }
 
 const nonEmptyStringSchema = z.string().trim().min(1);
 export const shellInputSchema = z.object({
   command: nonEmptyStringSchema.describe("Shell command to execute."),
-  hostAccessReason: nonEmptyStringSchema.optional().describe("Request host permissions for this command only. Explain why it requires access beyond the workspace write sandbox. Requires approval in accept_edits."),
+  hostAccessReason: nonEmptyStringSchema.optional().describe("For root sessions in ask, accept_edits, or full_access. Request host permissions for this command and explain why it requires access beyond the workspace-write sandbox. Requires approval in accept_edits."),
   cwd: nonEmptyStringSchema.optional().describe("Optional absolute path or path relative to the Session cwd."),
   yieldTimeMs: z.number().int().min(0).max(MAX_WAIT_MS).optional()
     .describe("Wait up to this many milliseconds for the command to exit before returning control. The process keeps running if the wait expires. Default: 10000; maximum: 120000."),
@@ -71,7 +71,7 @@ export class ShellToolProvider implements ToolProvider {
     return [
       {
         name: "shell",
-        description: `Run a shell command. In accept_edits, Windows restricts writes to the session workspace and private temp directory. To request a wider scope, supply hostAccessReason on a new call. Check partial effects before retrying. Use shell_poll and shell_stop for background processes. Current shell: ${runtime.description}`,
+        description: `Run a shell command. Plan mode uses the Windows read-only sandbox. Outside plan, subagents use the workspace-write sandbox. In a root session, accept_edits uses the workspace-write sandbox and hostAccessReason requests a wider scope on a new call. Check partial effects before retrying. Use shell_poll and shell_stop for background processes. Current shell: ${runtime.description}`,
         inputSchema: shellInputSchema,
       },
       {
@@ -96,7 +96,7 @@ export class ShellToolProvider implements ToolProvider {
     if (name === "shell") {
       const resolved = await this.resolveCommand(input, context);
       return {
-        capability: resolved.workspaceWriteRoot ? "process.spawn.workspace" : "process.spawn",
+        capability: shellSpawnCapability(resolved.sandbox),
         resource: resolved.resource,
         action: "execute",
       };
@@ -108,7 +108,7 @@ export class ShellToolProvider implements ToolProvider {
         : (input as ShellStopInput).processId;
       if (!processes.owns(processId)) throw new Error("process_not_found");
       return {
-        capability: name === "shell_poll" ? "process.read" : "process.terminate",
+        capability: name === "shell_poll" ? "process.read" : shellStopCapability(context, processes, processId),
         resource: processId,
         action: name === "shell_poll" ? "read" : "terminate",
       };
@@ -120,8 +120,8 @@ export class ShellToolProvider implements ToolProvider {
     const runtime = getShellRuntime();
     if (name === "shell") {
       const resolved = await this.resolveCommand(input, context);
-      this.assertAuthorization(context, resolved.workspaceWriteRoot ? "process.spawn.workspace" : "process.spawn", "execute", resolved.resource);
-      if (!resolved.workspaceWriteRoot && context.permissionMode === 'accept_edits' && !context.authorization?.approvedByUser) {
+      this.assertAuthorization(context, shellSpawnCapability(resolved.sandbox), "execute", resolved.resource);
+      if (!resolved.sandbox && context.permissionMode === 'accept_edits' && !context.authorization?.approvedByUser) {
         throw new Error("Host shell execution requires approval for this call.");
       }
       const shell = runtime.platform === "win32" ? resolvePowerShell() : runtime.executable;
@@ -130,7 +130,7 @@ export class ShellToolProvider implements ToolProvider {
         command: resolved.command,
         cwd: resolved.cwd,
         shell,
-        ...(resolved.workspaceWriteRoot ? { workspaceWriteRoot: resolved.workspaceWriteRoot } : {}),
+        ...(resolved.sandbox ? { sandbox: resolved.sandbox } : {}),
         outputEncoding: "utf8",
         env: resolved.env,
         startupWaitMs: resolved.yieldTimeMs ?? DEFAULT_YIELD_TIME_MS,
@@ -156,8 +156,9 @@ export class ShellToolProvider implements ToolProvider {
     }
     if (name === "shell_stop") {
       const parsed = input as ShellStopInput;
-      this.assertAuthorization(context, "process.terminate", "terminate", parsed.processId);
-      return this.requireProcesses(context).stop({
+      const processes = this.requireProcesses(context);
+      this.assertAuthorization(context, shellStopCapability(context, processes, parsed.processId), "terminate", parsed.processId);
+      return processes.stop({
         processId: parsed.processId,
         ...(parsed.cursor === undefined ? {} : { cursor: parsed.cursor }),
         ...(parsed.line === undefined ? {} : { line: parsed.line }),
@@ -172,6 +173,10 @@ export class ShellToolProvider implements ToolProvider {
   ): Promise<ResolvedShellCommand> {
     const parsed = input as ShellInput;
     this.requireProcesses(context);
+    if (parsed.hostAccessReason) {
+      if (context.isSubagent) throw new Error("Subagents cannot request host shell access.");
+      if (context.permissionMode === 'plan') throw new Error("Plan mode requires the Windows read-only shell sandbox. Omit hostAccessReason.");
+    }
 
     const baseDirectory = toolBaseDirectory(context.cwd);
     const candidateCwd = parsed.cwd
@@ -179,22 +184,31 @@ export class ShellToolProvider implements ToolProvider {
       : baseDirectory;
     const resolvedCwd = await canonicalizePotentialPath(candidateCwd);
 
-    const resolved: ResolvedShellCommand = {
+    const shell = getShellRuntime().executable;
+    let resource = JSON.stringify({ shell, cwd: resolvedCwd, command: parsed.command });
+    let sandbox: ProcessSandbox | undefined;
+    if (context.permissionMode === 'plan') {
+      sandbox = { mode: 'read-only' };
+      resource = JSON.stringify({ shell, command: parsed.command, cwd: resolvedCwd, access: 'read-only' });
+    } else if (context.isSubagent || (context.permissionMode === 'accept_edits' && !parsed.hostAccessReason)) {
+      if (!context.cwd || process.platform !== 'win32') {
+        const guidance = context.isSubagent ? '' : ' Request hostAccessReason for an approved host command.';
+        throw new Error(`A Windows session workspace is required for confined shell execution.${guidance}`);
+      }
+      const workspaceRoot = await canonicalizePotentialPath(context.cwd);
+      sandbox = { mode: 'workspace-write', workspaceRoot };
+      resource = JSON.stringify({ shell, command: parsed.command, cwd: resolvedCwd, workspace: workspaceRoot });
+    } else if (parsed.hostAccessReason) {
+      resource = JSON.stringify({ shell, command: parsed.command, cwd: resolvedCwd, access: 'host', reason: parsed.hostAccessReason });
+    }
+    return {
       command: parsed.command,
       cwd: resolvedCwd,
       env: { ...process.env },
-      resource: "",
+      resource,
+      ...(sandbox ? { sandbox } : {}),
+      ...(parsed.yieldTimeMs === undefined ? {} : { yieldTimeMs: parsed.yieldTimeMs }),
     };
-    resolved.resource = createShellResource(parsed.command, resolvedCwd);
-    if (context.permissionMode === 'accept_edits' && !parsed.hostAccessReason) {
-      if (!context.cwd || process.platform !== 'win32') throw new Error('A Windows session workspace is required for confined shell execution. Request hostAccessReason for an approved host command.');
-      resolved.workspaceWriteRoot = await canonicalizePotentialPath(context.cwd);
-      resolved.resource = JSON.stringify({ shell: getShellRuntime().executable, command: parsed.command, cwd: resolvedCwd, workspace: resolved.workspaceWriteRoot });
-    } else if (parsed.hostAccessReason) {
-      resolved.resource = JSON.stringify({ shell: getShellRuntime().executable, command: parsed.command, cwd: resolvedCwd, access: 'host', reason: parsed.hostAccessReason });
-    }
-    if (parsed.yieldTimeMs !== undefined) resolved.yieldTimeMs = parsed.yieldTimeMs;
-    return resolved;
   }
 
   private requireProcesses(context: ToolCallContext): SessionProcessAccess {
@@ -210,8 +224,16 @@ export class ShellToolProvider implements ToolProvider {
   }
 }
 
-function createShellResource(command: string, cwd: string): string {
-  return JSON.stringify({ shell: getShellRuntime().executable, cwd: path.normalize(cwd), command });
+function shellSpawnCapability(sandbox: ProcessSandbox | undefined): string {
+  if (!sandbox) return "process.spawn";
+  return sandbox.mode === 'read-only' ? "process.spawn.readonly" : "process.spawn.workspace";
+}
+
+function shellStopCapability(context: ToolCallContext, processes: SessionProcessAccess, processId: string): string {
+  if (context.isSubagent || (context.permissionMode === 'plan' && processes.owns(processId, 'read-only'))) {
+    return "process.terminate.sandboxed";
+  }
+  return "process.terminate";
 }
 
 export function getShellRuntime(platform: NodeJS.Platform = process.platform): ShellRuntime {

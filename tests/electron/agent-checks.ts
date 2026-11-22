@@ -75,10 +75,10 @@ async function startFixture(processCommands: Map<string, string>, explicitWorksp
       } else if (text.includes('edit-root-fixture')) {
         const last = payload.messages.at(-1);
         const envelope = last?.role === 'tool' ? JSON.parse(String(last.content)) : undefined;
-        if (!envelope) invoke('tasks', { command: { action: 'publish', type: 'edit', autoAssign: false,
+        if (!envelope) invoke('tasks', { command: { action: 'publish', type: 'build', autoAssign: false,
           title: 'edit-child-fixture', instructions: 'Edit the shared file.', acceptanceCriteria: 'Replace the original text.' } });
         else if (envelope.output?.status === 'pending') invoke('delegate_task', {
-          task: envelope.output.task, target: { kind: 'create', role: 'edit', name: 'EditorBot' },
+          task: envelope.output.task, target: { kind: 'create', role: 'build', name: 'BuildBot' },
         });
         else if (envelope.output?.status === 'assigned') invoke('wait', { command: { action: 'start', timeoutMs: 10000,
           condition: { kind: 'task_state', task: '#1', states: ['review_required'] } } });
@@ -88,6 +88,16 @@ async function startFixture(processCommands: Map<string, string>, explicitWorksp
         }
         done();
       } else if (text.includes('multi-child-fixture')) {
+        const last = payload.messages.at(-1);
+        if (last?.role !== 'tool') {
+          invoke('shell', { command: 'Get-Content -ErrorAction Stop -LiteralPath review-probe.txt' });
+          done();
+          return;
+        }
+        const result = JSON.parse(String(last.content));
+        assert.ok(result.ok, result.error);
+        assert.equal(result.output.exitCode, 0, JSON.stringify(result.output.output));
+        assert.equal(result.output.output.map((chunk: { text: string }) => chunk.text).join('').trim(), 'review shell fixture');
         emit({ content: 'child running' });
         const timer = setTimeout(() => { emit({ content: ' child result ready' }, 'stop'); done(); }, 350);
         response.once('close', () => clearTimeout(timer));
@@ -479,7 +489,7 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
         'The child approval was missing from the parent tree subscription.');
         const tree = await request<AgentTreeSnapshot>({ operation: 'agents.tree', params: { sessionId: rootSession.id } });
         const child = tree.members.find((member) => member.session.parentSessionId === rootSession.id);
-        assert.equal(child?.session.profile?.access, 'edit');
+        assert.deepEqual(child?.session.profile, { id: 'build', name: 'Build', access: 'edit' });
         assert.equal(child?.response?.status, 'waiting_permission');
         assert.equal(tree.members.find((member) => member.session.id === rootSession.id)?.response?.status, 'in_progress');
         assert.equal(await readFile(editedPath, 'utf8'), 'original\r\n');
@@ -505,6 +515,7 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
       }
     });
     await step('Background agent tree, follow-up and exact result after restart', async () => {
+      await writeFile(path.join(workspace, 'review-probe.txt'), 'review shell fixture');
       const rootSession = await request<{ id: string }>({ operation: 'sessions.create', body: { projectId } });
       const events: AgentTreeEvent[] = [];
       const subscription = randomUUID();

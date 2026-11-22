@@ -22,9 +22,9 @@ toolCalling=false 不暴露工具；requiresImageInput 工具只暴露给有图�
 | list_directory         | path、depth、maxEntries、includeHidden          | filesystem.read/list          | parallel  |
 | move_path              | source、destination                             | filesystem.move               | exclusive |
 | delete_path            | path、recursive                                 | filesystem.delete             | exclusive |
-| shell                  | command、cwd?、yieldTimeMs?                     | process.spawn                 | exclusive |
+| shell                  | command、cwd?、yieldTimeMs?、hostAccessReason?    | process.spawn、process.spawn.workspace、process.spawn.readonly | exclusive |
 | shell_poll             | processId、cursor 或 line、waitMs、waitForExit  | process.read                  | parallel  |
-| shell_stop             | processId、cursor 或 line                       | process.terminate             | exclusive |
+| shell_stop             | processId、cursor 或 line                       | process.terminate、process.terminate.sandboxed | exclusive |
 | read_uploaded_file     | file_id、offset?、limit?                        | stored_file.read              | parallel  |
 | read_image             | path                                            | filesystem.read，要求视觉能力 | parallel  |
 | search_skills          | query?、limit?                                  | skill.read/list               | parallel  |
@@ -84,23 +84,23 @@ apply_patch 采用**JSON 精确字符串替换**，不接受 unified diff 或 Be
 
 [run-policy.ts](../../src/agent-core/permissions/run-policy.ts) 依次判断：
 
-1. action=read/list、capability 以 .read 结尾或 filesystem.search，自动允许。
+1. 多 Agent 协作调用、只读沙箱中的 shell 启动、停止本会话拥有且符合当前权限的沙箱进程，以及 action=read/list、capability 以 .read 结尾或 filesystem.search，自动允许。
 2. full_access 允许其他操作。
 3. plan 拒绝其他操作。
 4. accept_edits 允许 filesystem.write/patch/move，以及 Windows 工作区沙箱中的 shell 启动。
 5. 其余 ask。
 
-因此 shell_poll 自动允许，shell_stop 仍为副作用操作；plan 即使遇只读 shell 命令也拒绝 shell 启动。联网搜索被声明为 read，所以 plan 可以查询。MCP 实际调用为 execute，外部只读标注不降低审批要求。
+plan 下，根会话和子会话都可在只读沙箱中运行 shell，并停止本会话启动的只读沙箱进程。shell_poll 自动允许。联网搜索被声明为 read，所以 plan 可以查询。MCP 实际调用为 execute，外部只读标注不降低审批要求。
 
 capability 分类是工具实现的可信声明，不能让模型通过输入自定义 action=read 获取授权。权限模式冻结在 Run，而不是从每次工具调用推断。
 
-## 6. Windows 工作区写入沙箱
+## 6. Windows Shell 沙箱
 
-在 accept_edits 下，shell 以会话工作区作为写入授权根目录。调用方的 cwd 只指定命令的工作目录。独立 runner 使用受限令牌、低完整性级别与 NTFS ACL 启动 pwsh 及其普通子进程，并给每次执行分配私有 TEMP/TMP。初始化失败时返回错误。shell_poll 和 shell_stop 继续使用原进程 ID。
+独立 runner 使用受限令牌、低完整性级别与 NTFS ACL 启动 pwsh 及其普通子进程。工作区写入模式以会话工作区为写入授权根目录，并给每次执行分配私有 TEMP/TMP。cwd 指定命令的工作目录。只读模式省略工作区和临时目录的写入授权，已有的工作区专用 ACL 授权也不会应用到只读令牌。沙箱初始化失败时返回错误。shell_poll 和 shell_stop 继续使用原进程 ID。
 
 工作区可写包含删除。读取与网络仍使用宿主可用资源；硬链接指向同一文件对象。工作区 ACL 和可继承的低完整性标签会保留，这也影响同用户的其他低完整性进程。子进程捕获孙进程输出时可能遇到 Windows 命名管道权限限制。
 
-工具可以通过 hostAccessReason 请求单次宿主权限。审批绑定命令、工作目录与理由，通过后启动新进程。重试前应检查上次执行产生的部分修改。ask 仍逐次审批宿主命令，plan 拒绝 shell 启动，full_access 直接使用宿主权限。
+plan 下所有 shell 命令使用只读沙箱。根会话在 accept_edits 下默认使用工作区写入沙箱，可通过 hostAccessReason 请求单次宿主权限。审批绑定命令、工作目录与理由，通过后启动新进程。重试前应检查上次执行产生的部分修改。根会话的 ask 逐次审批宿主命令，full_access 直接使用宿主权限。子会话在 ask 和 accept_edits 下使用工作区写入沙箱，其中 ask 逐次审批命令。
 
 ## 7. 权限批次执行
 
@@ -128,7 +128,7 @@ shell 返回退出结果或 processId，不必阻塞直到命令结束。yieldTi
 | 强制终止延迟   | 1 秒    |
 | 终止确认宽限   | 3 秒    |
 
-输出由 [process-output-buffer.ts](../../src/agent-core/runtime/process/process-output-buffer.ts) 限界保存，返回截断信息，cursor/line 不提供无限日志历史。PowerShell 输出按 UTF-8 解码。
+输出由 [process-output-buffer.ts](../../src/agent-core/runtime/process/process-output-buffer.ts) 限界保存，返回截断信息，cursor/line 不提供无限日志历史。沙箱 runner 在独立的隐藏控制台中设置 UTF-8 输出代码页，Actl 按 UTF-8 解码 stdout 和 stderr。
 
 进程由 session owner 管理，其他会话不能 poll/stop。Windows 用 taskkill `/T` 处置树，必要时 `/F`；无法确认时记日志。删除会话/项目或 Agent.dispose 会回收；进程表在内存，不跨重启恢复。停止 Run 的信号会中止正在等待的启动/轮询，但已返回到会话的长期进程应通过明确回收入口处置。
 

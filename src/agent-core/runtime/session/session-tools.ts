@@ -77,6 +77,7 @@ export class SessionTools {
       cwd: session.cwd,
       permissionMode: run.permissionSnapshot.permissionMode,
       ...(session.parentSessionId ? {
+        isSubagent: true,
         fileEditRoots: [...(session.cwd ? [session.cwd] : []), ...(session.additionalWorkspacePaths ?? [])],
       } : {}),
       sessionId: session.id,

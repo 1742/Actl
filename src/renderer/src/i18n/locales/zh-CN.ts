@@ -349,7 +349,7 @@ export default {
     enableThisServerToDiscoverIts: '启用后将发现此 Server 的工具。',
     selectAServerOrAddA: '选择一台 Server，或添加新的本地 MCP Server。',
     plan: '规划',
-    analyzeReadAndSearchWithoutMaking: '仅分析、读取和搜索，不执行任何修改',
+    readOnlyShellAccess: '读取、搜索，并在只读沙箱中运行命令',
     ask: '请求',
     alwaysAskBeforeWritingDeletingOr: '执行写入、删除或命令前始终请求批准',
     workspaceShellAccess: '允许编辑文件，Shell 可写工作区；以宿主权限运行命令时询问。',

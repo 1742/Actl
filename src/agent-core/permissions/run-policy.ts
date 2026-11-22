@@ -27,6 +27,8 @@ export class RunPermissionEngine implements PermissionEngine {
   ): Promise<PermissionDecision> {
     const mode = context.snapshot.permissionMode;
     if (requirement.capability === 'agent.coordinate') return { type: 'allow' };
+    if (toolCall.name === "shell" && requirement.capability === "process.spawn.readonly") return { type: "allow" };
+    if (toolCall.name === "shell_stop" && requirement.capability === "process.terminate.sandboxed") return { type: "allow" };
     if (isReadOnly(requirement)) return { type: "allow" };
     if (mode === "full_access") return { type: "allow" };
     if (mode === "plan") {

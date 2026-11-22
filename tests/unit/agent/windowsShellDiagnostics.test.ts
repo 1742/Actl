@@ -42,7 +42,7 @@ test('runner identifies the directory when Windows refuses to set its integrity 
     const target = role === '工作区' ? workspace : temp;
     execFileSync(path.join(system32, 'icacls.exe'), [target, '/deny', `*${sid}:(WO)`]);
     const result = spawnSync(process.execPath, [path.resolve('out/main/windows-shell-runner.cjs'),
-      workspace, temp, workspace, shell, 'Set-Content ran.txt unexpected'], { encoding: 'utf8', timeout: 15000 });
+      'workspace-write', workspace, shell, 'Set-Content ran.txt unexpected', workspace, temp], { encoding: 'utf8', timeout: 15000 });
     assert.ifError(result.error);
     assert.equal(result.status, 127, result.stderr);
     assert.ok(result.stderr.includes(`${role}「${target}」`), result.stderr);

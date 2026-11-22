@@ -8,11 +8,15 @@ export interface ProcessOutputChunk {
   text: string;
 }
 
+export type ProcessSandbox =
+  | { mode: 'read-only' }
+  | { mode: 'workspace-write'; workspaceRoot: string };
+
 export interface ProcessCommandInput {
   command: string;
   cwd: string;
   shell: string;
-  workspaceWriteRoot?: string;
+  sandbox?: ProcessSandbox;
   outputEncoding: string;
   env?: NodeJS.ProcessEnv;
 }
@@ -77,7 +81,7 @@ export interface StopProcessInput {
 }
 
 export interface SessionProcessAccess {
-  owns(processId: string): boolean;
+  owns(processId: string, sandboxMode?: ProcessSandbox['mode']): boolean;
   start(input: Omit<StartProcessInput, 'owner'>): Promise<ManagedProcessPoll>;
   poll(input: Omit<PollProcessInput, 'owner'>): Promise<ManagedProcessPoll>;
   stop(input: Omit<StopProcessInput, 'owner'>): Promise<ManagedProcessPoll>;

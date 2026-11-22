@@ -68,9 +68,11 @@ Actl 的协作范围是同一个根会话（Root）。Root 及其子 Agent 共�
 
 ## 角色、权限和界面
 
-内置角色为 `general`、`explore`、`review` 和 `edit`。根 Agent 可发布 `type: 'edit'` 的任务，并用 `delegate_task` 创建同角色的子 Agent。用户也可在 Actl 数据目录下创建 `agents/<id>.md` 覆盖或增加角色。文件名是角色 ID，YAML frontmatter 中 `name` 和 `description` 必填，正文提供角色指令。`access` 可设为 `read_only` 或 `edit`，默认为 `read_only`。`modelTargetId` 和 `reasoningEffort` 可指定角色首选的模型。角色快照在 Agent 创建时保存。
+内置角色为 `general`、`explore`、`review` 和 `build`。根 Agent 可发布 `type: 'build'` 的任务，并用 `delegate_task` 创建同角色的子 Agent。用户可在 Actl 数据目录下创建 `agents/<id>.md` 覆盖或增加角色。文件名是角色 ID，YAML frontmatter 中 `name` 和 `description` 必填，正文提供角色指令。`access` 可设为 `read_only` 或 `edit`，默认为 `read_only`。`modelTargetId` 和 `reasoningEffort` 可指定角色首选的模型。角色快照在 Agent 创建时保存。
 
-只读角色使用 `plan` 模式。编辑角色在 `ask` 下请求用户审批，在 `accept_edits` 或 `full_access` 下自动执行获准的文件编辑，根会话或任务来源是 `plan` 时执行只读 Run。编辑工具为 `write_file` 和 `apply_patch`，目标必须位于已绑定的工作区内。每个 Root 最多有 12 个子 Session，最多同时执行 3 个子 Agent，等待计入该上限。共享目录中的编辑即时生效，任务退回后仍可在每轮 Run 的文件改动中查看。
+只读角色使用 `plan` 模式，`shell` 在 Windows 只读沙箱中运行。具有编辑权限的角色在 `ask` 下请求用户审批，在 `accept_edits` 或 `full_access` 下自动执行获准的文件编辑和工作区沙箱命令。根会话或任务来源为 `plan` 时，子 Agent 使用只读沙箱。子 Agent 可用 `shell_poll` 和 `shell_stop` 管理自己启动的进程。编辑工具为 `write_file` 和 `apply_patch`，目标必须位于已绑定的工作区内。
+
+每个 Root 最多有 12 个子 Session，最多同时执行 3 个子 Agent，等待计入该上限。共享目录中的编辑即时生效，任务退回后仍可在每轮 Run 的文件改动中查看。
 
 前端按根会话维护 Agent 树，树内保存成员对话、运行状态、计划和任务。父会话输入区显示树内的待审批请求，每张卡携带发起者的会话、Run 和批次标识，并可打开对应的子会话。右侧栏显示 Plan、任务状态、当前 Attempt 成果和子 Agent Run，分别标注工具等待和审批等待。时间线展开 `Roles`、`Plan`、`Tasks`、`Delegate`、`Agents`、`Mail` 和 `Wait` 时，通过卡片显示适合阅读的字段。
 
