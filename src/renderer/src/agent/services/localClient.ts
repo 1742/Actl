@@ -44,6 +44,9 @@ export class LocalRuntimeClient implements AgentRuntimeClient {
   listSessions() { return request<AgentSession[]>({ operation: 'sessions.list' }); }
   createSession(projectId?: string) { return request<AgentSession>({ operation: 'sessions.create', body: projectId ? { projectId } : {} }); }
   renameSession(sessionId: string, title: string | null) { return request<AgentSession>({ operation: 'sessions.rename', params: { sessionId }, body: { title } }); }
+  setSessionArchived(sessionId: string, archived: boolean) {
+    return request<AgentSession>({ operation: 'sessions.setArchived', params: { sessionId }, body: { archived } });
+  }
   deleteSession(sessionId: string) { return request<void>({ operation: 'sessions.delete', params: { sessionId } }); }
   getContext(sessionId: string) { return request<SessionContext>({ operation: 'sessions.context', params: { sessionId } }); }
   getSessionReview(sessionId: string, options?: { fileId?: string; runId?: string }) {

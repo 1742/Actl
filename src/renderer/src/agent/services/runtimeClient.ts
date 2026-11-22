@@ -58,6 +58,7 @@ export interface AgentRuntimeClient {
   listSessions(): Promise<AgentSession[]>;
   createSession(projectId?: string): Promise<AgentSession>;
   renameSession(sessionId: string, title: string | null): Promise<AgentSession>;
+  setSessionArchived(sessionId: string, archived: boolean): Promise<AgentSession>;
   deleteSession(sessionId: string): Promise<void>;
   getContext(sessionId: string): Promise<SessionContext>;
   getSessionReview(sessionId: string, options?: { fileId?: string; runId?: string }): Promise<SessionReview>;

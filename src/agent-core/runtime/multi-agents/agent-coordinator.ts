@@ -145,6 +145,32 @@ export class AgentCoordinator {
     }
   }
 
+  async setSessionArchived(session: Session, archived: boolean): Promise<Session> {
+    return this.serialized(session.rootSessionId ?? session.id, async () => {
+      this.assertSessionExists(session);
+      if (session.parentSessionId) {
+        throw new AgentLoopError('child_session_read_only', 'Manage the archive state from the parent conversation.');
+      }
+      if (Boolean(session.archived_at) === archived) return session;
+
+      if (archived) {
+        for (const { id } of this.workspace.descendants(session.id)) {
+          const member = await this.workspace.getSession(id, session.ownerId);
+          const runtime = this.runtimes.get(id);
+          const run = member?.runs.find((item) => !isTerminalRun(item));
+          if (run || runtime?.preparing || runtime?.executing || runtime?.isStopping || this.stops.has(id)) {
+            throw new AgentLoopError('active_response_exists', 'Stop the conversation and its subagents before archiving.',
+              run && { sessionId: id, responseId: run.id });
+          }
+        }
+      }
+
+      const updated = await this.workspace.setSessionArchived(session.ownerId, session.id, archived);
+      this.changed(session.id);
+      return updated;
+    });
+  }
+
   async cancelResponse(session: Session, run: AgentRunRecord): Promise<AgentRunRecord> {
     if (run.status === 'cancelled') return run;
     if (isTerminalRun(run)) throw new AgentLoopError('response_not_cancellable', 'Response is no longer active.');
@@ -625,7 +651,7 @@ export class AgentCoordinator {
   private async reconcileRoot(rootId: string): Promise<void> {
     if (this.closing || this.stops.has(rootId) || this.state.isStopped(rootId)) return;
     const root = await this.workspace.getSession(rootId);
-    if (!root) return;
+    if (!root || root.archived_at) return;
     const expired = new Set(this.state.expiredAttempts(rootId, Date.now()));
     let available = await this.idleChildren(root);
 
@@ -743,6 +769,9 @@ export class AgentCoordinator {
   }
 
   private assertAvailableForUser(session: Session): void {
+    if (this.workspace.isSessionArchived(session)) {
+      throw new AgentLoopError('session_archived', 'Restore the conversation before continuing.');
+    }
     if (this.closing || this.stops.has(session.id) || this.stops.has(session.rootSessionId ?? session.id)) {
       throw new Error('Agent tree is stopping.');
     }

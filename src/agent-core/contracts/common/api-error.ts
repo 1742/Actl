@@ -57,6 +57,7 @@ const agentLoopStatuses = {
   active_response_exists: 409,
   project_active_response_exists: 409,
   child_session_read_only: 403,
+  session_archived: 409,
   skills_invalid: 400,
   skill_not_found: 404,
   skill_unavailable: 409,

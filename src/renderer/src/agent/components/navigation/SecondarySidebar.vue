@@ -46,6 +46,7 @@ const settingsSections = computed(
       { id: 'prompts', label: tr('ui.prompts') },
       { id: 'search', label: tr('ui.webSearch') },
       { id: 'models', label: tr('ui.modelsAndProviders') },
+      { id: 'archived', label: tr('settings.sections.archived') },
     ] as const,
 );
 

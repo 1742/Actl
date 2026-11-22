@@ -133,6 +133,70 @@ async function childOf(f: Awaited<ReturnType<typeof fixture>>, title: string) {
     profile: { id: 'review', name: 'Review', access: 'read_only', description: 'Review work.', instructions: 'Report findings.' } });
 }
 
+test('the v30 migration keeps existing conversations and introduces an empty archive date', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'actl-archive-migration-'));
+  const file = path.join(directory, 'workspace.db');
+  try {
+    const legacy = await openWorkspaceDatabase(file);
+    try {
+      legacy.exec(`
+        ALTER TABLE sessions DROP COLUMN archived_at;
+        UPDATE schema_metadata SET version = 30 WHERE id = 1;
+        INSERT INTO sessions(id, owner_id, root_session_id, created_at, updated_at)
+          VALUES ('existing', 'developer:local', 'existing', '2026-11-22', '2026-11-22');
+      `);
+    } finally { legacy.close(); }
+    const migrated = await openWorkspaceDatabase(file);
+    try {
+      assert.equal(migrated.prepare('SELECT version FROM schema_metadata').get()?.version, 31);
+      const repo = new SqliteSessionRepository(migrated, new SqliteStoredFileRepository(migrated));
+      assert.deepEqual((await repo.listSessions()).map(({ id, archived_at }) => [id, archived_at]), [
+        ['existing', undefined],
+      ]);
+    } finally { migrated.close(); }
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test('archiving preserves a conversation tree across restart and project deletion cascades through the archive', async () => {
+  const f = await fixture(async () => [text('Saved history')]);
+  try {
+    const rootId = f.root.id;
+    const child = await childOf(f, 'Reviewer');
+    const standalone = await f.workspace.createSession(owner, {});
+    const projectConversation = await f.workspace.createSession(owner, { projectId: f.project.id });
+    const run = await f.coordinator.start(f.root, input('Original prompt'), options);
+    await assert.rejects(f.coordinator.setSessionArchived(child, true), { code: 'child_session_read_only' });
+
+    const childRun = await f.workspace.createResponse(child, await input('Assigned work')(), snapshot, { permissionMode: 'plan' });
+    await assert.rejects(f.coordinator.setSessionArchived(f.root, true), {
+      code: 'active_response_exists', details: { sessionId: child.id, responseId: childRun.id },
+    });
+    await f.coordinator.stopTree(f.root);
+
+    const archivedAt = (await f.coordinator.setSessionArchived(f.root, true)).archived_at;
+    assert.ok(archivedAt);
+    assert.equal((await f.coordinator.setSessionArchived(f.root, true)).archived_at, archivedAt);
+    await f.restart();
+    assert.equal(f.root.archived_at, archivedAt);
+    assert.equal(f.root.runs[0]?.id, run.id);
+    assert.equal((await f.workspace.getSession(child.id, owner))?.runs[0]?.id, childRun.id);
+    assert.equal(f.workspace.isSessionArchived((await f.workspace.getSession(child.id, owner))!), true);
+    await assert.rejects(f.coordinator.start(f.root, input('Blocked while archived'), options), { code: 'session_archived' });
+    await assert.rejects(f.coordinator.compact(f.root, options.model), { code: 'session_archived' });
+
+    assert.equal((await f.coordinator.setSessionArchived(f.root, false)).archived_at, undefined);
+    assert.equal((await f.coordinator.start(f.root, input('After restoring'), options)).status, 'completed');
+    await f.coordinator.setSessionArchived(f.root, true);
+    await f.coordinator.deleteProject(f.project.id, owner);
+    assert.deepEqual(f.workspace.listSessions(owner).map(({ id }) => id), [standalone.id]);
+    for (const id of [rootId, child.id, projectConversation.id]) {
+      assert.equal(f.database.prepare('SELECT id FROM sessions WHERE id = ?').get(id), undefined);
+    }
+    assert.equal(f.database.prepare('SELECT id FROM agent_runs WHERE id = ?').get(run.id), undefined);
+    assert.equal(f.database.prepare('SELECT id FROM agent_runs WHERE id = ?').get(childRun.id), undefined);
+  } finally { await f.close(); }
+});
+
 test('plan changes preserve instructions and saved Skill references replay unchanged after restart', async () => {
   const requests: ModelTurnRequest[] = [];
   const f = await fixture(async (request) => {

@@ -20,6 +20,7 @@ export const agentOperations = [
   'sessions.list',
   'sessions.create',
   'sessions.rename',
+  'sessions.setArchived',
   'sessions.delete',
   'sessions.context',
   'sessions.review',

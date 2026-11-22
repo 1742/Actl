@@ -129,10 +129,24 @@ export const useAgentStore = defineStore("agent", {
       {}, ...Object.values(state.trees).map((tree) => tree.members),
     ),
     sessions(): RuntimeSession[] { return Object.values(this.membersBySessionId).map(({ session }) => session); },
+    unarchivedSessions(): RuntimeSession[] {
+      return Object.values(this.trees).flatMap(({ rootId, members }) =>
+        members[rootId]?.session.archived_at ? [] : Object.values(members).map(({ session }) => session));
+    },
+    archivedSessions(): RuntimeSession[] {
+      return this.sessions.filter((session) => !session.parentSessionId && session.archived_at)
+        .sort((a, b) => b.archived_at!.localeCompare(a.archived_at!));
+    },
     sessionById() { return (id: string) => this.membersBySessionId[id]?.session; },
     runtimeBySessionId() { return (id: string) => this.membersBySessionId[id]?.runtime; },
     session(): RuntimeSession | undefined { return this.sessionById(this.selectedSessionId); },
     currentTree(): AgentTree | undefined { return this.session && this.trees[sessionTreeId(this.session)]; },
+    isSessionArchived() {
+      return (sessionId: string) => {
+        const session = this.sessionById(sessionId);
+        return Boolean(session && this.sessionById(sessionTreeId(session))?.archived_at);
+      };
+    },
     currentRuntime(): AgentSessionRuntime | undefined { return this.runtimeBySessionId(this.selectedSessionId); },
     permissionRequests(): TreePermissionRequest[] {
       const tree = this.currentTree;
@@ -160,7 +174,8 @@ export const useAgentStore = defineStore("agent", {
         : state.draftProjectId ? `project:${state.draftProjectId}:draft` : `standalone:${state.runtimeKind}:draft`
     ),
     mostRecentlyEditedProject(): RuntimeProject | undefined {
-      return [...this.projects].sort((a, b) => projectActivityAt(b, this.sessions).localeCompare(projectActivityAt(a, this.sessions)))[0];
+      return [...this.projects].sort((a, b) =>
+        projectActivityAt(b, this.unarchivedSessions).localeCompare(projectActivityAt(a, this.unarchivedSessions)))[0];
     },
     isRunning(): boolean { return this.status === "running" || this.status === "stopping"; },
     isStopping(): boolean { return this.status === "stopping"; },
@@ -176,9 +191,12 @@ export const useAgentStore = defineStore("agent", {
     sessionIsActive() {
       return (id: string) => isActiveStatus(this.runtimeBySessionId(id)?.status ?? "idle");
     },
-    standaloneSessions(): RuntimeSession[] { return this.sessions.filter((item) => !item.projectId && !item.parentSessionId).sort(byUpdated); },
+    standaloneSessions(): RuntimeSession[] {
+      return this.unarchivedSessions.filter((item) => !item.projectId && !item.parentSessionId).sort(byUpdated);
+    },
     sessionsByProject() {
-      return (projectId: string) => this.sessions.filter((item) => item.projectId === projectId && !item.parentSessionId).sort(byUpdated);
+      return (projectId: string) => this.unarchivedSessions
+        .filter((item) => item.projectId === projectId && !item.parentSessionId).sort(byUpdated);
     },
   },
 
@@ -283,7 +301,8 @@ export const useAgentStore = defineStore("agent", {
     setTreeDetails(rootId: string, members: { session: RuntimeSession; waiting?: boolean | undefined }[],
       plan: AgentPlan, tasks: AgentTask[], childRunResults: ChildRunResult[]) {
       for (const { session, waiting } of members) {
-        this.upsertSession(session);
+        const current = this.trees[rootId]?.members[session.id]?.session;
+        if (!current || session.updated_at >= current.updated_at) this.upsertSession(session);
         this.trees[rootId]!.members[session.id]!.waiting = waiting ?? false;
       }
       const tree = this.trees[rootId];

@@ -29,6 +29,7 @@ import {
   deleteAgentSession,
   renameAgentSession,
   selectAgentSession,
+  setAgentSessionArchived,
   startNewAgentDraft,
   updateAgentProject,
 } from '../../composables/useAgent';
@@ -40,7 +41,7 @@ const notify = useNotifyStore();
 const store = useAgentStore();
 
 const collapsedProjects = ref(new Set<string>());
-const projectContext = shallowRef<{ id: string; anchor: DOMRect }>();
+const contextMenu = shallowRef<{ kind: 'project' | 'session'; id: string; anchor: DOMRect }>();
 const searchOpen = ref(false);
 const dialog = ref<{
   open: boolean;
@@ -52,6 +53,7 @@ const dialog = ref<{
   mode: 'create-project',
 });
 const dialogLoading = ref(false);
+const archiving = ref(false);
 
 function sessionStatus(sessionId: string) {
   const tree = store.trees[sessionId];
@@ -95,8 +97,8 @@ function toggleProject(projectId: string) {
   collapsedProjects.value = next;
 }
 
-function openProjectContextMenu(id: string, event: MouseEvent) {
-  projectContext.value = { id, anchor: new DOMRect(event.clientX, event.clientY) };
+function openContextMenu(kind: 'project' | 'session', id: string, event: MouseEvent) {
+  contextMenu.value = { kind, id, anchor: new DOMRect(event.clientX, event.clientY) };
 }
 
 async function openProjectDirectory(project: RuntimeProject) {
@@ -126,6 +128,17 @@ function showDialog(mode: DialogMode, target?: RuntimeProject | RuntimeSession) 
 
 function closeDialog() {
   if (!dialogLoading.value) dialog.value.open = false;
+}
+
+async function archiveSession(sessionId: string) {
+  if (archiving.value) return;
+  archiving.value = true;
+  try {
+    const result = await setAgentSessionArchived(sessionId, true);
+    notify.display(result.status, result.message);
+  } finally {
+    archiving.value = false;
+  }
 }
 
 async function submitDialog(value: string) {
@@ -222,7 +235,7 @@ const dialogTargetName = computed(() =>
         <div
           class="sidebar-row group"
           :class="{ 'sidebar-row-selected': project.id === store.draftProjectId }"
-          @contextmenu.prevent="openProjectContextMenu(project.id, $event)"
+          @contextmenu.prevent="openContextMenu('project', project.id, $event)"
         >
           <button
             class="flex h-9 min-w-0 flex-1 items-center pl-1 text-left"
@@ -271,7 +284,7 @@ const dialogTargetName = computed(() =>
             </button>
             <FloatingMenu
               placement="bottom-end"
-              :context-anchor="projectContext?.id === project.id ? projectContext.anchor : null"
+              :context-anchor="contextMenu?.kind === 'project' && contextMenu.id === project.id ? contextMenu.anchor : null"
             >
               <template #trigger="{ open }">
                 <button
@@ -310,6 +323,7 @@ const dialogTargetName = computed(() =>
             :key="session.id"
             class="conversation-row group"
             :class="{ 'sidebar-row-selected': session.id === store.selectedSessionId }"
+            @contextmenu.prevent="openContextMenu('session', session.id, $event)"
           >
             <button
               class="min-w-0 flex-1 truncate py-1.5 pl-8 pr-3 text-left"
@@ -334,7 +348,9 @@ const dialogTargetName = computed(() =>
             />
             <div class="sidebar-row-overlay row-actions">
               <AgentSessionMenu
+                :context-anchor="contextMenu?.kind === 'session' && contextMenu.id === session.id ? contextMenu.anchor : null"
                 @rename="showDialog('rename-session', session)"
+                @archive="archiveSession(session.id)"
                 @delete="showDialog('delete-session', session)"
               />
             </div>
@@ -355,6 +371,7 @@ const dialogTargetName = computed(() =>
           :key="session.id"
           class="conversation-row group"
           :class="{ 'sidebar-row-selected': session.id === store.selectedSessionId }"
+          @contextmenu.prevent="openContextMenu('session', session.id, $event)"
         >
           <button
             class="min-w-0 flex-1 truncate py-1.5 pl-2 pr-3 text-left"
@@ -379,7 +396,9 @@ const dialogTargetName = computed(() =>
           />
           <div class="sidebar-row-overlay row-actions">
             <AgentSessionMenu
+              :context-anchor="contextMenu?.kind === 'session' && contextMenu.id === session.id ? contextMenu.anchor : null"
               @rename="showDialog('rename-session', session)"
+              @archive="archiveSession(session.id)"
               @delete="showDialog('delete-session', session)"
             />
           </div>
@@ -513,7 +532,8 @@ const dialogTargetName = computed(() =>
 }
 
 .sidebar-row:focus-within .row-actions,
-.row-actions:has(.project-menu-trigger[aria-expanded='true']) {
+.conversation-row:focus-within .row-actions,
+.row-actions:has(button[aria-expanded='true']) {
   display: flex;
 }
 

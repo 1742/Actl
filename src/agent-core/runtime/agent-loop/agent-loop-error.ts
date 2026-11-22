@@ -2,6 +2,7 @@ export type AgentLoopErrorCode =
   | "active_response_exists"
   | "project_active_response_exists"
   | "child_session_read_only"
+  | "session_archived"
   | "skills_invalid"
   | "skill_not_found"
   | "skill_unavailable"

@@ -21,6 +21,7 @@ import { useAgentStore } from '../../stores/agent';
 import AgentServiceSettings from './AgentServiceSettings.vue';
 import WebSearchSettings from './WebSearchSettings.vue';
 import PromptSettings from './PromptSettings.vue';
+import ArchivedConversations from './ArchivedConversations.vue';
 import {
   getNativeWebSearchType,
   type RuntimeModel, type RuntimeModelCapabilities, type RuntimeModelConfig, type RuntimeModelProtocol,
@@ -40,7 +41,7 @@ const store = useAgentStore();
 const notify = useNotifyStore();
 const route = useRoute();
 const activeSection = computed(() =>
-  ['agent', 'appearance', 'prompts', 'search', 'models'].includes(String(route.query.section))
+  ['agent', 'appearance', 'prompts', 'search', 'models', 'archived'].includes(String(route.query.section))
     ? String(route.query.section)
     : 'agent',
 );
@@ -355,6 +356,7 @@ async function confirmDeleteAccount() {
         </section>
         <PromptSettings v-if="activeSection === 'prompts'" />
         <WebSearchSettings v-if="activeSection === 'search'" />
+        <ArchivedConversations v-if="activeSection === 'archived'" />
         <section v-if="activeSection === 'models'">
           <div
             v-if="configurationLocked"

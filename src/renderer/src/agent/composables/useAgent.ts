@@ -71,7 +71,7 @@ function savePersistedAgentView(view: PersistedAgentView) {
 
 function latestProjectFromSessionActivity() {
   const store = useAgentStore();
-  const latestProjectSession = [...store.sessions]
+  const latestProjectSession = [...store.unarchivedSessions]
     .filter((session) => session.projectId)
     .sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0];
   return latestProjectSession?.projectId
@@ -231,7 +231,7 @@ export async function restoreInitialAgentView(): Promise<ActionResult> {
   const persistedView = readPersistedAgentView();
   if (
     persistedView?.type === 'session' &&
-    store.sessions.some((session) => session.id === persistedView.id)
+    store.unarchivedSessions.some((session) => session.id === persistedView.id)
   ) {
     const session = store.sessions.find((item) => item.id === persistedView.id)!;
     return selectAgentSession(session.rootSessionId
@@ -499,7 +499,7 @@ export async function selectAgentSession(sessionId: string): Promise<ActionResul
   if (!target) return { status: 'error', message: tr('ui.conversationDoesNotExistOrHas') };
   activateRuntime(target.runtimeKind);
   store.selectSession(sessionId);
-  savePersistedAgentView({ type: 'session', id: sessionId });
+  if (!store.isSessionArchived(sessionId)) savePersistedAgentView({ type: 'session', id: sessionId });
   store.setGeneralError();
   const runtime = store.ensureRuntime(sessionId);
   if (runtime.hydrated || store.sessionIsActive(sessionId)) return { status: 'success' };
@@ -696,6 +696,29 @@ export async function deleteAgentSession(sessionId: string): Promise<ActionResul
   }
 }
 
+export async function setAgentSessionArchived(sessionId: string, archived: boolean): Promise<ActionResult> {
+  const store = useAgentStore();
+  if (archived && Object.keys(store.trees[sessionId]?.members ?? {}).some(store.sessionIsActive)) {
+    return { status: 'error', message: tr('ui.stopBeforeArchivingConversation') };
+  }
+  try {
+    const { session, client } = sessionContext(sessionId);
+    const updated = decorateSession(session.runtimeKind, await client.setSessionArchived(session.runtimeId, archived));
+    if (store.sessionById(sessionId)) {
+      store.upsertSession(updated);
+      if (archived && store.currentTree?.rootId === sessionId) {
+        startNewAgentDraft(updated.projectId ?? undefined);
+      }
+    }
+    return { status: 'success', message: tr(archived ? 'ui.conversationArchived' : 'ui.conversationRestored') };
+  } catch (error) {
+    if (archived && error instanceof RuntimeRequestError && error.code === 'active_response_exists') {
+      return { status: 'error', message: tr('ui.stopBeforeArchivingConversation') };
+    }
+    return errorResult(error);
+  }
+}
+
 type AttachmentUpdate = (
   attachmentId: string,
   changes: Partial<Pick<AgentComposerAttachment, 'status' | 'storedFile' | 'error'>>,
@@ -713,6 +736,8 @@ export async function sendAgentMessage(
   const initialSessionId = store.selectedSessionId;
   if (store.session?.parentSessionId)
     return { status: 'error', message: tr('agents.sendInParentConversation') };
+  if (store.isSessionArchived(initialSessionId))
+    return { status: 'error', message: tr('ui.restoreBeforeContinuing') };
   if (!content.length && !attachments.length)
     return { status: 'error', message: tr('ui.enterAMessageOrAddAn') };
   if (!store.selectedModel)

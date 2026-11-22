@@ -212,6 +212,10 @@ export class WorkspaceStore {
     return this.sessions.get(id)?.ownerId === ownerId;
   }
 
+  isSessionArchived(session: Session): boolean {
+    return Boolean(this.sessions.get(session.rootSessionId ?? session.id)?.archived_at);
+  }
+
   async getSession(id: string, ownerId?: string): Promise<Session | undefined> {
     const metadata = this.sessions.get(id);
     if (!metadata || (ownerId !== undefined && metadata.ownerId !== ownerId)) return undefined;
@@ -341,6 +345,25 @@ export class WorkspaceStore {
       if (nextTitle === undefined) delete replacement.title;
       await this.sessionRepository.updateSession(replacement);
       this.sessionsRecord[index] = replacement;
+      updated = this.applyMetadata(replacement);
+    });
+    return updated;
+  }
+
+  async setSessionArchived(ownerId: string, id: string, archived: boolean): Promise<Session> {
+    let updated!: Session;
+    await this.enqueue(async () => {
+      const metadata = this.requireOwnedSessionRecord(id, ownerId);
+      if (Boolean(metadata.archived_at) === archived) {
+        updated = this.sessions.get(id)!;
+        return;
+      }
+
+      const replacement = { ...metadata, updated_at: nowIso() };
+      if (archived) replacement.archived_at = replacement.updated_at;
+      else delete replacement.archived_at;
+      await this.sessionRepository.updateSession(replacement);
+      this.sessionsRecord[this.sessionsRecord.indexOf(metadata)] = replacement;
       updated = this.applyMetadata(replacement);
     });
     return updated;
@@ -659,6 +682,7 @@ export class WorkspaceStore {
     if (!session) throw new WorkspaceStoreError("session_not_found", "Session not found.");
     Object.assign(session, metadata);
     if (metadata.title === undefined) delete session.title;
+    if (metadata.archived_at === undefined) delete session.archived_at;
     return session;
   }
 

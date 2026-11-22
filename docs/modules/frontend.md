@@ -42,6 +42,8 @@ Agent 就绪通过 preload.ready() 确认；业务状态位于 Agent store。前
 
 草稿 key 为 `session:<UI会话ID>`、`project:<UI项目ID>:draft`、`standalone:local:draft`。这些草稿保存在内存 store；localStorage 保存的是上次视图，而不是完整输入和全部聊天内容。
 
+已归档的根会话及其子会话从常用列表和对话搜索中隐藏。设置中的「归档对话」按项目列出根会话，独立对话单独分组。打开归档对话时可以查看历史和右侧栏，恢复后可以继续发送消息。
+
 ## 3. 服务层与用例层
 
 | 文件                                                          | 输入/输出和边界                                                           |

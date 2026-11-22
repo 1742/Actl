@@ -18,9 +18,9 @@ export function useAgentTree() {
     const roots = new Set<string>();
     if (rootId.value) roots.add(rootId.value);
     for (const candidate of Object.values(store.trees)) {
-      const root = candidate.members[candidate.rootId]?.session.runtimeId;
-      if (root && (Object.keys(candidate.members).some(store.sessionIsActive)
-        || candidate.tasks.some(({ status }) => status === 'assigned' || status === 'running'))) roots.add(root);
+      const root = candidate.members[candidate.rootId]?.session;
+      if (root && !root.archived_at && (Object.keys(candidate.members).some(store.sessionIsActive)
+        || candidate.tasks.some(({ status }) => status === 'assigned' || status === 'running'))) roots.add(root.runtimeId);
     }
     return roots;
   }, (roots) => {

@@ -25,7 +25,8 @@ export async function openAgentSubagent(router: Router, sessionId: string) {
 export async function openAgentSearchResult(router: Router, sessionId: string): Promise<ActionResult> {
   const store = useAgentStore();
   const session = store.sessionById(sessionId);
-  if (!session) return { status: 'error', message: tr('ui.conversationDoesNotExistOrHas') };
+  if (!session || store.isSessionArchived(sessionId))
+    return { status: 'error', message: tr('ui.conversationDoesNotExistOrHas') };
 
   const parentId = session.parentSessionId
     ? runtimeResourceKey(session.runtimeKind, session.parentSessionId)

@@ -8,9 +8,9 @@ export function toProjectJson(project: Project): AgentProject {
 }
 
 export function toSessionJson(session: Session): AgentSession {
-  const { id, projectId, title, parentSessionId, rootSessionId, created_at, updated_at } = session;
+  const { id, projectId, title, parentSessionId, rootSessionId, created_at, updated_at, archived_at } = session;
   const profile = parentSessionId ? session.profile ?? DEFAULT_AGENT_PROFILE : undefined;
   return { id, projectId, ...(parentSessionId ? { parentSessionId } : {}), rootSessionId: rootSessionId ?? id,
     ...(profile ? { profile: { id: profile.id, name: profile.name, access: profile.access } } : {}),
-    ...(title === undefined ? {} : { title }), created_at, updated_at };
+    ...(title === undefined ? {} : { title }), ...(archived_at === undefined ? {} : { archived_at }), created_at, updated_at };
 }

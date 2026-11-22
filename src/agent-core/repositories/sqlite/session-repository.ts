@@ -21,12 +21,14 @@ import {
 function toSessionMetadata(row: SqliteRow): SessionRecord {
   const title = nullableStringColumn(row, "title");
   const profile = nullableStringColumn(row, "agent_profile_json");
+  const archivedAt = nullableStringColumn(row, "archived_at");
   return {
     ...(row.parent_session_id ? { parentSessionId: stringColumn(row, 'parent_session_id') } : {}),
     rootSessionId: nullableStringColumn(row, 'root_session_id') ?? stringColumn(row, 'id'),
     ...(row.origin_run_id ? { originRunId: stringColumn(row, 'origin_run_id') } : {}),
     ...(row.origin_call_id ? { originCallId: stringColumn(row, 'origin_call_id') } : {}),
     ...(profile ? { profile: agentProfileSchema.parse(JSON.parse(profile)) } : {}),
+    ...(archivedAt === null ? {} : { archived_at: archivedAt }),
     id: stringColumn(row, "id"), ownerId: stringColumn(row, "owner_id"), projectId: nullableStringColumn(row, "project_id"),
     ...(title ? { title } : {}), created_at: stringColumn(row, "created_at"), updated_at: stringColumn(row, "updated_at"),
   };
@@ -83,9 +85,9 @@ export class SqliteSessionRepository implements SessionRepository {
   }
 
   async updateSession(session: SessionRecord): Promise<void> {
-    assertChanged(this.db.prepare("UPDATE sessions SET title = ?, agent_name_key = ?, updated_at = ? WHERE id = ?")
+    assertChanged(this.db.prepare("UPDATE sessions SET title = ?, agent_name_key = ?, updated_at = ?, archived_at = ? WHERE id = ?")
       .run(session.title ?? null, session.parentSessionId && session.title ? agentNameKey(session.title) : null,
-        session.updated_at, session.id), "Session", session.id);
+        session.updated_at, session.archived_at ?? null, session.id), "Session", session.id);
   }
 
   async deleteSession(sessionId: string): Promise<void> {

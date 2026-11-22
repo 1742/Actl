@@ -207,6 +207,11 @@ export const SQLITE_MIGRATIONS: readonly SqliteMigration[] = [
     },
   },
   { from: 29, to: 30, up: (database) => database.exec(RETIRED_AGENT_SCHEMA) },
+  {
+    from: 30,
+    to: 31,
+    up: (database) => database.exec("ALTER TABLE sessions ADD COLUMN archived_at TEXT CHECK(archived_at IS NULL OR parent_session_id IS NULL)"),
+  },
 ];
 
 export function runSqliteMigrations(

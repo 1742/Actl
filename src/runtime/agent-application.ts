@@ -129,6 +129,10 @@ export class AgentApplication {
         const input = sessions.updateSessionBodySchema.parse(body);
         return toSessionJson(await d.workspaceStore.updateSession(ownerId, sessionId(), input.title ?? undefined));
       }
+      case 'sessions.setArchived': {
+        const input = z.object({ archived: z.boolean() }).strict().parse(body);
+        return toSessionJson(await d.agentCoordinator.setSessionArchived(await this.session(sessionId()), input.archived));
+      }
       case 'sessions.delete': {
         await d.agentCoordinator.deleteSession(await this.session(sessionId()));
         await d.storedFiles.cleanupOrphans();

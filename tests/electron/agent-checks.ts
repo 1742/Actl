@@ -10,7 +10,7 @@ import type { AgentCommand, AgentResult } from '../../src/shared/agent-ipc';
 import { runCoreChecks } from './core-checks';
 import type { VerificationCheck } from './types';
 import type { AgentResponseDto, AgentStreamEvent, ResponseInputPartDto } from '../../src/shared/agent/responses';
-import type { AgentProject } from '../../src/shared/agent/sessions';
+import type { AgentProject, AgentSession, SessionContext } from '../../src/shared/agent/sessions';
 import type { SessionReview } from '../../src/shared/agent/review';
 import type { AgentTreeEvent, AgentTreeSnapshot } from '../../src/shared/agent/coordination';
 import type { RuntimeProjectFileSearchResult, RuntimeWorkspaceFileSearchResult, RuntimeWorkspaceTree, WorkspaceFilePreview } from '../../src/shared/agent/workspace';
@@ -290,6 +290,40 @@ export async function verifyAgent(root: string, packaged: boolean, forcedExitPro
       // The outer verifier terminates only this main process, without taskkill /T.
       await new Promise<never>(() => {});
     }
+    await step('Conversation archive survives restart, restores history and cascades on project deletion', async () => {
+      const directory = path.join(root, 'archive-workspace');
+      await mkdir(directory);
+      const project = await request<AgentProject>({ operation: 'projects.create', body: { cwd: directory } });
+      const create = () => request<AgentSession>({ operation: 'sessions.create', body: { projectId: project.id } });
+      const conversation = await create();
+      const ordinary = await create();
+      const params = { sessionId: conversation.id };
+      const setArchived = (archived: boolean) => request<AgentSession>({
+        operation: 'sessions.setArchived', params, body: { archived },
+      });
+
+      const original = success(await run('Archive fixture', undefined, conversation.id));
+      assert.equal(original.status, 'completed');
+      const archiveDate = (await setArchived(true)).archived_at;
+      assert.ok(archiveDate);
+      await host.close(); host = new AgentProcessHost(options); await host.ready();
+
+      const list = () => request<AgentSession[]>({ operation: 'sessions.list' });
+      assert.equal((await list()).find(({ id }) => id === conversation.id)?.archived_at, archiveDate);
+      const history = await request<SessionContext>({ operation: 'sessions.context', params });
+      assert.deepEqual(history.responses, [original]);
+      const blocked = await run('While archived', undefined, conversation.id);
+      assert.ok(!blocked.ok);
+      assert.equal(blocked.error.code, 'session_archived');
+
+      assert.equal((await setArchived(false)).archived_at, undefined);
+      assert.equal(success(await run('After restoring', undefined, conversation.id)).status, 'completed');
+      assert.ok((await setArchived(true)).archived_at);
+      await request({ operation: 'projects.delete', params: { projectId: project.id } });
+      assert.ok(!(await list()).some(({ id }) => id === conversation.id || id === ordinary.id));
+      assert.ok((await list()).some(({ id }) => id === sessionId));
+      await access(directory);
+    });
     await step('Standalone workspaces isolate files and persist across restarts and deletion', async () => {
       const workspaceRoot = path.join(homeDirectory, 'workspaces', options.mode);
       const create = () => request<{ id: string; projectId: null }>({ operation: 'sessions.create' });

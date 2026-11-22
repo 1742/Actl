@@ -33,12 +33,12 @@ const matchingSessions = computed(() => {
   const query = normalizedSearchQuery.value;
   if (!query) return [];
 
-  return store.sessions.filter((session) =>
+  return store.unarchivedSessions.filter((session) =>
     conversationName(session.title).toLocaleLowerCase().includes(query),
   );
 });
 const recentSessions = computed(() =>
-  [...store.sessions].sort((a, b) => b.updated_at.localeCompare(a.updated_at)).slice(0, 12),
+  [...store.unarchivedSessions].sort((a, b) => b.updated_at.localeCompare(a.updated_at)).slice(0, 12),
 );
 
 watch(

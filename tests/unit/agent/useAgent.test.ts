@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { createPinia, setActivePinia } from 'pinia';
 import { effectScope, shallowRef } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
-import { applyAgentTreeSnapshot, applyRuntimeEvent, loadSubagentHistory, resolveAgentPermissionBatch, selectAgentSession, sendAgentMessage, stopAgentResponse } from '../../../src/renderer/src/agent/composables/useAgent';
+import { applyAgentTreeSnapshot, applyRuntimeEvent, deleteAgentProject, loadSubagentHistory, resolveAgentPermissionBatch, selectAgentSession, sendAgentMessage, setAgentSessionArchived, stopAgentResponse } from '../../../src/renderer/src/agent/composables/useAgent';
 import { useAgentTree } from '../../../src/renderer/src/agent/composables/useAgentTree';
 import { useRunReview } from '../../../src/renderer/src/agent/components/review/useRunReview';
 import { useFileChanges } from '../../../src/renderer/src/agent/components/review/useFileChanges';
@@ -94,6 +94,57 @@ test('sending from a selected child session stops before streaming or changing i
   assert.equal(result.status, 'error');
   assert.equal(stream.mock.callCount(), 0);
   assert.equal(store.status, 'idle');
+});
+
+test('the archive hides the whole tree from regular navigation and restore returns its history', async (t) => {
+  const store = setup('local:other');
+  const projectId = 'local:project';
+  store.setProjects([{ id: projectId, runtimeId: 'project', runtimeKind: 'local', cwd: 'D:/project',
+    workspaces: [], primaryWorkspaceId: '', created_at: '', updated_at: '' }]);
+  const root: AgentSession = { id: 'root', rootSessionId: 'root', projectId: 'project',
+    created_at: '2026-11-20T00:00:00Z', updated_at: '2026-11-20T00:00:01Z' };
+  const child: AgentSession = { ...root, id: 'subagent', parentSessionId: root.id };
+  const original = { ...response(), session_id: root.id };
+  const snapshot = { rootSessionId: root.id, plan: { revision: 0, items: [] }, childRunResults: [],
+    members: [{ session: root, waiting: false, response: original }, { session: child, waiting: false }] };
+  applyAgentTreeSnapshot(snapshot);
+  store.selectSession('local:root');
+  store.selectedModel = 'fixture-model';
+
+  const archivedAt = '2026-11-21T00:00:00Z';
+  const restoredAt = '2026-11-22T00:00:00Z';
+  const update = t.mock.method(localClient, 'setSessionArchived', async (id, archived) => {
+    assert.equal(id, root.id);
+    if (!archived) return { ...root, updated_at: restoredAt };
+    const date = store.sessionById('local:root')?.updated_at === restoredAt ? '2026-11-23T00:00:00Z' : archivedAt;
+    return { ...root, archived_at: date, updated_at: date };
+  });
+  assert.equal((await setAgentSessionArchived('local:root', true)).status, 'success');
+  assert.equal(store.draftProjectId, projectId);
+  assert.deepEqual(store.sessionsByProject(projectId), []);
+  assert.deepEqual(store.unarchivedSessions.map(({ id }) => id), ['local:other']);
+  assert.deepEqual(store.archivedSessions.map(({ id }) => id), ['local:root']);
+  assert.equal(store.isSessionArchived('local:subagent'), true);
+  applyAgentTreeSnapshot(snapshot);
+  assert.equal(store.isSessionArchived('local:root'), true);
+
+  store.selectSession('local:root');
+  const stream = t.mock.method(localClient, 'streamResponse');
+  assert.equal((await sendAgentMessage([{ type: 'input_text', text: 'Blocked' }])).status, 'error');
+  assert.equal(stream.mock.callCount(), 0);
+
+  assert.equal((await setAgentSessionArchived('local:root', false)).status, 'success');
+  assert.deepEqual(store.archivedSessions, []);
+  assert.deepEqual(store.sessionsByProject(projectId).map(({ id }) => id), ['local:root']);
+  assert.equal(store.responses[0]?.response.id, original.id);
+  assert.deepEqual(update.mock.calls.map(({ arguments: args }) => args), [['root', true], ['root', false]]);
+
+  await setAgentSessionArchived('local:root', true);
+  assert.equal(store.archivedSessions[0]?.id, 'local:root');
+  t.mock.method(localClient, 'deleteProject', async () => {});
+  assert.equal((await deleteAgentProject(projectId)).status, 'success');
+  assert.deepEqual(store.archivedSessions, []);
+  assert.equal(store.sessionById('local:subagent'), undefined);
 });
 
 for (const projectId of [undefined, 'project'] as const) {

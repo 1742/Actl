@@ -51,12 +51,13 @@ type AgentResult<T> =
 | --- | --- | --- |
 | projects.list | 无 | Project[] |
 | projects.create | body=`{cwd,name?}` | Project |
-| projects.delete | params.projectId | undefined；不删除真实目录 |
+| projects.delete | params.projectId | undefined；级联删除全部会话和历史，包括归档会话。保留真实目录 |
 | workspace.search | params.projectId；query=`{q?,limit?}` | `{data:[{type:"workspace_file",path,name}],truncated}` |
 | workspace.tree | params.projectId；query=`{path?,maxEntries?}` | `{path,entries,truncated}` |
 | sessions.list | query.scope=standalone 或 projectId，互斥；缺省全部 | Session[] |
 | sessions.create | body=`{projectId?,title?}`，可省略 | Session |
 | sessions.rename | params.sessionId；body=`{title:string或null}` | Session |
+| sessions.setArchived | 根会话的 params.sessionId；body=`{archived:boolean}` | Session；归档要求该会话及其子代理处于空闲状态 |
 | sessions.delete | params.sessionId | undefined |
 | sessions.context | params.sessionId | `{session_id,responses,context}` |
 | sessions.compact | params.sessionId；body=`{model,reasoningEffort?}` | `{compressed,summarized_run_count}` |
@@ -66,6 +67,8 @@ Project 包含 id/cwd/name?/created_at/updated_at；Session 列表不内嵌完�
 workspace.search 的 limit 为 1–100，默认 20；workspace.tree 的 path 默认 `.`，maxEntries 为 1–500，默认 200。当前没有独立项目重命名、单项目详情、单会话详情操作，完整会话数据从列表与 context 获取。
 
 Session 另含 `parentSessionId?`、`rootSessionId`，子会话还有角色摘要 `profile`。为任务创建子会话由运行时的 `delegate_task` 工具负责，普通 sessions.create 不接受父会话参数。
+
+`sessions.list` 包含归档会话，已归档的根会话带有 `archived_at`。归档作用于整棵会话树，历史仍可通过 `sessions.context` 查看。运行和压缩在归档期间返回 `session_archived`。
 
 ### 多 Agent 协作
 

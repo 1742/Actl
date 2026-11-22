@@ -36,6 +36,7 @@ export interface SessionRecord {
   title?: string;
   created_at: string;
   updated_at: string;
+  archived_at?: string;
 }
 
 export interface SessionContentRecord {

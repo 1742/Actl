@@ -4,7 +4,7 @@ import { COORDINATION_SCHEMA, RETIRED_AGENT_SCHEMA } from "./coordination-schema
 import { AGENT_NAME_INDEX } from "./migrations/v27-to-v28.js";
 
 export const SQLITE_SCHEMA_GENERATION = "multi-user-multi-model";
-export const SQLITE_SCHEMA_VERSION = 30;
+export const SQLITE_SCHEMA_VERSION = 31;
 
 // New databases start at the current version. Historical upgrades live in migrations/.
 const METADATA_SQL = `
@@ -30,7 +30,8 @@ CREATE TABLE sessions(
   title TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
   parent_session_id TEXT REFERENCES sessions(id) ON DELETE CASCADE,
   root_session_id TEXT, origin_run_id TEXT, origin_call_id TEXT, agent_name_key TEXT,
-  agent_profile_json TEXT CHECK(agent_profile_json IS NULL OR json_valid(agent_profile_json))
+  agent_profile_json TEXT CHECK(agent_profile_json IS NULL OR json_valid(agent_profile_json)),
+  archived_at TEXT CHECK(archived_at IS NULL OR parent_session_id IS NULL)
 ) STRICT;
 CREATE INDEX sessions_root_idx ON sessions(root_session_id);
 CREATE UNIQUE INDEX sessions_delegation_idx ON sessions(origin_run_id, origin_call_id);
