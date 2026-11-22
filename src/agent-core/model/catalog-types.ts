@@ -16,7 +16,14 @@ export const modelCapabilitiesSchema = z.object({
   }).strict()),
   toolCalling: z.boolean(),
   parallelToolCalls: z.boolean(),
-  nativeWebSearch: z.boolean().default(false),
+  nativeWebSearch: z.preprocess(
+    (value) => {
+      if (value === true || value === "responses_web_search") return "web_search";
+      if (value === false || value === "none") return "";
+      return value;
+    },
+    z.string().trim().default(""),
+  ),
   reasoningEfforts: z.array(reasoningEffortSchema),
   defaultReasoningEffort: reasoningEffortSchema.optional(),
   contextWindow: z.number().int().positive().optional(),
@@ -31,7 +38,7 @@ export const TEXT_TOOL_CAPABILITIES: ModelCapabilities = {
   input: { text: true, imageMimeTypes: [], audioMimeTypes: [] },
   toolCalling: true,
   parallelToolCalls: true,
-  nativeWebSearch: false,
+  nativeWebSearch: "",
   reasoningEfforts: [],
 };
 

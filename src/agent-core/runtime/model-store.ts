@@ -1,6 +1,7 @@
 import type {
   CreateRuntimeProviderAccount, RuntimeModel, RuntimeModelCatalog, RuntimeProviderAccount,
 } from "../../shared/agent/models.js";
+import { getNativeWebSearchType } from "../../shared/agent/models.js";
 import type { RuntimeMode } from "../app/config.js";
 import type {
   ModelCapabilities,
@@ -158,7 +159,7 @@ export class ModelStore {
       providerModel: input.providerModel,
       displayName: input.displayName,
       protocol: modelProtocolSchema.parse(input.protocol),
-      capabilities: normalizeCapabilities(input.capabilities),
+      capabilities: normalizeCapabilities(input.capabilities, input.protocol),
       enabled: true,
       createdAt: now,
       updatedAt: now,
@@ -179,7 +180,7 @@ export class ModelStore {
       ...current,
       ...updates,
       ...(updates.protocol ? { protocol: modelProtocolSchema.parse(updates.protocol) } : {}),
-      ...(updates.capabilities ? { capabilities: normalizeCapabilities(updates.capabilities) } : {}),
+      capabilities: normalizeCapabilities(updates.capabilities ?? current.capabilities, updates.protocol ?? current.protocol),
       updatedAt: nowIso(),
     };
     await this.repository.updateUserModelTarget(target);
@@ -280,7 +281,7 @@ function normalizeBaseUrl(value: string): string {
   return new URL(value).toString().replace(/\/$/, "");
 }
 
-function normalizeCapabilities(value: ModelCapabilities): ModelCapabilities {
+function normalizeCapabilities(value: ModelCapabilities, protocol: ModelProtocolConfig): ModelCapabilities {
   const capabilities = modelCapabilitiesSchema.parse(value);
   const defaultReasoningEffort =
     capabilities.defaultReasoningEffort && capabilities.reasoningEfforts.includes(capabilities.defaultReasoningEffort)
@@ -288,7 +289,7 @@ function normalizeCapabilities(value: ModelCapabilities): ModelCapabilities {
       : undefined;
   return {
     ...capabilities,
-    nativeWebSearch: capabilities.toolCalling && capabilities.nativeWebSearch,
+    nativeWebSearch: getNativeWebSearchType(protocol, capabilities) ?? "",
     parallelToolCalls: capabilities.toolCalling && capabilities.parallelToolCalls,
     ...(defaultReasoningEffort ? { defaultReasoningEffort } : {}),
   };

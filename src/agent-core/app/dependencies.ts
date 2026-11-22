@@ -104,7 +104,7 @@ async function assembleAppDependencies(
   toolRegistry.registerProvider(new SkillDiscoveryToolProvider(skillCatalog));
   const webSearchService = new WebSearchService(new SqliteWebSearchSettingsRepository(database), secretProtector);
   toolRegistry.registerProvider(new WebSearchToolProvider(webSearchService, workspaceStore));
-  toolRegistry.registerProvider(new WebFetchToolProvider());
+  toolRegistry.registerProvider(new WebFetchToolProvider(webSearchService, workspaceStore));
   const mcpManager = new McpServerManager(config.homeDirectory, new SqliteMcpConfigRepository(database), secretProtector, logger);
   await mcpManager.initialize();
   toolRegistry.registerProvider(mcpManager);

@@ -1,14 +1,13 @@
-import type { FunctionTool, ResponseInputItem, ResponseOutputMessage, ResponseReasoningItem, Tool, WebSearchTool } from "openai/resources/responses/responses";
+import type { FunctionTool, ResponseInputItem, ResponseOutputMessage, ResponseReasoningItem } from "openai/resources/responses/responses";
 import type { ToolSchema } from "../../../tools/registry.js";
 import type { ContentPart, TranscriptItem, TranscriptMessage } from "../../types.js";
 import { projectToolResultImages } from "../tool-result-media.js";
 
-export function toResponseTools(tools: ToolSchema[], nativeWebSearch = false): Tool[] {
-  const encoded: Tool[] = tools.map((tool): FunctionTool => ({
+export function toResponseTools(tools: ToolSchema[], nativeWebSearch?: string): Array<FunctionTool | { type: string }> {
+  const functions = tools.map((tool): FunctionTool => ({
     type: "function", name: tool.name, description: tool.description, parameters: tool.inputSchema, strict: false,
   }));
-  if (nativeWebSearch) encoded.push({ type: "web_search" } satisfies WebSearchTool);
-  return encoded;
+  return nativeWebSearch ? [...functions, { type: nativeWebSearch }] : functions;
 }
 
 export function toResponseInput(items: TranscriptItem[], instructions = ""): ResponseInputItem[] {

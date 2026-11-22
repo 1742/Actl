@@ -19,7 +19,7 @@ export class WebSearchToolProvider implements ToolProvider {
 
   constructor(
     private readonly service: WebSearchService,
-    private readonly workspaceStore: WorkspaceStore,
+    private readonly workspaceStore: Pick<WorkspaceStore, "getSession">,
   ) {}
 
   async listTools(): Promise<ToolDefinition[]> {
@@ -31,7 +31,8 @@ export class WebSearchToolProvider implements ToolProvider {
     }];
   }
 
-  async getPermissionRequirement(_name: string, input: unknown): Promise<ToolPermissionRequirement> {
+  async getPermissionRequirement(_name: string, input: unknown, context: ToolCallContext): Promise<ToolPermissionRequirement> {
+    this.service.assertWebAccessEnabled(await this.getOwnerId(context));
     const parsed = input as z.infer<typeof webSearchInputSchema>;
     return { capability: "network.search", resource: parsed.query, action: "read" };
   }
@@ -42,9 +43,7 @@ export class WebSearchToolProvider implements ToolProvider {
     if (!requirement || requirement.capability !== "network.search" || requirement.action !== "read") {
       throw new Error("Web search tool does not have authorization for this operation.");
     }
-    if (!context.sessionId) throw new Error("Web search requires a session context.");
-    const session = await this.workspaceStore.getSession(context.sessionId);
-    if (!session) throw new Error("Session not found.");
+    const ownerId = await this.getOwnerId(context);
     const parsed = input as z.infer<typeof webSearchInputSchema>;
     const request: WebSearchRequest = {
       query: parsed.query,
@@ -52,6 +51,13 @@ export class WebSearchToolProvider implements ToolProvider {
       ...(parsed.freshness === undefined ? {} : { freshness: parsed.freshness }),
       ...(parsed.domains === undefined ? {} : { domains: parsed.domains }),
     };
-    return this.service.search(session.ownerId, request, context.signal);
+    return this.service.search(ownerId, request, context.signal);
+  }
+
+  private async getOwnerId(context: ToolCallContext): Promise<string> {
+    if (!context.sessionId) throw new Error("Web search requires a session context.");
+    const session = await this.workspaceStore.getSession(context.sessionId);
+    if (!session) throw new Error("Session not found.");
+    return session.ownerId;
   }
 }

@@ -133,14 +133,10 @@ export class WebSearchService {
   }
 
   async search(ownerId: string, input: WebSearchRequest, signal?: AbortSignal): Promise<RuntimeWebSearchResult> {
-    const settings = this.repository.getWebSearchSettings(ownerId);
-    if (!settings?.enabled) throw new WebSearchServiceError(
-      "web_search_disabled",
-      "Web search is disabled. Ask the user to enable it in Settings > Web Search before retrying.",
-    );
+    const settings = this.requireWebAccess(ownerId);
     if (settings.mode === "native") throw new WebSearchServiceError(
       "web_search_native_unavailable",
-      "The selected model does not support provider-native web search. Ask the user to choose Auto or Brave Search in Settings > Web Search, or switch to a supported provider.",
+      "Native search is unavailable for this model configuration. Ask the user to check the endpoint's native search tool type in Model Settings, or choose Auto with a configured external search provider.",
     );
     if (!settings.credential) throw new WebSearchServiceError(
       "web_search_credential_missing",
@@ -148,6 +144,19 @@ export class WebSearchService {
     );
 
     return this.executeSearch({ ...settings, credential: settings.credential }, input, signal);
+  }
+
+  assertWebAccessEnabled(ownerId: string): void {
+    this.requireWebAccess(ownerId);
+  }
+
+  private requireWebAccess(ownerId: string): WebSearchSettingsRecord {
+    const settings = this.repository.getWebSearchSettings(ownerId);
+    if (!settings?.enabled) throw new WebSearchServiceError(
+      "web_search_disabled",
+      "Web access is disabled. Ask the user to enable it in Settings > Web Search before retrying.",
+    );
+    return settings;
   }
 
   private async executeSearch(

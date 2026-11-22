@@ -86,7 +86,7 @@ export interface ModelTurnRequest {
   instructions: string;
   transcript: TranscriptItem[];
   tools: ToolSchema[];
-  nativeWebSearch?: boolean;
+  nativeWebSearch?: string;
   parallelToolCalls: boolean;
   reasoningEffort?: ReasoningEffort;
   maxOutputTokens?: number;

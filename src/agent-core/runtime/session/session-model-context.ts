@@ -63,7 +63,7 @@ export class SessionModelContext {
     signal.throwIfAborted();
     const search = this.services.webSearch?.resolveExecutionStrategy(session.ownerId, run.modelSnapshot);
     const registeredTools = await this.tools.listTools(run);
-    const nativeWebSearch = search?.kind === "native";
+    const nativeWebSearch = search?.kind === "native" ? search.toolType : undefined;
     const tools = nativeWebSearch ? registeredTools.filter((tool) => tool.name !== "web_search") : registeredTools;
     const transcriptWithFiles = await this.services.files.materializeTranscript(
       session.id, this.workspaceStore.getModelContext(session), run.modelSnapshot.capabilities,

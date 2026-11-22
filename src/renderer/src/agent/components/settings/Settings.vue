@@ -21,8 +21,9 @@ import { useAgentStore } from '../../stores/agent';
 import AgentServiceSettings from './AgentServiceSettings.vue';
 import WebSearchSettings from './WebSearchSettings.vue';
 import PromptSettings from './PromptSettings.vue';
-import type {
-  RuntimeModel, RuntimeModelCapabilities, RuntimeModelConfig, RuntimeModelProtocol,
+import {
+  getNativeWebSearchType,
+  type RuntimeModel, type RuntimeModelCapabilities, type RuntimeModelConfig, type RuntimeModelProtocol,
 } from '../../../../../shared/agent/models';
 import {
   loadAgentModels,
@@ -91,12 +92,21 @@ const toggle = (key: string) => {
 const DEFAULT_IMAGE_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
 const DEFAULT_AUDIO_MIME_TYPES = ['audio/*'];
 
+const nativeSearchType = computed({
+  get: () => modelProtocol.value === 'responses' && modelCapabilities.value.toolCalling
+    ? modelCapabilities.value.nativeWebSearch
+    : '',
+  set: (type: string) => {
+    modelCapabilities.value.nativeWebSearch = type;
+  },
+});
+
 function createDefaultModelCapabilities(): RuntimeModelCapabilities {
   return {
     input: { text: true, imageMimeTypes: [], audioMimeTypes: [] },
     toolCalling: true,
     parallelToolCalls: true,
-    nativeWebSearch: false,
+    nativeWebSearch: '',
     reasoningEfforts: [],
   };
 }
@@ -125,7 +135,7 @@ function selectedModelCapabilities(): RuntimeModelCapabilities {
   const capabilities = modelCapabilities.value;
   const selected: RuntimeModelCapabilities = {
     ...cloneModelCapabilities(capabilities),
-    nativeWebSearch: modelProtocol.value === 'responses' && capabilities.nativeWebSearch,
+    nativeWebSearch: getNativeWebSearchType(modelProtocol.value, capabilities) ?? '',
     input: {
       text: true,
       imageMimeTypes: modelSupportsImage.value
@@ -684,23 +694,23 @@ async function confirmDeleteAccount() {
                 </label>
               </div>
             </fieldset>
-            <fieldset class="md:col-span-2">
-              <legend class="field-label">{{ $t('ui.providerNativeTools') }}</legend>
-              <label
-                class="modality-option native-web-search-option"
-                :class="modelProtocol !== 'responses' ? 'cursor-not-allowed opacity-60' : ''"
-              >
-                <input
-                  v-model="modelCapabilities.nativeWebSearch"
-                  type="checkbox"
-                  :disabled="modelProtocol !== 'responses'"
-                />
-                <span>
-                  <strong>{{ $t('ui.nativeWebSearch') }}</strong>
-                  <small>{{ $t('ui.sendWebSearchToTheResponses') }}</small>
-                </span>
-              </label>
-            </fieldset>
+            <div class="md:col-span-2">
+              <label for="model-native-search" class="field-label">{{ $t('ui.nativeWebSearch') }}</label>
+              <input
+                id="model-native-search"
+                v-model="nativeSearchType"
+                class="field-input w-full"
+                type="text"
+                placeholder="web_search"
+                autocomplete="off"
+                spellcheck="false"
+                :disabled="modelProtocol !== 'responses' || !modelCapabilities.toolCalling"
+                aria-describedby="model-native-search-help"
+              />
+              <p id="model-native-search-help" class="mt-1 text-xs text-gray-500">
+                {{ $t('ui.sendWebSearchToTheResponses') }}
+              </p>
+            </div>
             <fieldset class="md:col-span-2">
               <legend class="field-label">{{ $t('ui.reasoningEffort') }}</legend>
               <div class="grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -845,13 +855,6 @@ async function confirmDeleteAccount() {
 }
 .modality-option small {
   @apply block truncate text-xs text-gray-500;
-}
-.native-web-search-option span {
-  @apply flex flex-wrap items-baseline gap-x-2;
-}
-.native-web-search-option strong,
-.native-web-search-option small {
-  @apply inline;
 }
 .modal-backdrop {
   @apply fixed inset-0 z-60 flex items-center justify-center bg-black/25 p-4;

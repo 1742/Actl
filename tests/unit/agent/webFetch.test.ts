@@ -5,10 +5,53 @@ import { test } from "node:test";
 import { gzipSync } from "node:zlib";
 import iconv from "iconv-lite";
 import { Agent, MockAgent } from "undici";
+import type { Session } from "../../../src/agent-core/runtime/workspace-store.js";
+import { WebSearchToolProvider } from "../../../src/agent-core/tools/builtin/web-search.js";
 import { WebFetchToolProvider } from "../../../src/agent-core/tools/builtin/web-fetch.js";
 import { ToolRegistry } from "../../../src/agent-core/tools/registry.js";
 import { fetchPage, parsePageUrl } from "../../../src/agent-core/web-fetch/fetch-service.js";
 import { extractPage } from "../../../src/agent-core/web-fetch/page-content.js";
+import { WebSearchService } from "../../../src/agent-core/web-search/search-service.js";
+
+function webTools(enabled: boolean): ToolRegistry {
+  const timestamp = "2026-11-22T00:00:00Z";
+  const session: Session = {
+    id: "session", ownerId: "owner", projectId: null, cwd: null, created_at: timestamp, updated_at: timestamp,
+    runs: [], fileChanges: [], compressionRecords: [],
+  };
+  const workspace = { getSession: async (id: string) => id === session.id ? session : undefined };
+  const service = new WebSearchService({
+    getWebSearchSettings: (ownerId) => ({
+      ownerId, enabled, mode: "native", provider: "brave",
+      baseUrl: "https://api.search.brave.com/res/v1/web/search", updatedAt: timestamp,
+    }),
+    upsertWebSearchSettings: async () => {},
+    clearWebSearchCredential: async () => {},
+  }, undefined as never);
+  const registry = new ToolRegistry();
+  registry.registerProvider(new WebSearchToolProvider(service, workspace));
+  registry.registerProvider(new WebFetchToolProvider(service, workspace));
+  return registry;
+}
+
+test("disabled web access keeps both tools listed and rejects calls before approval or execution", async () => {
+  const registry = webTools(false);
+  assert.deepEqual((await registry.listTools()).map((tool) => tool.name), ["web_search", "web_fetch"]);
+  const cases = [
+    { name: "web_search", input: { query: "example" }, capability: "network.search", resource: "example" },
+    { name: "web_fetch", input: { url: "https://example.invalid/" }, capability: "network.fetch", resource: "example.invalid" },
+  ];
+  for (const { name, input, capability, resource } of cases) {
+    const call = { id: name, name, input };
+    const context = { cwd: null, sessionId: "session", runId: "run", callId: name };
+    await assert.rejects(registry.getPermissionRequirement(call, context), { code: "web_search_disabled" });
+    const result = await registry.callTool(call, {
+      ...context, authorization: { requirement: { capability, resource, action: "read" }, approvedByUser: true },
+    });
+    assert.equal(result.ok, false);
+    assert.match(result.error ?? "", /Web access is disabled/);
+  }
+});
 
 test("blocks local addresses, alternate IP spellings, URL credentials and file URLs", () => {
   for (const url of [
@@ -57,8 +100,7 @@ test("fetches same-domain redirects through the registry and stops at other doma
   });
   host.intercept({ path: "/pdf" }).reply(200, "", { headers: { "content-type": "application/pdf" } });
 
-  const registry = new ToolRegistry();
-  registry.registerProvider(new WebFetchToolProvider());
+  const registry = webTools(true);
   const call = { id: "fetch", name: "web_fetch", input: { url: "https://example.com/start" } };
   const context = { cwd: null, sessionId: "session", runId: "run", callId: call.id };
   const requirement = await registry.getPermissionRequirement(call, context);

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from "node:util";
 import type { HookEventBus } from "../../hooks/event-bus.js";
 import type { ModelTurnEvent, TranscriptItem, TranscriptMessage } from "../../model/types.js";
 import { errorFields, type Logger } from "../../observability/logger.js";
@@ -22,6 +23,11 @@ import { AgentRunFinalizer } from "./agent-run-finalizer.js";
 import { ToolBatchExecutor } from "./tool-batch-executor.js";
 
 const MAX_AGENT_STEPS = 100;
+
+interface InvocationItemPosition {
+  outputIndex: number;
+  completed: boolean;
+}
 
 export class AgentLoop {
   private readonly toolExecutor: ToolBatchExecutor;
@@ -69,7 +75,7 @@ export class AgentLoop {
 
         const { prompt, tools, search, nativeWebSearch } = await this.context.prepareModelStep(run, signal, onEvent);
         signal.throwIfAborted();
-        const itemIndexes = new Map<string, number>();
+        const itemIndexes = new Map<string, InvocationItemPosition>();
         const startedAt = performance.now();
         let invocation;
         try {
@@ -79,7 +85,7 @@ export class AgentLoop {
             instructions: prompt.instructions,
             transcript: prompt.transcript,
             tools,
-            ...(nativeWebSearch ? { nativeWebSearch: true } : {}),
+            ...(nativeWebSearch ? { nativeWebSearch } : {}),
             parallelToolCalls: run.modelSnapshot.capabilities.parallelToolCalls,
             ...(run.modelSnapshot.capabilities.maxOutputTokens ? { maxOutputTokens: run.modelSnapshot.capabilities.maxOutputTokens } : {}),
             ...(run.modelSnapshot.reasoningEffort ? { reasoningEffort: run.modelSnapshot.reasoningEffort } : {}),
@@ -98,7 +104,9 @@ export class AgentLoop {
               ...(inputTokens && cachedInputTokens !== undefined ? { cacheHitRate: cachedInputTokens / inputTokens } : {}),
             } } : {}),
             webSearchStrategy: search?.kind ?? "external",
-            webSearchProvider: search ? ("provider" in search ? search.provider : search.reason) : "brave",
+            ...(search?.kind === "native" ? { webSearchToolType: search.toolType } : {}),
+            ...(search?.kind === "external" ? { webSearchProvider: search.provider } : {}),
+            ...(search?.kind === "unavailable" ? { webSearchUnavailableReason: search.reason } : {}),
             durationMs: Math.round(performance.now() - startedAt),
           });
         } catch (error) {
@@ -142,10 +150,22 @@ export class AgentLoop {
           continue;
         }
 
-        const message = [...invocation.output].reverse().find(
-          (item): item is Extract<TranscriptItem, { type: "message" }> => item.type === "message" && item.role === "assistant",
+        const lastMessageIndex = invocation.output.findLastIndex((item) =>
+          item.type === "message" && item.role === "assistant" && item.content.some(
+            (part) => part.type === "refusal" || (part.type === "text" && part.text.trim()),
+          ),
         );
-        const text = message?.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("") ?? "";
+        if (invocation.output.findLastIndex((item) => item.type === "web_search") > lastMessageIndex) {
+          run.error = {
+            code: "native_search_answer_missing",
+            message: "The model provider ended the response before returning an answer after web search.",
+          };
+          return this.finalizer.incomplete(session, run, onEvent);
+        }
+        const message = invocation.output[lastMessageIndex];
+        const text = message?.type === "message"
+          ? message.content.flatMap((part) => part.type === "text" ? [part.text] : []).join("")
+          : "";
         const stopDecision = await this.hookEventBus.emit("Stop", { session, response: text });
         signal.throwIfAborted();
         if (stopDecision.blocked) {
@@ -166,7 +186,7 @@ export class AgentLoop {
   private async consumeModelEvent(
     session: Session,
     run: AgentRunRecord,
-    itemIndexes: Map<string, number>,
+    itemIndexes: Map<string, InvocationItemPosition>,
     event: ModelTurnEvent,
     onEvent?: AgentDomainEventHandler,
   ): Promise<void> {
@@ -174,13 +194,14 @@ export class AgentLoop {
     if (event.type === "output_item_started") {
       const item = createStreamingItem(withModelSource(run, event.item));
       const outputIndex = run.timeline.push(item) - 1;
-      itemIndexes.set(event.item.id, outputIndex);
+      itemIndexes.set(event.item.id, { outputIndex, completed: false });
       await emit(onEvent, run, { type: "item_started", item, outputIndex });
       return;
     }
     const eventItemId = event.type === "output_item_completed" ? event.item.id : event.itemId;
-    const outputIndex = itemIndexes.get(eventItemId);
-    if (outputIndex === undefined) return;
+    const position = itemIndexes.get(eventItemId);
+    if (position === undefined) return;
+    const { outputIndex } = position;
     const item = run.timeline[outputIndex];
     if (event.type === "text_delta" && item?.type === "message") {
       const existing = item.content[event.contentIndex];
@@ -200,6 +221,7 @@ export class AgentLoop {
     } else if (event.type === "output_item_completed") {
       const completed = withModelSource(run, event.item);
       run.timeline[outputIndex] = structuredClone(completed);
+      position.completed = true;
       await emit(onEvent, run, { type: "item_completed", item: completed, outputIndex });
       await this.workspaceStore.touch(session, run);
     }
@@ -208,16 +230,18 @@ export class AgentLoop {
   private async ensureInvocationItems(
     session: Session,
     run: AgentRunRecord,
-    itemIndexes: Map<string, number>,
+    itemIndexes: Map<string, InvocationItemPosition>,
     output: TranscriptItem[],
     onEvent?: AgentDomainEventHandler,
   ): Promise<void> {
     for (const outputItem of output) {
       const item = withModelSource(run, outputItem);
-      if (itemIndexes.has(item.id)) continue;
-      const outputIndex = run.timeline.push(structuredClone(item)) - 1;
-      itemIndexes.set(item.id, outputIndex);
-      await emit(onEvent, run, { type: "item_started", item, outputIndex });
+      const position = itemIndexes.get(item.id);
+      if (position?.completed && isDeepStrictEqual(run.timeline[position.outputIndex], item)) continue;
+      const outputIndex = position?.outputIndex ?? run.timeline.length;
+      run.timeline[outputIndex] = structuredClone(item);
+      if (!position) await emit(onEvent, run, { type: "item_started", item, outputIndex });
+      itemIndexes.set(item.id, { outputIndex, completed: true });
       await emit(onEvent, run, { type: "item_completed", item, outputIndex });
       await this.workspaceStore.touch(session, run);
     }

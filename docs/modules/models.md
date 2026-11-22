@@ -25,7 +25,7 @@ getClientForSnapshot 读取该账号版本和凭据版本，解密后创建客�
 | input.audioMimeTypes                    | 通用 transcript 兼容信息；当前上传链路不物化音频附件           |
 | toolCalling                             | 不支持时不给工具；有未压缩工具历史时可能拒绝模型切换           |
 | parallelToolCalls                       | 供应商可否生成并行工具调用；不等于宿主批次执行全部并行         |
-| nativeWebSearch                         | Responses 原生搜索策略候选，toolCalling=false 时规范化为 false |
+| nativeWebSearch                         | Responses 端点的原生搜索 `tools[].type`，空字符串表示关闭。读取旧配置时自动转换 |
 | reasoningEfforts/defaultReasoningEffort | 请求验证与默认推理选项                                         |
 | contextWindow                           | 80% 自动压缩阈值                                               |
 | maxOutputTokens                         | 传入统一 turn 请求；当前 Anthropic encoder 写入 max_tokens     |

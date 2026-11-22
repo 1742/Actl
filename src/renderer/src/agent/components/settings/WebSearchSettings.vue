@@ -5,6 +5,7 @@ import { computed, onMounted, ref } from 'vue';
 import { useNotifyStore } from '../../../composables/notify';
 import { getAgentRuntimeClient } from '../../services/runtimeClient';
 import { useAgentStore } from '../../stores/agent';
+import { getNativeWebSearchType } from '../../../../../shared/agent/models';
 import type { RuntimeWebSearchSettings } from '../../../../../shared/agent/web-search';
 
 const DEFAULT_BASE_URLS: Record<RuntimeWebSearchSettings['provider'], string> = {
@@ -27,6 +28,12 @@ const saving = ref(false);
 const testing = ref(false);
 const locked = computed(() => store.hasActiveResponse);
 const usesExternalSearch = computed(() => mode.value !== 'native');
+const selectedModel = computed(() => store.models.find((model) => model.id === store.selectedModel));
+const nativeSearchUnavailable = computed(() => {
+  const model = selectedModel.value;
+  return enabled.value && mode.value === 'native' && model
+    && !getNativeWebSearchType(model.protocol, model.capabilities);
+});
 const canSave = computed(
   () =>
     !loading.value &&
@@ -134,9 +141,9 @@ function selectProvider() {
     <div class="overflow-hidden rounded-2xl border border-gray-200 bg-white">
       <div class="settings-row">
         <div class="min-w-0 flex-1">
-          <p class="text-sm font-medium text-gray-900">{{ $t('ui.enableWebSearch') }}</p>
+          <p class="text-sm font-medium text-gray-900">{{ $t('ui.enableWebAccess') }}</p>
           <p class="mt-1 text-xs leading-5 text-gray-500">
-            {{ $t('ui.preferNativeSearchFromTheModel') }}
+            {{ $t('ui.webAccessControlsSearchAndFetch') }}
           </p>
         </div>
         <label class="flex shrink-0 items-center gap-2 text-sm text-gray-700">
@@ -250,9 +257,12 @@ function selectProvider() {
             </span>
           </div>
         </template>
-        <p v-else class="border-b border-gray-100 px-4 py-4 text-xs leading-5 text-gray-500">
-          {{ $t('ui.nativeSearchUsesYourCurrentModel') }}
-        </p>
+        <div v-else class="border-b border-gray-100 px-4 py-4 text-xs leading-5 text-gray-500">
+          <p>{{ $t('ui.nativeSearchUsesYourCurrentModel') }}</p>
+          <p v-if="nativeSearchUnavailable" class="mt-1 text-amber-700" role="status">
+            {{ $t('ui.nativeSearchUnavailableForSelectedModel') }}
+          </p>
+        </div>
       </template>
       <div class="flex flex-wrap items-center justify-between gap-3 px-4 py-4">
         <span

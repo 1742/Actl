@@ -8,7 +8,7 @@ export interface RuntimeModelCapabilities {
   input: { text: true; imageMimeTypes: string[]; audioMimeTypes: string[] };
   toolCalling: boolean;
   parallelToolCalls: boolean;
-  nativeWebSearch: boolean;
+  nativeWebSearch: string;
   reasoningEfforts: ReasoningEffort[];
   defaultReasoningEffort?: ReasoningEffort | undefined;
   contextWindow?: number | undefined;
@@ -32,6 +32,15 @@ export interface RuntimeModelConfig {
   displayName: string;
   protocol: RuntimeModelProtocol;
   capabilities: RuntimeModelCapabilities;
+}
+
+export function getNativeWebSearchType(
+  protocol: RuntimeModelProtocol,
+  capabilities: RuntimeModelCapabilities,
+): string | undefined {
+  if (capabilities.toolCalling && protocol === "responses") {
+    return capabilities.nativeWebSearch.trim() || undefined;
+  }
 }
 
 export interface RuntimeModelCatalog {

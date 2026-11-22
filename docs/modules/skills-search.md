@@ -59,6 +59,8 @@ skills.list 返回摘要分页，skills.detail 返回 manifest、文件路径/�
 
 [WebSearchService](../../src/agent-core/web-search/search-service.ts) 保存 owner 的 provider/mode/enabled/baseUrl 与加密 Key。默认 provider=brave、mode=auto、enabled=false。
 
+关闭联网后，模型仍能看到 `web_search` 和 `web_fetch`。调用时会在权限审批和网络请求之前收到错误。模型请求也不会声明供应商原生搜索。
+
 | provider | 默认完整搜索 endpoint                          |
 | -------- | ---------------------------------------------- |
 | brave    | https://api.search.brave.com/res/v1/web/search |
@@ -72,7 +74,7 @@ IPC 操作为 search.get/search.save、search.clear、search.test。search.test 
 
 ## 5. 策略选择
 
-[strategy.ts](../../src/agent-core/web-search/strategy.ts) 的原生能力条件为 protocol=responses 且 nativeWebSearch=true。
+[strategy.ts](../../src/agent-core/web-search/strategy.ts) 从模型接入配置读取原生搜索工具类型。目前支持启用了工具调用的 Responses 端点。同名模型可为各自的接入端点填写不同的 `tools[].type`。
 
 | 模式          | 选择规则                                         |
 | ------------- | ------------------------------------------------ |

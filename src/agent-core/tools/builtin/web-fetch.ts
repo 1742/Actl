@@ -1,5 +1,7 @@
 import { z } from "zod";
+import type { WorkspaceStore } from "../../runtime/workspace-store.js";
 import { fetchPage, pageHostname, parsePageUrl } from "../../web-fetch/fetch-service.js";
+import type { WebSearchService } from "../../web-search/search-service.js";
 import type { ToolCallContext, ToolDefinition, ToolPermissionRequirement, ToolProvider } from "../registry.js";
 
 const inputSchema = z.object({
@@ -10,6 +12,11 @@ const inputSchema = z.object({
 export class WebFetchToolProvider implements ToolProvider {
   readonly name = "builtin-web-fetch";
 
+  constructor(
+    private readonly webSearch: Pick<WebSearchService, "assertWebAccessEnabled">,
+    private readonly workspaceStore: Pick<WorkspaceStore, "getSession">,
+  ) {}
+
   async listTools(): Promise<ToolDefinition[]> {
     return [{
       name: "web_fetch",
@@ -19,7 +26,11 @@ export class WebFetchToolProvider implements ToolProvider {
     }];
   }
 
-  async getPermissionRequirement(_name: string, input: unknown): Promise<ToolPermissionRequirement> {
+  async getPermissionRequirement(_name: string, input: unknown, context: ToolCallContext): Promise<ToolPermissionRequirement> {
+    if (!context.sessionId) throw new Error("Web fetch requires a session context.");
+    const session = await this.workspaceStore.getSession(context.sessionId);
+    if (!session) throw new Error("Session not found.");
+    this.webSearch.assertWebAccessEnabled(session.ownerId);
     const { url } = input as z.infer<typeof inputSchema>;
     return { capability: "network.fetch", resource: pageHostname(parsePageUrl(url)), action: "read" };
   }
@@ -27,7 +38,7 @@ export class WebFetchToolProvider implements ToolProvider {
   async callTool(name: string, input: unknown, context: ToolCallContext): Promise<unknown> {
     if (name !== "web_fetch") throw new Error(`Unsupported builtin tool: ${name}`);
     const { url, maxChars = 12_000 } = input as z.infer<typeof inputSchema>;
-    const expected = await this.getPermissionRequirement(name, input);
+    const expected = await this.getPermissionRequirement(name, input, context);
     const actual = context.authorization?.requirement;
     if (actual?.capability !== expected.capability || actual.action !== expected.action || actual.resource !== expected.resource) {
       throw new Error("Web fetch tool does not have authorization for this domain.");

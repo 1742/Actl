@@ -29,7 +29,7 @@ export class ResponsesDriverBase implements ModelClient {
       parallel_tool_calls: request.parallelToolCalls,
       include: [
         "reasoning.encrypted_content",
-        ...(request.nativeWebSearch ? ["web_search_call.action.sources" as const] : []),
+        ...(request.nativeWebSearch === "web_search" ? ["web_search_call.action.sources" as const] : []),
       ],
       ...(request.reasoningEffort ? { reasoning: { effort: request.reasoningEffort, summary: "auto" } } : {}),
       stream: true,
