@@ -158,12 +158,15 @@ function resetEffort() {
             </button>
           </div>
           <div v-if="lastIndex > 0" class="effort-track" :class="{ filled: sliderIndex > 0, maximum: atMaximum }" :style="trackStyle">
-            <div v-if="atMaximum" class="effort-sparks" aria-hidden="true">
-              <i v-for="(style, index) in sparkStyles" :key="index" :style="style" />
+            <div class="effort-fill" aria-hidden="true">
+              <template v-if="atMaximum">
+                <i v-for="(style, index) in sparkStyles" :key="index" :style="style" />
+              </template>
             </div>
-            <div v-else class="effort-scale" aria-hidden="true">
+            <div v-if="!atMaximum" class="effort-scale" aria-hidden="true">
               <i v-for="option in reasoningOptions" :key="option.value" />
             </div>
+            <span class="effort-thumb" aria-hidden="true" />
             <input ref="slider" class="effort-slider" type="range" min="0" :max="lastIndex" step="1"
               :value="sliderIndex" :disabled="saving" :aria-label="$t('ui.reasoningEffort')"
               :aria-valuetext="visibleEffort?.label" @input="updatePreview" @change="commitEffort" />
@@ -195,6 +198,9 @@ function resetEffort() {
 @reference "tailwindcss";
 
 .effort-track {
+  --effort-thumb-size: 26px;
+  --effort-position: calc(var(--effort-thumb-size) / 2 + (100% - var(--effort-thumb-size)) * var(--effort-fraction));
+  --effort-slide: 180ms ease-out;
   position: relative;
   height: 24px;
   margin-top: 10px;
@@ -202,13 +208,18 @@ function resetEffort() {
   background: var(--color-neutral-200);
 }
 
-.effort-track.filled::before {
-  content: '';
+.effort-fill {
   position: absolute;
   inset: 0 auto 0 0;
-  width: calc(13px + (100% - 26px) * var(--effort-fraction));
+  width: 0;
+  overflow: hidden;
   border-radius: inherit;
   background: var(--color-blue-500);
+  transition: width var(--effort-slide);
+}
+
+.effort-track.filled .effort-fill {
+  width: var(--effort-position);
 }
 
 .effort-scale {
@@ -219,20 +230,12 @@ function resetEffort() {
   align-items: center;
 }
 
-.effort-track.maximum::before {
+.effort-track.maximum .effort-fill {
   width: 100%;
   background: linear-gradient(105deg, #204bdc, #6861fa 30%, #ac76ff 55%, #9557fb 75%, #7867ff);
 }
 
-.effort-sparks {
-  position: absolute;
-  inset: 0;
-  overflow: hidden;
-  border-radius: inherit;
-  pointer-events: none;
-}
-
-.effort-sparks i {
+.effort-fill i {
   position: absolute;
   border-radius: 50%;
   background: white;
@@ -247,7 +250,8 @@ function resetEffort() {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .effort-sparks i { animation-play-state: paused; }
+  .effort-track { --effort-slide: 0ms; }
+  .effort-fill i { animation-play-state: paused; }
 }
 
 .effort-scale i {
@@ -275,10 +279,22 @@ function resetEffort() {
 
 .effort-slider::-webkit-slider-thumb {
   appearance: none;
-  width: 26px;
-  height: 26px;
+  width: var(--effort-thumb-size);
+  height: var(--effort-thumb-size);
+  opacity: 0;
+}
+
+.effort-thumb {
+  position: absolute;
+  top: 50%;
+  left: var(--effort-position);
+  transform: translate(-50%, -50%);
+  width: var(--effort-thumb-size);
+  height: var(--effort-thumb-size);
   border-radius: 50%;
   background: white;
   box-shadow: 0 0 0 1px rgb(0 0 0 / 5%), 0 1px 3px rgb(0 0 0 / 12%);
+  pointer-events: none;
+  transition: left var(--effort-slide);
 }
 </style>
