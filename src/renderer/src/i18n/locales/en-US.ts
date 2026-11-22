@@ -86,6 +86,8 @@ export default {
     removeAttachment: 'Remove {name}',
     deleteNamed: 'Delete “{name}”?',
     executedCount: 'Completed {count} items',
+    elapsedTime: 'Elapsed {duration}',
+    elapsedUnderOneSecond: 'Elapsed less than 1s',
     executingCount: 'Running {count} items',
     permissionTool: 'Allow {name} to perform this action?',
     foundTools: 'Connected; found {count} tools',

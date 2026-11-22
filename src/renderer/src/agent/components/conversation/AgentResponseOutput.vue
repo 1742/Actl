@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { tr } from '../../../i18n';
+import { effectiveLocale, tr } from '../../../i18n';
 import { computed, ref, watch } from 'vue';
 import { ChevronRight } from '@lucide/vue';
 import type { ChildRunResult } from '../../../../../shared/agent/coordination';
@@ -64,13 +64,32 @@ const completedHistoryItemCount = computed(() =>
     0,
   ),
 );
-const completedHistoryStatus = computed(() =>
-  completedHistoryItemCount.value
-    ? tr('dynamic.executedCount', { count: completedHistoryItemCount.value })
-    : completedHistory.value.some((group) => group.type === 'message' || group.blocks.some((block) => block.type === 'context_message'))
-      ? tr('agents.runContext')
-      : tr('ui.thought'),
-);
+const elapsedTimeLabel = computed(() => {
+  const { createdAt, completedAt } = props.context;
+  if (!completedAt) return '';
+  const elapsedMs = Date.parse(completedAt) - Date.parse(createdAt);
+  if (!Number.isFinite(elapsedMs) || elapsedMs < 0) return '';
+  const totalSeconds = Math.floor(elapsedMs / 1000);
+  if (totalSeconds === 0) return tr('dynamic.elapsedUnderOneSecond');
+  const locale = effectiveLocale.value;
+  const units = [
+    { unit: 'hour', value: Math.floor(totalSeconds / 3600) },
+    { unit: 'minute', value: Math.floor(totalSeconds / 60) % 60 },
+    { unit: 'second', value: totalSeconds % 60 },
+  ];
+  const parts = units
+    .filter(({ value }) => value > 0)
+    .map(({ unit, value }) => new Intl.NumberFormat(locale, { style: 'unit', unit, unitDisplay: 'narrow' }).format(value));
+  const duration = new Intl.ListFormat(locale, { style: 'narrow', type: 'unit' }).format(parts);
+  return tr('dynamic.elapsedTime', { duration });
+});
+const completedHistoryStatus = computed(() => {
+  if (elapsedTimeLabel.value) return elapsedTimeLabel.value;
+  if (completedHistoryItemCount.value) return tr('dynamic.executedCount', { count: completedHistoryItemCount.value });
+  return completedHistory.value.some((group) => group.type === 'message' || group.blocks.some((block) => block.type === 'context_message'))
+    ? tr('agents.runContext')
+    : tr('ui.thought');
+});
 function singleReasoningBlock(history: AgentOutputGroup[]) {
   const group = history[0];
   if (history.length !== 1 || group?.type !== 'activity' || group.blocks.length !== 1)
@@ -88,7 +107,7 @@ watch(isActive, (active, wasActive) => {
   <div class="group/message flex min-w-0 flex-col gap-3">
     <div v-if="completedHistory.length" class="min-w-0">
       <AgentReasoningBlock
-        v-if="completedHistoryReasoning"
+        v-if="completedHistoryReasoning && !elapsedTimeLabel"
         :item="completedHistoryReasoning.item"
         completed
       />

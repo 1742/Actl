@@ -4,7 +4,7 @@ import { computed, ref } from 'vue';
 import { ChevronRight } from '@lucide/vue';
 import MessageOutput from '../responses/MessageOutput.vue';
 import AgentMailMessage from '../responses/AgentMailMessage.vue';
-import { isAgentMailMessage } from '../../utils/aiResponse';
+import { isAgentMailMessage, readReasoningText } from '../../utils/aiResponse';
 import UnknownOutput from '../responses/UnknownOutput.vue';
 import type { AgentOutputBlock } from './types';
 import { agentOutputHint } from '../../utils';
@@ -45,6 +45,12 @@ const groupStatus = computed(() => {
   return 'completed' as const;
 });
 const visibleHint = computed(() => (groupStatus.value === 'completed' ? '' : lastItemHint.value));
+const reasoningPreview = computed(() => {
+  const block = lastBlock.value;
+  return groupStatus.value === 'in_progress' && block?.type === 'reasoning' && block.item.status === 'in_progress'
+    ? readReasoningText(block.item)
+    : '';
+});
 const statusLabel = computed(() => {
   if (groupStatus.value === 'waiting_permission') return tr('ui.awaitingPermission');
   if (groupStatus.value === 'in_progress')
@@ -71,18 +77,18 @@ const singleReasoningBlock = computed(() =>
       <button
         class="group flex min-w-0 max-w-full items-center gap-1.5 py-0.5 text-left text-[15px] leading-5 text-gray-500 hover:text-gray-700"
         type="button"
-        :aria-label="visibleHint || statusLabel"
         :aria-expanded="expanded"
         @click="expanded = !expanded"
       >
         <span
           v-if="visibleHint"
-          class="min-w-0 flex-1 truncate"
-          :class="{ 'status-shimmer': groupStatus === 'in_progress' }"
+          class="min-w-0 truncate"
+          :class="{ 'shrink-0': reasoningPreview, 'status-shimmer': groupStatus === 'in_progress' }"
           :title="visibleHint"
           >{{ visibleHint }}</span
         >
         <span v-else class="truncate">{{ statusLabel }}</span>
+        <span v-if="reasoningPreview" class="min-w-0 truncate text-[13px] text-gray-500">{{ reasoningPreview }}</span>
         <ChevronRight
           :size="14"
           class="shrink-0 transition-transform"

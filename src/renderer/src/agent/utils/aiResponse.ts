@@ -1,7 +1,7 @@
 import { tr } from '../../i18n';
 import type { 
   AgentMailMessageItem, AIFileContent, AIMessageItem, AIResponse, AIResponseContent, AIResponseContext, AIResponseInputItem,
-  AIResponseOutputItem, AIResponseStatus, AIResponseUsage, AISkillContent, AIMcpServerContent, 
+  AIReasoningItem, AIResponseOutputItem, AIResponseStatus, AIResponseUsage, AISkillContent, AIMcpServerContent,
   AIWebSearchCallItem, AIWorkspaceFileContent 
 } from '../components/responses/types';
 
@@ -204,6 +204,10 @@ export function readContentText(
     .map((part) => ('text' in part && typeof part.text === 'string' ? part.text : ''))
     .join('')
     .trim();
+}
+
+export function readReasoningText(item: AIReasoningItem): string {
+  return readContentText(item.summary) || readContentText(item.content);
 }
 
 export function readInputContentDisplayText(

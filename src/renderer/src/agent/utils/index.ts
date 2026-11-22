@@ -1,6 +1,6 @@
 import { tr } from '../../i18n';
 import type { AIFunctionCallItem, AIFunctionCallOutputItem, AIMessageItem, AIReasoningItem, AIResponseContext, AIResponseOutputItem, AIWebSearchCallItem, AIUnknownOutputItem } from '../components/responses/types';
-import { conversationMessageKind, normalizeResponseContext, readContentText } from './aiResponse';
+import { conversationMessageKind, normalizeResponseContext } from './aiResponse';
 import type { AgentComposerDocument, ResolvedAgentComposer } from '../components/composer/types';
 import type { ResponseInputPartDto, AgentResponseDto, PermissionRequestItemDto } from '../../../../shared/agent/responses';
 import type { AgentOutputBlock, AgentToolResultEnvelope, AgentToolStatus, AgentToolTimelineBlock } from '../components/conversation/types';
@@ -144,9 +144,7 @@ export type AgentOutputGroup =
 export function agentOutputHint(block: Exclude<AgentOutputBlock, { type: 'message' }>): string {
   if (block.type === 'context_message') return tr('agents.runContext');
   if (block.type === 'reasoning') {
-    return block.item.status === 'in_progress'
-      ? readContentText(block.item.summary) || tr('ui.thinking')
-      : tr('ui.thought');
+    return tr(block.item.status === 'in_progress' ? 'ui.thinking' : 'ui.thought');
   }
   if (block.type === 'web_search') {
     const action = block.item.action;

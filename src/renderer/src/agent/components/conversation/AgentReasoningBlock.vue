@@ -3,12 +3,11 @@ import { tr } from '../../../i18n';
 import { computed, ref } from 'vue';
 import { Brain, ChevronRight } from '@lucide/vue';
 import type { AIReasoningItem } from '../responses/types';
-import { readContentText } from '../../utils/aiResponse';
+import { readReasoningText } from '../../utils/aiResponse';
 
 const props = defineProps<{ item: AIReasoningItem; completed?: boolean }>();
 const expanded = ref(false);
-const summary = computed(() => readContentText(props.item.summary));
-const text = computed(() => summary.value || readContentText(props.item.content));
+const text = computed(() => readReasoningText(props.item));
 const active = computed(() => !props.completed && props.item.status === 'in_progress');
 const label = computed(() => active.value ? tr('ui.thinking') : tr('ui.thought'));
 </script>
@@ -34,7 +33,7 @@ const label = computed(() => active.value ? tr('ui.thinking') : tr('ui.thought')
     </button>
     <div
       v-if="expanded && text"
-      class="mt-2 rounded-lg border border-gray-200 bg-white px-3 py-2 whitespace-pre-wrap wrap-anywhere text-[15px] leading-6 text-gray-500"
+      class="mt-2 max-h-64 overflow-y-auto rounded-lg border border-gray-200 bg-white px-3 py-2 whitespace-pre-wrap wrap-anywhere text-[15px] leading-6 text-gray-500"
     >
       {{ text }}
     </div>
